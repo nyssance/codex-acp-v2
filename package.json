@@ -1,0 +1,73 @@
+{
+  "name": "@nyssance/codex-acp-v2",
+  "publishConfig": {
+    "access": "public"
+  },
+  "version": "0.1.0",
+  "description": "Independent ACP v2 adapter for the OpenAI Codex app-server",
+  "packageManager": "bun@1.4.0",
+  "engines": {
+    "bun": ">=1.4.0"
+  },
+  "bin": {
+    "codex-acp-v2": "dist/index.js"
+  },
+  "files": [
+    "dist/index.js",
+    "README.md",
+    "LICENSE",
+    "package.json"
+  ],
+  "scripts": {
+    "prepublishOnly": "bun run build",
+    "build": "bun build src/index.ts --target=bun --format=esm --external @openai/codex --outfile dist/index.js",
+    "bundle:all": "bun run bundle:linux-x64 && bun run bundle:linux-arm64 && bun run bundle:darwin-x64 && bun run bundle:darwin-arm64 && bun run bundle:win-x64 && bun run bundle:win-arm64",
+    "bundle:linux-x64": "bun build src/index.ts --minify --sourcemap --compile --target=bun-linux-x64-baseline --outfile dist/bin/codex-acp-v2-x64-linux",
+    "bundle:linux-arm64": "bun build src/index.ts --minify --sourcemap --compile --target=bun-linux-arm64 --outfile dist/bin/codex-acp-v2-arm64-linux",
+    "bundle:darwin-x64": "bun build src/index.ts --minify --sourcemap --compile --target=bun-darwin-x64-baseline --outfile dist/bin/codex-acp-v2-x64-darwin",
+    "bundle:darwin-arm64": "bun build src/index.ts --minify --sourcemap --compile --target=bun-darwin-arm64 --outfile dist/bin/codex-acp-v2-arm64-darwin",
+    "bundle:win-x64": "bun build src/index.ts --minify --sourcemap --compile --target=bun-windows-x64-baseline --outfile dist/bin/codex-acp-v2-x64-windows.exe",
+    "bundle:win-arm64": "bun build src/index.ts --minify --sourcemap --compile --target=bun-windows-arm64 --outfile dist/bin/codex-acp-v2-arm64-windows.exe",
+    "package:all": "bun run package:linux-x64 && bun run package:linux-arm64 && bun run package:darwin-x64 && bun run package:darwin-arm64 && bun run package:win-x64 && bun run package:win-arm64",
+    "package:linux-x64": "cd dist/bin && zip codex-acp-v2-x64-linux.zip codex-acp-v2-x64-linux",
+    "package:linux-arm64": "cd dist/bin && zip codex-acp-v2-arm64-linux.zip codex-acp-v2-arm64-linux",
+    "package:darwin-x64": "cd dist/bin && zip codex-acp-v2-x64-darwin.zip codex-acp-v2-x64-darwin",
+    "package:darwin-arm64": "cd dist/bin && zip codex-acp-v2-arm64-darwin.zip codex-acp-v2-arm64-darwin",
+    "package:win-x64": "cd dist/bin && zip codex-acp-v2-x64-windows.zip codex-acp-v2-x64-windows.exe",
+    "package:win-arm64": "cd dist/bin && zip codex-acp-v2-arm64-windows.zip codex-acp-v2-arm64-windows.exe",
+    "start": "bun src/index.ts",
+    "example:steering": "bun examples/steering.ts",
+    "example:steering:multistep": "bun examples/steering.ts",
+    "generate-types": "codex app-server generate-ts --out src/app-server",
+    "test": "vitest run --no-file-parallelism --retry=2",
+    "test:e2e": "bun run build && RUN_E2E_TESTS=true vitest run --no-file-parallelism --retry=2 src/__tests__/CodexACPAgent/e2e",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p examples/tsconfig.json"
+  },
+  "homepage": "https://github.com/nyssance/codex-acp-v2#readme",
+  "bugs": {
+    "url": "https://github.com/nyssance/codex-acp-v2/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nyssance/codex-acp-v2.git"
+  },
+  "keywords": [],
+  "author": "NY",
+  "license": "Apache-2.0",
+  "type": "module",
+  "devDependencies": {
+    "@types/node": "^26.4.1",
+    "mcp-hello-world": "^1.1.2",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.11"
+  },
+  "dependencies": {
+    "@agentclientprotocol/sdk": "^1.4.0",
+    "@openai/codex": "^0.153.0",
+    "diff": "^9.0.0",
+    "open": "^11.0.2",
+    "vscode-jsonrpc": "^9.0.2",
+    "zod": "^4.5.4"
+  }
+}
