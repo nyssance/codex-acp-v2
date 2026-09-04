@@ -3,7 +3,7 @@
   "publishConfig": {
     "access": "public"
   },
-  "version": "0.2.2",
+  "version": "0.3.0",
   "description": "Native ACP v2 agent for the OpenAI Codex app-server",
   "packageManager": "bun@1.4.0",
   "engines": {

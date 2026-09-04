@@ -548,6 +548,84 @@ describe("history mapping", () => {
     });
 });
 
+describe("providers", () => {
+    const gateway = {providerId: "openai", apiType: "openai" as const, baseUrl: "https://gw.example.com/v1", headers: {authorization: "Bearer k"}};
+
+    it("advertises the providers capability and lists the OpenAI slot", async () => {
+        const t = createTestAgent();
+        const init = await t.initialize();
+        expect(init.capabilities?.providers).toEqual({});
+        expect(t.agent.listProviders({})).toEqual({
+            providers: [{providerId: "openai", supported: ["openai"], required: false, current: {apiType: "openai", baseUrl: "https://api.openai.com/v1"}}],
+        });
+    });
+
+    it("routes new threads through the gateway and skips the OpenAI login check", async () => {
+        const t = createTestAgent();
+        t.codex.respond("account/read", () => ({account: null, requiresOpenaiAuth: true}));
+        await t.initialize();
+        await t.agent.setProvider({...gateway, _meta: {codex: {name: "My gateway"}}});
+        expect(t.agent.listProviders({}).providers[0]?.current).toEqual({apiType: "openai", baseUrl: "https://gw.example.com/v1"});
+        await t.agent.newSession({cwd: CWD});
+        const params = t.codex.lastParams<ThreadStartParams>("thread/start");
+        expect(params.modelProvider).toBe("custom-gateway");
+        expect(params.config?.["model_providers"]).toEqual({
+            "custom-gateway": {
+                name: "My gateway",
+                base_url: "https://gw.example.com/v1",
+                wire_api: "responses",
+                http_headers: {"X-Client-Feature-ID": "codex", authorization: "Bearer k"},
+            },
+        });
+    });
+
+    it("uses the client's model catalog and selected model when provided", async () => {
+        const t = createTestAgent();
+        await t.initialize();
+        await t.agent.setProvider({...gateway, _meta: {alwith: {model: "deepseek-chat", models: [{id: "deepseek-chat", label: "DeepSeek"}, {id: "deepseek-reasoner"}]}}});
+        const response = await t.agent.newSession({cwd: CWD});
+        const modelOption = response.configOptions?.find(option => option.configId === "model") as {currentValue: string; options: Array<{value: string; name: string}>};
+        expect(modelOption.currentValue).toBe("deepseek-chat");
+        expect(modelOption.options.map(option => [option.value, option.name])).toEqual([["deepseek-chat", "DeepSeek"], ["deepseek-reasoner", "deepseek-reasoner"]]);
+        await t.agent.prompt({sessionId: THREAD_ID, prompt: [{type: "text", text: "hi"}]});
+        await t.settle();
+        expect(t.codex.lastParams<TurnStartParams>("turn/start").model).toBe("deepseek-chat");
+    });
+
+    it("rebinds open sessions in place and broadcasts their options", async () => {
+        const t = createTestAgent();
+        await t.initialize();
+        await t.openSession();
+        await t.agent.setProvider(gateway);
+        const resume = t.codex.lastParams<{threadId: string; modelProvider: string | null; excludeTurns?: boolean; config?: Record<string, unknown>}>("thread/resume");
+        expect(resume).toMatchObject({threadId: THREAD_ID, modelProvider: "custom-gateway", excludeTurns: true});
+        expect(resume.config?.["model_providers"]).toBeDefined();
+        expect(t.client.updatesOf("config_option_update")).toHaveLength(1);
+        await t.agent.disableProvider({providerId: "openai"});
+        expect(t.codex.lastParams<{modelProvider: string | null}>("thread/resume").modelProvider).toBeNull();
+        expect(t.agent.listProviders({}).providers[0]?.current?.baseUrl).toBe("https://api.openai.com/v1");
+    });
+
+    it("refuses to switch routing while a turn is running", async () => {
+        const t = createTestAgent();
+        await t.initialize();
+        await t.openSession();
+        await t.agent.prompt({sessionId: THREAD_ID, prompt: [{type: "text", text: "go"}]});
+        await t.settle();
+        await expectRejects(t.agent.setProvider(gateway), -32600, "turn is running");
+        expect(t.codex.calls("thread/resume")).toHaveLength(0);
+    });
+
+    it("validates provider requests", async () => {
+        const t = createTestAgent();
+        await t.initialize();
+        await expectRejects(t.agent.setProvider({...gateway, providerId: "anthropic"}), -32602, "Unknown providerId");
+        await expectRejects(t.agent.setProvider({...gateway, apiType: "anthropic"}), -32602, "OpenAI protocol");
+        await expectRejects(t.agent.setProvider({...gateway, baseUrl: "not a url"}), -32602, "http(s)");
+        await expect(t.agent.disableProvider({providerId: "whatever"})).resolves.toEqual({});
+    });
+});
+
 it("exports the v2 SDK protocol version the agent speaks", () => {
     expect(acp.PROTOCOL_VERSION).toBe(2);
 });

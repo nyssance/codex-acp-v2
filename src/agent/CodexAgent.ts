@@ -35,6 +35,7 @@ import {ClientSession, type ClientCapabilitySet, type ClientLink} from "./client
 import {availableCommands, mcpMessage, parseCommand, resolveCommand, skillsMessage, statusMessage} from "./commands";
 import {applyConfigOption, sessionConfigOptions} from "./configOptions";
 import {historyTitle, historyUpdates} from "./history";
+import {ProviderRouting} from "./providers";
 import {createActiveTurn, type ActiveTurn, type Session} from "./session";
 
 export interface CodexAgentOptions {
@@ -74,8 +75,7 @@ const REVISE_PLAN_OPTION = "revise_plan";
 export class CodexAgent {
     private readonly codex: AppServerClient;
     private readonly process: CodexProcess | null;
-    private readonly baseConfig: JsonObject;
-    private readonly modelProvider: string | null;
+    private readonly providers: ProviderRouting;
     private readonly info: acp.Implementation;
     private readonly env: NodeJS.ProcessEnv;
     private readonly sessions = new Map<string, SessionRuntime>();
@@ -86,8 +86,7 @@ export class CodexAgent {
     constructor(private readonly link: ClientLink, options: CodexAgentOptions) {
         this.codex = options.codex;
         this.process = options.process ?? null;
-        this.baseConfig = options.config ?? {};
-        this.modelProvider = options.modelProvider ?? null;
+        this.providers = new ProviderRouting(options.config ?? {}, options.modelProvider ?? null);
         this.info = options.info;
         this.env = options.env ?? process.env;
         void this.process?.exited.then(() => this.handleCodexExit());
@@ -126,6 +125,7 @@ export class CodexAgent {
                     delete: {},
                     additionalDirectories: {},
                 },
+                providers: {},
             },
             authMethods: authMethods(this.capabilities, this.env),
         };
@@ -162,6 +162,60 @@ export class CodexAgent {
         for (const runtime of this.sessions.values()) runtime.session.account = account;
     }
 
+    // ---- providers ----------------------------------------------------------------
+
+    listProviders(_params: acp.ListProvidersRequest): acp.ListProvidersResponse {
+        this.requireInitialized("providers/list");
+        return this.providers.list();
+    }
+
+    async setProvider(params: acp.SetProviderRequest): Promise<acp.SetProviderResponse> {
+        this.requireInitialized("providers/set");
+        this.assertNoActiveTurns("providers/set");
+        this.providers.set(params);
+        await this.rebindSessions();
+        return {};
+    }
+
+    async disableProvider(params: acp.DisableProviderRequest): Promise<acp.DisableProviderResponse> {
+        this.requireInitialized("providers/disable");
+        this.assertNoActiveTurns("providers/disable");
+        this.providers.disable(params);
+        await this.rebindSessions();
+        return {};
+    }
+
+    private assertNoActiveTurns(method: string): void {
+        const busy = [...this.sessions.values()].filter(runtime => runtime.session.activeTurn !== null).map(runtime => runtime.session.id);
+        if (busy.length > 0) {
+            throw acp.RequestError.invalidRequest({sessions: busy}, `${method} cannot change routing while a turn is running; cancel it or wait for idle`);
+        }
+    }
+
+    /**
+     * Provider routing is a thread property in Codex, so every open session is
+     * resumed in place with the new `model_providers` config. Codex rejoins the
+     * live thread; history and subscriptions survive.
+     */
+    private async rebindSessions(): Promise<void> {
+        const gateway = this.providers.active;
+        for (const runtime of this.sessions.values()) {
+            const {session} = runtime;
+            const config = buildThreadConfig(this.providers.threadConfig(), session.cwd, session.additionalDirectories, [], new Set());
+            const thread = await this.withCodex(() => this.codex.threadResume({
+                threadId: session.id,
+                cwd: session.cwd,
+                config,
+                modelProvider: this.providers.modelProvider(),
+                excludeTurns: true,
+            }));
+            const codexCatalog = await this.withCodex(() => this.codex.allModels());
+            session.catalog = this.providers.catalog(codexCatalog);
+            session.model = resolveModelSelection(session.catalog, gateway?.model ?? thread.model, thread.reasoningEffort);
+            await runtime.client.update({sessionUpdate: "config_option_update", configOptions: sessionConfigOptions(session)});
+        }
+    }
+
     // ---- sessions ---------------------------------------------------------------
 
     async newSession(params: acp.NewSessionRequest): Promise<acp.NewSessionResponse> {
@@ -193,12 +247,13 @@ export class CodexAgent {
         const additionalDirectories = readAdditionalDirectories(request.cwd, request.additionalDirectories);
         const mcpServers = request.mcpServers ?? [];
 
-        if (await this.withCodex(() => authRequired(this.codex))) {
+        // A client-configured gateway carries its own credentials; only native OpenAI routing needs a login.
+        if (this.providers.active === null && await this.withCodex(() => authRequired(this.codex))) {
             throw acp.RequestError.authRequired(undefined, "Log in to Codex first (auth/login)");
         }
         await this.withCodex(() => this.refreshSkills(request.cwd, additionalDirectories));
         const existingMcp = mcpServers.length > 0 ? await this.withCodex(() => this.configuredMcpServerNames(request.cwd)) : new Set<string>();
-        const config = buildThreadConfig(this.baseConfig, request.cwd, additionalDirectories, mcpServers, existingMcp);
+        const config = buildThreadConfig(this.providers.threadConfig(), request.cwd, additionalDirectories, mcpServers, existingMcp);
         const mcpStartupGeneration = this.codex.mcpStartupGeneration;
         const modelProvider = await this.withCodex(() => this.resolveModelProvider());
 
@@ -214,11 +269,13 @@ export class CodexAgent {
         });
         const sessionId = thread.thread.id;
         try {
-            const [catalog, account] = await this.withCodex(() => Promise.all([
+            const [codexCatalog, account] = await this.withCodex(() => Promise.all([
                 this.codex.allModels(),
                 this.codex.accountRead({refreshToken: false}),
             ]));
-            const model = resolveModelSelection(catalog, thread.model, thread.reasoningEffort);
+            const gateway = this.providers.active;
+            const catalog = this.providers.catalog(codexCatalog);
+            const model = resolveModelSelection(catalog, gateway?.model ?? thread.model, thread.reasoningEffort);
             const session: Session = {
                 id: sessionId,
                 cwd: request.cwd,
@@ -674,7 +731,8 @@ export class CodexAgent {
     }
 
     private async resolveModelProvider(): Promise<string | null> {
-        if (this.modelProvider) return this.modelProvider;
+        const routed = this.providers.modelProvider();
+        if (routed) return routed;
         const config = await this.codex.configRead({includeLayers: false});
         const provider = config.config["model_provider"];
         return typeof provider === "string" && provider.length > 0 ? provider : null;

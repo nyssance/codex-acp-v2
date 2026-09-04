@@ -39,6 +39,9 @@ compatibility layer: everything is written against `@agentclientprotocol/sdk/exp
 - **Config options**: `mode` (approval and sandbox preset), `model`, `effort`,
   `collaboration_mode` (plan mode), and `fast_mode` when the model offers it.
 - **Auth**: `api-key`, `chat-gpt` (browser), and `chat-gpt-device-code` (URL elicitation).
+- **Providers**: `providers/set` points Codex's OpenAI slot at any OpenAI-compatible
+  gateway (OpenAI Responses API) without restarting; open sessions
+  are rebound in place.
 - **Slash commands**: `/review`, `/review-branch`, `/review-commit`, `/compact`,
   `/plan`, `/status`, `/mcp`, `/skills`, `/logout`, plus `$skill` entries from Codex.
 

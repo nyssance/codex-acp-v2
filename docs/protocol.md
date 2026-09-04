@@ -33,6 +33,22 @@ to clients that declare `capabilities.elicitation.url`. Every other method retur
 then `OPENAI_API_KEY`. `session/new` returns `-32000` (auth required) while Codex has
 no account.
 
+## Providers
+
+The agent advertises `capabilities.providers` and exposes one slot, `providerId: "openai"`,
+which is where Codex's OpenAI-protocol traffic goes.
+
+| Method | Behaviour |
+| --- | --- |
+| `providers/list` | Reports the slot with `supported: ["openai"]` and the `baseUrl` currently in effect. |
+| `providers/set` | `{providerId: "openai", apiType: "openai", baseUrl, headers?}` routes Codex through that gateway: new and open sessions get a `model_providers.custom-gateway` config entry and `modelProvider: "custom-gateway"`. Open sessions are resumed in place; a running turn makes the request fail with `-32600`. |
+| `providers/disable` | `{providerId: "openai"}` restores native routing; other ids are a no-op. |
+
+Accepted hints on `providers/set._meta`: `alwith.models` (`[{id, label?, description?}]`)
+becomes the session model catalog, `alwith.model` selects the model, `codex.name` labels the
+provider. The gateway must implement the OpenAI Responses API; Codex 0.153 no longer speaks
+chat completions. With a gateway active `session/new` does not require an OpenAI login.
+
 ## Sessions
 
 | Method | Notes |
