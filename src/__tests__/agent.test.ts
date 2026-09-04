@@ -171,7 +171,7 @@ describe("session/prompt", () => {
         await t.settle();
         const errorChunk = t.client.updatesOf("agent_message_chunk").at(-1);
         expect(errorChunk).toMatchObject({content: {type: "text", text: "Rate limited"}, _meta: {codex: {error: {codexErrorInfo: "rateLimitExceeded"}}}});
-        expect(t.client.updatesOf("state_update").at(-1)).toMatchObject({state: "idle", stopReason: "end_turn", _meta: {codex: {error: {message: "Rate limited"}}}});
+        expect(t.client.updatesOf("state_update").at(-1)).toMatchObject({state: "idle", stopReason: "_error", _meta: {codex: {error: {message: "Rate limited"}}}});
     });
 
     it("turns a turn/start failure into an error report instead of a hung session", async () => {
@@ -340,9 +340,10 @@ describe("resume, fork, list, close, delete", () => {
 
     it("replays history before resolving session/resume with replayFrom start", async () => {
         const t = createTestAgent();
-        t.codex.respond("thread/resume", (params) => threadResponse({id: params.threadId, turns: [turn({items: history})]}));
+        t.codex.respond("thread/turns/list", () => ({data: [turn({items: history})], nextCursor: null, backwardsCursor: null}));
         await t.initialize();
         const response = await t.agent.resumeSession({sessionId: THREAD_ID, cwd: CWD, replayFrom: {type: "start"}});
+        expect(t.codex.lastParams<{excludeTurns?: boolean}>("thread/resume").excludeTurns).toBe(true);
         expect(response.configOptions?.length).toBeGreaterThan(0);
         expect(t.client.updates().map(update => update.sessionUpdate)).toEqual(["session_info_update", "user_message", "agent_message"]);
         expect(t.client.updatesOf("session_info_update")[0]).toMatchObject({title: "make it work"});
@@ -351,21 +352,38 @@ describe("resume, fork, list, close, delete", () => {
 
     it("restores context only when replayFrom is null", async () => {
         const t = createTestAgent();
-        t.codex.respond("thread/resume", (params) => threadResponse({id: params.threadId, name: "Named", turns: [turn({items: history})]}));
+        t.codex.respond("thread/resume", (params) => threadResponse({id: params.threadId, name: "Named"}));
         await t.initialize();
         await t.agent.resumeSession({sessionId: THREAD_ID, cwd: CWD, replayFrom: null});
         expect(t.client.updates().map(update => update.sessionUpdate)).toEqual(["session_info_update"]);
         expect(t.client.updatesOf("session_info_update")[0]).toMatchObject({title: "Named"});
+        expect(t.codex.calls("thread/turns/list")).toHaveLength(0);
     });
 
     it("forks into a new session and replays the copied transcript", async () => {
         const t = createTestAgent();
-        t.codex.respond("thread/fork", () => threadResponse({id: "thread-fork", turns: [turn({items: history})]}));
+        t.codex.respond("thread/fork", () => threadResponse({id: "thread-fork"}));
+        t.codex.respond("thread/turns/list", (params) => ({data: params.threadId === "thread-fork" ? [turn({items: history})] : [], nextCursor: null, backwardsCursor: null}));
         await t.initialize();
         const response = await t.agent.forkSession({sessionId: THREAD_ID, cwd: CWD});
         expect(response.sessionId).toBe("thread-fork");
         expect(t.client.updates().every(update => update.sessionId === "thread-fork")).toBe(true);
         expect(t.client.updatesOf("agent_message")).toHaveLength(1);
+    });
+
+    it("streams long histories page by page", async () => {
+        const t = createTestAgent();
+        const pages: Record<string, {data: ReturnType<typeof turn>[]; nextCursor: string | null}> = {
+            first: {data: [turn({id: "t1", items: [history[0]!]})], nextCursor: "c2"},
+            c2: {data: [turn({id: "t2", items: [history[1]!]})], nextCursor: null},
+        };
+        t.codex.respond("thread/turns/list", (params) => ({...pages[params.cursor ?? "first"], backwardsCursor: null}));
+        await t.initialize();
+        await t.agent.resumeSession({sessionId: THREAD_ID, cwd: CWD, replayFrom: {type: "start"}});
+        const calls = t.codex.calls("thread/turns/list").map(call => (call.params as {cursor: string | null; limit: number; sortDirection: string}));
+        expect(calls.map(call => call.cursor)).toEqual([null, "c2"]);
+        expect(calls[0]).toMatchObject({limit: 50, sortDirection: "asc"});
+        expect(t.client.updates().map(update => update.sessionUpdate)).toEqual(["session_info_update", "user_message", "agent_message"]);
     });
 
     it("lists sessions as ACP session info", async () => {
@@ -524,16 +542,17 @@ describe("codex process loss", () => {
         t.codex.close();
         await t.settle();
         expect(t.client.updatesOf("agent_message_chunk").at(-1)?.content).toEqual({type: "text", text: "Connection to Codex was lost"});
-        expect(t.client.updatesOf("state_update").at(-1)).toMatchObject({state: "idle", stopReason: "end_turn"});
+        expect(t.client.updatesOf("state_update").at(-1)).toMatchObject({state: "idle", stopReason: "_error"});
     });
 });
 
 describe("history mapping", () => {
     it("replays tool calls, terminals, and reasoning from a loaded thread", async () => {
         const t = createTestAgent();
-        t.codex.respond("thread/resume", (params) => threadResponse({
-            id: params.threadId,
-            turns: [turn({items: [
+        t.codex.respond("thread/turns/list", () => ({
+            nextCursor: null,
+            backwardsCursor: null,
+            data: [turn({items: [
                 {type: "reasoning", id: "r1", summary: ["thinking"], content: []},
                 {type: "commandExecution", id: "c1", pluginId: null, scriptPath: null, command: "ls", cwd: CWD, processId: null, source: "agent", status: "completed", commandActions: [], aggregatedOutput: "a\nb\n", exitCode: 0, durationMs: 3},
                 {type: "fileChange", id: "f1", changes: [{path: `${CWD}/a.txt`, kind: {type: "add"}, diff: "hello\n"}], status: "completed"},

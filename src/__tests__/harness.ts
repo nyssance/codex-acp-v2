@@ -280,6 +280,7 @@ export function createTestAgent(options: {env?: NodeJS.ProcessEnv; catalog?: Mod
     codex.respond("thread/fork", () => threadResponse({id: "thread-fork", forkedFromId: THREAD_ID}));
     codex.respond("thread/read", (params) => ({thread: thread({id: params.threadId})}));
     codex.respond("thread/list", () => ({data: [], nextCursor: null, backwardsCursor: null}));
+    codex.respond("thread/turns/list", () => ({data: [], nextCursor: null, backwardsCursor: null}));
     codex.respond("thread/unsubscribe", () => ({}));
     codex.respond("thread/archive", () => ({}));
     codex.respond("thread/compact/start", () => ({}));

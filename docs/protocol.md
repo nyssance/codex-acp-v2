@@ -54,7 +54,7 @@ chat completions. With a gateway active `session/new` does not require an OpenAI
 | Method | Notes |
 | --- | --- |
 | `session/new` | `cwd` must be absolute. `additionalDirectories` become trusted projects and sandbox write roots. `mcpServers` (stdio, http) are added to the thread config; names that collide with the user's Codex config are skipped. |
-| `session/resume` | `replayFrom: {type: "start"}` replays the transcript as `session/update` frames before the response; `null` or omitted restores context only. Other cursors are rejected. |
+| `session/resume` | `replayFrom: {type: "start"}` replays the transcript as `session/update` frames before the response, paged through Codex `thread/turns/list` in pages of 50 turns; `null` or omitted restores context only. Other cursors are rejected. |
 | `session/fork` | Forks the Codex thread and replays the copied transcript under the new session id. |
 | `session/list` | `cwd` filters by exact Codex thread cwd; `cursor` pages. |
 | `session/close` | Interrupts a running turn, waits for it, unsubscribes. |
@@ -91,7 +91,8 @@ State frames:
 
 A failed turn emits an `agent_message_chunk` with the error text and
 `_meta.codex.error {message, codexErrorInfo, additionalDetails}`, then
-`idle` with `stopReason: "end_turn"` and the same `_meta.codex.error`.
+`idle` with `stopReason: "_error"` (an ACP extension value; render unknown reasons
+generically) and the same `_meta.codex.error`.
 
 `session/cancel` calls `turn/interrupt`; the turn ends with `idle` / `cancelled`.
 

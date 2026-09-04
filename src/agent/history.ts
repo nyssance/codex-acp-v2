@@ -1,5 +1,5 @@
 import type * as acp from "@agentclientprotocol/sdk/experimental/v2";
-import type {Thread, ThreadItem} from "../app-server/v2";
+import type {Thread, ThreadItem, Turn} from "../app-server/v2";
 import {terminalSnapshot, usesTerminal} from "../bridge/terminal";
 import * as tool from "../bridge/toolCalls";
 import {fromUserInput} from "../codex/sessionConfig";
@@ -9,9 +9,9 @@ import {fromUserInput} from "../codex/sessionConfig";
  * live, so `session/resume` with `replayFrom: start` and `session/fork` restore
  * the transcript before the response resolves.
  */
-export function historyUpdates(thread: Thread): acp.SessionUpdate[] {
+export function historyUpdates(turns: readonly Turn[]): acp.SessionUpdate[] {
     const updates: acp.SessionUpdate[] = [];
-    for (const turn of thread.turns) {
+    for (const turn of turns) {
         for (const item of turn.items) {
             updates.push(...itemHistory(item));
         }
@@ -19,11 +19,11 @@ export function historyUpdates(thread: Thread): acp.SessionUpdate[] {
     return updates;
 }
 
-/** Title from the first user message, for threads Codex has not named yet. */
-export function historyTitle(thread: Thread): string | null {
+/** Title from the thread name, else the first user message, else the preview. */
+export function historyTitle(thread: Pick<Thread, "name" | "preview">, turns: readonly Turn[]): string | null {
     const explicit = thread.name?.trim();
     if (explicit) return explicit;
-    for (const turn of thread.turns) {
+    for (const turn of turns) {
         for (const item of turn.items) {
             if (item.type !== "userMessage") continue;
             const text = item.content

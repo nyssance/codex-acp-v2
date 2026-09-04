@@ -43,6 +43,8 @@ import type {
     ThreadResumeResponse,
     ThreadStartParams,
     ThreadStartResponse,
+    ThreadTurnsListParams,
+    ThreadTurnsListResponse,
     ThreadUnsubscribeParams,
     ThreadUnsubscribeResponse,
     ToolRequestUserInputParams,
@@ -344,6 +346,10 @@ export class AppServerClient {
 
     threadList(params: ThreadListParams): Promise<ThreadListResponse> {
         return this.send({method: "thread/list", params});
+    }
+
+    threadTurnsList(params: ThreadTurnsListParams): Promise<ThreadTurnsListResponse> {
+        return this.send({method: "thread/turns/list", params});
     }
 
     threadArchive(params: ThreadArchiveParams): Promise<ThreadArchiveResponse> {

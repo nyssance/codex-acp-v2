@@ -1,7 +1,7 @@
 import * as acp from "@agentclientprotocol/sdk/experimental/v2";
 import path from "node:path";
 import type {ServerNotification} from "../app-server";
-import type {Thread, TurnCompletedNotification, TurnError} from "../app-server/v2";
+import type {Thread, Turn, TurnCompletedNotification, TurnError} from "../app-server/v2";
 import {EventBridge, type CompletedPlan} from "../bridge/EventBridge";
 import {mcpStartupFailed, ToolName} from "../bridge/toolCalls";
 import type {AppServerClient} from "../codex/AppServerClient";
@@ -65,6 +65,9 @@ type OpenRequest =
     | {kind: "fork"; request: acp.ForkSessionRequest};
 
 const CLOSE_TURN_GRACE_MS = 5_000;
+const HISTORY_PAGE_SIZE = 50;
+/** Custom stop reason (`_`-prefixed per ACP extensibility) for a turn Codex reported as failed. */
+export const ERROR_STOP_REASON = "_error";
 const IMPLEMENT_PLAN_OPTION = "implement_plan";
 const REVISE_PLAN_OPTION = "revise_plan";
 
@@ -262,9 +265,10 @@ export class CodexAgent {
                 case "new":
                     return await this.codex.threadStart({config, cwd: request.cwd, modelProvider});
                 case "resume":
-                    return await this.codex.threadResume({threadId: open.request.sessionId, config, cwd: request.cwd, modelProvider});
+                    // History is paged through thread/turns/list during replay; full hydration here is deprecated.
+                    return await this.codex.threadResume({threadId: open.request.sessionId, config, cwd: request.cwd, modelProvider, excludeTurns: true});
                 case "fork":
-                    return await this.codex.threadFork({threadId: open.request.sessionId, config, cwd: request.cwd, modelProvider});
+                    return await this.codex.threadFork({threadId: open.request.sessionId, config, cwd: request.cwd, modelProvider, excludeTurns: true});
             }
         });
         const sessionId = thread.thread.id;
@@ -364,16 +368,41 @@ export class CodexAgent {
         } while (runtime.queue !== current);
     }
 
-    private async replayHistory(runtime: SessionRuntime, replay: boolean, loaded: Thread): Promise<void> {
-        const thread = loaded.turns.length > 0
-            ? loaded
-            : (await this.withCodex(() => this.codex.threadRead({threadId: runtime.session.id, includeTurns: true}))).thread;
-        const title = historyTitle(thread);
-        runtime.session.title = title;
-        runtime.session.titleIsExplicit = !!thread.name?.trim();
-        if (title) await runtime.client.update({sessionUpdate: "session_info_update", title});
-        if (!replay) return;
-        await runtime.client.updateAll(historyUpdates(thread));
+    /**
+     * Publishes the session title and, when asked, replays the transcript. Turns are
+     * paged through thread/turns/list and streamed page by page, so a long session
+     * never needs to be materialized in one response.
+     */
+    private async replayHistory(runtime: SessionRuntime, replay: boolean, thread: Thread): Promise<void> {
+        const {session, client} = runtime;
+        let titlePublished = false;
+        const publishTitle = async (turns: readonly Turn[]) => {
+            if (titlePublished) return;
+            const title = historyTitle(thread, turns);
+            if (title === null && replay) return;
+            titlePublished = true;
+            session.title = title;
+            session.titleIsExplicit = !!thread.name?.trim();
+            if (title) await client.update({sessionUpdate: "session_info_update", title});
+        };
+        if (!replay) {
+            const firstPage = thread.name?.trim() ? {data: [] as Turn[]} : await this.turnPage(session.id, null);
+            await publishTitle(firstPage.data);
+            return;
+        }
+        let cursor: string | null = null;
+        do {
+            const page: {data: Turn[]; nextCursor: string | null} = await this.turnPage(session.id, cursor);
+            await publishTitle(page.data);
+            await client.updateAll(historyUpdates(page.data));
+            cursor = page.nextCursor;
+        } while (cursor !== null && !session.closed);
+        await publishTitle([]);
+    }
+
+    private async turnPage(threadId: string, cursor: string | null): Promise<{data: Turn[]; nextCursor: string | null}> {
+        const page = await this.withCodex(() => this.codex.threadTurnsList({threadId, cursor, limit: HISTORY_PAGE_SIZE, sortDirection: "asc", itemsView: "full"}));
+        return {data: page.data, nextCursor: page.nextCursor};
     }
 
     private async reportMcpStartup(runtime: SessionRuntime, afterGeneration: number): Promise<void> {
@@ -678,7 +707,7 @@ export class CodexAgent {
             content: {type: "text", text: message},
             _meta: {codex: {error: {message: error.message, codexErrorInfo: error.codexErrorInfo, additionalDetails: error.additionalDetails}}},
         });
-        await runtime.client.reportIdle("end_turn", {
+        await runtime.client.reportIdle(ERROR_STOP_REASON, {
             usage: usageOf(runtime.session),
             _meta: {codex: {error: {message: error.message, codexErrorInfo: error.codexErrorInfo}}},
         });

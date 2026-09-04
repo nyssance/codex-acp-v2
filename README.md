@@ -107,7 +107,7 @@ adjust defaults.
 bun install
 bun run typecheck
 bun run test          # unit suite with a fake Codex
-bun run test:e2e      # live suite against a real codex app-server
+bun run test:e2e      # live suite against a real codex app-server: prompt, permissions, cancel, resume/fork, gateway
 bun run build         # dist/index.js
 ```
 
