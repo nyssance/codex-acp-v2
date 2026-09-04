@@ -37,6 +37,8 @@ import type {
     ThreadCompactStartResponse,
     ThreadForkParams,
     ThreadForkResponse,
+    ThreadInjectItemsParams,
+    ThreadInjectItemsResponse,
     ThreadListParams,
     ThreadListResponse,
     ThreadReadParams,
@@ -366,6 +368,10 @@ export class AppServerClient {
 
     threadDelete(params: ThreadDeleteParams): Promise<ThreadDeleteResponse> {
         return this.send({method: "thread/delete", params});
+    }
+
+    threadInjectItems(params: ThreadInjectItemsParams): Promise<ThreadInjectItemsResponse> {
+        return this.send({method: "thread/inject_items", params});
     }
 
     threadUnsubscribe(params: ThreadUnsubscribeParams): Promise<ThreadUnsubscribeResponse> {

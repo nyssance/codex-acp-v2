@@ -285,6 +285,7 @@ export function createTestAgent(options: {env?: NodeJS.ProcessEnv; catalog?: Mod
     codex.respond("thread/archive", () => ({}));
     codex.respond("thread/unarchive", () => ({}));
     codex.respond("thread/delete", () => ({}));
+    codex.respond("thread/inject_items", () => ({}));
     codex.respond("thread/compact/start", () => ({}));
     codex.respond("thread/settings/update", () => ({}));
     codex.respond("turn/start", () => ({turn: turn({status: "inProgress"})}));

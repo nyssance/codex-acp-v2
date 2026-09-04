@@ -1,4 +1,5 @@
 import * as acp from "@agentclientprotocol/sdk/experimental/v2";
+import type {JsonValue} from "../app-server/serde_json/JsonValue";
 import path from "node:path";
 import type {ServerNotification} from "../app-server";
 import type {Thread, Turn, TurnCompletedNotification, TurnError} from "../app-server/v2";
@@ -136,7 +137,10 @@ export class CodexAgent {
                 // Codex desktop's thread model: hide = archive (reversible), delete = delete.
                 // ACP has no archive verb, so it rides the `_codex/*` extension surface and is
                 // declared here; `session/list` takes `_meta.codex.archived` to page the archive.
-                _meta: {codex: {archive: true}},
+                // seedHistory: a host that keeps its own transcript can continue it on a fresh thread —
+                // `session/new` with `_meta.codex.seedHistory: [{role, text}]` injects it as model-visible
+                // history (thread/inject_items) before the first turn.
+                _meta: {codex: {archive: true, seedHistory: true}},
             },
             authMethods: authMethods(this.capabilities, this.env),
         };
@@ -313,6 +317,11 @@ export class CodexAgent {
             }
             if (open.kind !== "new") {
                 await this.replayHistory(runtime, replay, thread.thread);
+            } else {
+                const seed = seedHistoryOf(open.request._meta);
+                if (seed.length > 0) {
+                    await this.withCodex(() => this.codex.threadInjectItems({threadId: sessionId, items: seed.map(seedItem)}));
+                }
             }
             if (mcpServers.length > 0) void this.reportMcpStartup(runtime, mcpStartupGeneration);
             void this.publishAvailableCommands(runtime);
@@ -878,4 +887,33 @@ export function parseSessionIdParams(raw: unknown): SessionIdParams {
 function archivedFilter(meta: acp.ListSessionsRequest["_meta"]): boolean {
     const codex = (meta as {codex?: {archived?: unknown}} | null | undefined)?.codex;
     return codex?.archived === true;
+}
+
+export interface SeedMessage {
+    role: "user" | "assistant";
+    text: string;
+}
+
+/** `session/new` `_meta.codex.seedHistory`: prior conversation to inject as model-visible history. */
+function seedHistoryOf(meta: acp.NewSessionRequest["_meta"]): SeedMessage[] {
+    const raw = (meta as {codex?: {seedHistory?: unknown}} | null | undefined)?.codex?.seedHistory;
+    if (raw === undefined || raw === null) return [];
+    if (!Array.isArray(raw)) throw acp.RequestError.invalidParams({seedHistory: raw}, "seedHistory must be an array of {role, text}");
+    return raw.map((entry, index) => {
+        const role = (entry as {role?: unknown})?.role;
+        const text = (entry as {text?: unknown})?.text;
+        if ((role !== "user" && role !== "assistant") || typeof text !== "string") {
+            throw acp.RequestError.invalidParams({index, entry}, "seedHistory entries are {role: \"user\" | \"assistant\", text: string}");
+        }
+        return {role, text};
+    });
+}
+
+/** Responses API message item for thread/inject_items. */
+function seedItem(message: SeedMessage): JsonValue {
+    return {
+        type: "message",
+        role: message.role,
+        content: [{type: message.role === "user" ? "input_text" : "output_text", text: message.text}],
+    };
 }

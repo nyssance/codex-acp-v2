@@ -437,6 +437,21 @@ describe("resume, fork, list, close, delete", () => {
         expect(t.codex.lastParams<{threadId: string}>("thread/unarchive")).toEqual({threadId: THREAD_ID});
     });
 
+    it("session/new with _meta.codex.seedHistory injects the prior conversation before the first turn", async () => {
+        const t = createTestAgent();
+        const init = await t.initialize();
+        expect((init.capabilities?._meta as {codex?: {seedHistory?: boolean}})?.codex?.seedHistory).toBe(true);
+        await t.openSession({_meta: {codex: {seedHistory: [{role: "user", text: "hello"}, {role: "assistant", text: "hi there"}]}}});
+        expect(t.codex.lastParams<{threadId: string; items: unknown[]}>("thread/inject_items")).toEqual({
+            threadId: THREAD_ID,
+            items: [
+                {type: "message", role: "user", content: [{type: "input_text", text: "hello"}]},
+                {type: "message", role: "assistant", content: [{type: "output_text", text: "hi there"}]},
+            ],
+        });
+        await expectRejects(t.agent.newSession({cwd: CWD, mcpServers: [], _meta: {codex: {seedHistory: [{role: "system", text: "x"}]}}}), -32602, "seedHistory");
+    });
+
     it("session/list pages the archive only when _meta.codex.archived is true", async () => {
         const t = createTestAgent();
         t.codex.respond("thread/list", () => ({data: [thread()], nextCursor: null, backwardsCursor: null}));
