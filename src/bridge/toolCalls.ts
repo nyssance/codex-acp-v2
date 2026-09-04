@@ -60,9 +60,14 @@ export function toAcpStatus(status: CodexStatus): acp.ToolCallStatus {
             return "completed";
         case "failed":
         case "declined":
-        case "interrupted":
             return "failed";
+        case "interrupted":
+            return "cancelled";
     }
+}
+
+export function toolCallCancelled(toolCallId: string): ToolCallFrame {
+    return frame({toolCallId, status: "cancelled"});
 }
 
 function frame(fields: acp.ToolCallUpdate): ToolCallFrame {

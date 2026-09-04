@@ -30,6 +30,8 @@ export class EventBridge {
     private completedPlan: CompletedPlan | null = null;
     private noticeSequence = 0;
 
+    /** Tool calls reported as pending or in progress and not yet completed. */
+    private readonly openToolCalls = new Set<string>();
     private readonly messagePhases = new Map<string, string | null>();
     private readonly reasoningWithDeltas = new Set<string>();
     private readonly terminalItems = new Set<string>();
@@ -48,6 +50,7 @@ export class EventBridge {
     beginTurn(): void {
         this.lastError = null;
         this.completedPlan = null;
+        this.openToolCalls.clear();
         this.clearPlanState();
     }
 
@@ -66,8 +69,28 @@ export class EventBridge {
     async handle(notification: ServerNotification): Promise<void> {
         const updates = await this.translate(notification);
         for (const update of updates) {
+            this.trackToolCall(update);
             await this.client.update(update);
         }
+    }
+
+    /**
+     * Cancelled turns leave Codex items without a completion; the protocol expects
+     * every unfinished tool call to end as `cancelled` before the idle frame.
+     */
+    async cancelOpenToolCalls(): Promise<void> {
+        const ids = [...this.openToolCalls];
+        this.openToolCalls.clear();
+        for (const toolCallId of ids) {
+            await this.client.update(tool.toolCallCancelled(toolCallId));
+        }
+    }
+
+    private trackToolCall(update: acp.SessionUpdate): void {
+        if (update.sessionUpdate !== "tool_call_update") return;
+        const {toolCallId, status} = update as acp.ToolCallUpdate;
+        if (status === "pending" || status === "in_progress") this.openToolCalls.add(toolCallId);
+        else if (status !== undefined && status !== null) this.openToolCalls.delete(toolCallId);
     }
 
     async flush(): Promise<void> {

@@ -488,6 +488,7 @@ export class CodexAgent {
                 completed = await this.maybeImplementPlan(runtime, turn, completed);
             }
             if (completed?.turn.status === "interrupted" || turn.abort.signal.aborted) {
+                await bridge.cancelOpenToolCalls();
                 await client.reportIdle("cancelled", {usage: usageOf(session)});
                 return;
             }
@@ -504,6 +505,7 @@ export class CodexAgent {
             await client.reportIdle("end_turn", {usage: usageOf(session)});
         } catch (error) {
             if (turn.abort.signal.aborted || session.closed) {
+                await bridge.cancelOpenToolCalls().catch(() => {});
                 await client.reportIdle("cancelled", {usage: usageOf(session)}).catch(() => {});
                 return;
             }

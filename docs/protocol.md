@@ -97,7 +97,9 @@ A failed turn emits an `agent_message_chunk` with the error text and
 ### Tool calls
 
 The first frame for a `toolCallId` carries `name`, `title`, and `kind`; later frames
-omit `name` and patch `status`, `content`, `rawOutput`.
+omit `name` and patch `status`, `content`, `rawOutput`. Codex `interrupted` items map
+to status `cancelled`, and a cancelled turn marks every still-open tool call
+`cancelled` before the `idle` frame.
 
 | `name` | `kind` | Codex item |
 | --- | --- | --- |

@@ -222,17 +222,25 @@ describe("session/prompt", () => {
 });
 
 describe("session/cancel", () => {
-    it("interrupts the turn and reports idle with stopReason cancelled", async () => {
+    it("interrupts the turn, cancels open tool calls, and reports idle with stopReason cancelled", async () => {
         const t = createTestAgent();
         await t.initialize();
         await t.openSession();
         await t.agent.prompt({sessionId: THREAD_ID, prompt: [{type: "text", text: "long task"}]});
+        await t.settle();
+        itemStarted(t.codex, {type: "commandExecution", id: "c-open", pluginId: null, scriptPath: null, command: "sleep 100", cwd: CWD, processId: null, source: "agent", status: "inProgress", commandActions: [], aggregatedOutput: null, exitCode: null, durationMs: null});
+        itemStarted(t.codex, {type: "commandExecution", id: "c-done", pluginId: null, scriptPath: null, command: "ls", cwd: CWD, processId: null, source: "agent", status: "inProgress", commandActions: [], aggregatedOutput: null, exitCode: null, durationMs: null});
+        itemCompleted(t.codex, {type: "commandExecution", id: "c-done", pluginId: null, scriptPath: null, command: "ls", cwd: CWD, processId: null, source: "agent", status: "completed", commandActions: [], aggregatedOutput: "", exitCode: 0, durationMs: 1});
         await t.settle();
         await t.agent.cancel({sessionId: THREAD_ID});
         expect(t.codex.lastParams<{turnId: string}>("turn/interrupt")).toEqual({threadId: THREAD_ID, turnId: TURN_ID});
         turnCompleted(t.codex, {status: "interrupted"});
         await t.settle();
         expect(t.client.states()).toEqual(["running", "idle"]);
+        const updates = t.client.updates();
+        const cancelledFrames = updates.filter(update => update.sessionUpdate === "tool_call_update" && (update as {status?: string}).status === "cancelled");
+        expect(cancelledFrames.map(update => (update as {toolCallId: string}).toolCallId)).toEqual(["c-open"]);
+        expect(updates.indexOf(cancelledFrames[0]!)).toBeLessThan(updates.length - 1);
         expect(t.client.updatesOf("state_update").at(-1)).toMatchObject({stopReason: "cancelled"});
     });
 
