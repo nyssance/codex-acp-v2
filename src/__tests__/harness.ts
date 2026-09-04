@@ -283,6 +283,8 @@ export function createTestAgent(options: {env?: NodeJS.ProcessEnv; catalog?: Mod
     codex.respond("thread/turns/list", () => ({data: [], nextCursor: null, backwardsCursor: null}));
     codex.respond("thread/unsubscribe", () => ({}));
     codex.respond("thread/archive", () => ({}));
+    codex.respond("thread/unarchive", () => ({}));
+    codex.respond("thread/delete", () => ({}));
     codex.respond("thread/compact/start", () => ({}));
     codex.respond("thread/settings/update", () => ({}));
     codex.respond("turn/start", () => ({turn: turn({status: "inProgress"})}));

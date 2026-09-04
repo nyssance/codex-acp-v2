@@ -1,5 +1,5 @@
 import * as acp from "@agentclientprotocol/sdk/experimental/v2";
-import {CodexAgent, type CodexAgentOptions} from "./CodexAgent";
+import {CodexAgent, type CodexAgentOptions, parseSessionIdParams} from "./CodexAgent";
 
 /**
  * Registers every ACP v2 method on the SDK's agent builder. Each handler
@@ -27,6 +27,8 @@ export function createAgentApp(options: CodexAgentOptions): acp.AgentApp {
         .onRequest(acp.methods.agent.session.list, ctx => current().listSessions(ctx.params))
         .onRequest(acp.methods.agent.session.close, ctx => current().closeSession(ctx.params))
         .onRequest(acp.methods.agent.session.delete, ctx => current().deleteSession(ctx.params))
+        .onRequest("_codex/session_archive", {parse: parseSessionIdParams}, ctx => current().archiveSession(ctx.params))
+        .onRequest("_codex/session_unarchive", {parse: parseSessionIdParams}, ctx => current().unarchiveSession(ctx.params))
         .onRequest(acp.methods.agent.session.setConfigOption, ctx => current().setSessionConfigOption(ctx.params))
         .onRequest(acp.methods.agent.session.prompt, ctx => current().prompt(ctx.params))
         .onNotification(acp.methods.agent.session.cancel, ctx => current().cancel(ctx.params));

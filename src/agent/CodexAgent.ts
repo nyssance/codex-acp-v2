@@ -133,6 +133,10 @@ export class CodexAgent {
                     additionalDirectories: {},
                 },
                 providers: {},
+                // Codex desktop's thread model: hide = archive (reversible), delete = delete.
+                // ACP has no archive verb, so it rides the `_codex/*` extension surface and is
+                // declared here; `session/list` takes `_meta.codex.archived` to page the archive.
+                _meta: {codex: {archive: true}},
             },
             authMethods: authMethods(this.capabilities, this.env),
         };
@@ -437,10 +441,13 @@ export class CodexAgent {
     async listSessions(params: acp.ListSessionsRequest): Promise<acp.ListSessionsResponse> {
         this.requireInitialized("session/list");
         const cwd = params.cwd?.trim() || null;
+        const archived = archivedFilter(params._meta);
         const response = await this.withCodex(() => this.codex.threadList({
             cursor: params.cursor ?? null,
             ...(cwd ? {cwd} : {}),
             sourceKinds: ["cli", "vscode", "exec", "appServer", "unknown"],
+            // Codex lists non-archived threads by default; the archive is a separate page.
+            ...(archived ? {archived: true} : {}),
         }));
         return {
             sessions: response.data.map(thread => ({
@@ -448,6 +455,7 @@ export class CodexAgent {
                 cwd: thread.cwd,
                 title: thread.name?.trim() || thread.preview.trim() || null,
                 updatedAt: new Date(thread.updatedAt * 1000).toISOString(),
+                _meta: {codex: {archived}},
             })),
             nextCursor: response.nextCursor,
         };
@@ -462,7 +470,21 @@ export class CodexAgent {
     async deleteSession(params: acp.DeleteSessionRequest): Promise<acp.DeleteSessionResponse> {
         this.requireInitialized("session/delete");
         await this.closeRuntime(params.sessionId);
+        // Real deletion, like Codex desktop's Delete; hiding is `_codex/session_archive`.
+        await this.withCodex(() => this.codex.threadDelete({threadId: params.sessionId}));
+        return {};
+    }
+
+    async archiveSession(params: SessionIdParams): Promise<Record<string, never>> {
+        this.requireInitialized("_codex/session_archive");
+        await this.closeRuntime(params.sessionId);
         await this.withCodex(() => this.codex.threadArchive({threadId: params.sessionId}));
+        return {};
+    }
+
+    async unarchiveSession(params: SessionIdParams): Promise<Record<string, never>> {
+        this.requireInitialized("_codex/session_unarchive");
+        await this.withCodex(() => this.codex.threadUnarchive({threadId: params.sessionId}));
         return {};
     }
 
@@ -839,3 +861,21 @@ function interruptedTurn(threadId: string): TurnCompletedNotification {
     };
 }
 
+export interface SessionIdParams {
+    sessionId: string;
+}
+
+/** `_codex/session_archive` / `_codex/session_unarchive` params: `{sessionId}`. */
+export function parseSessionIdParams(raw: unknown): SessionIdParams {
+    const sessionId = (raw as {sessionId?: unknown} | null)?.sessionId;
+    if (typeof sessionId !== "string" || sessionId.length === 0) {
+        throw acp.RequestError.invalidParams({params: raw}, "expected {sessionId: string}");
+    }
+    return {sessionId};
+}
+
+/** `session/list` `_meta.codex.archived`: true pages the archive, anything else the live list. */
+function archivedFilter(meta: acp.ListSessionsRequest["_meta"]): boolean {
+    const codex = (meta as {codex?: {archived?: unknown}} | null | undefined)?.codex;
+    return codex?.archived === true;
+}

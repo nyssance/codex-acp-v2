@@ -17,6 +17,10 @@ compatibility layer: everything is written against `@agentclientprotocol/sdk/exp
 
 - **Session lifecycle**: `session/new`, `session/resume` (with `replayFrom: {type: "start"}`
   transcript replay), `session/fork`, `session/list`, `session/close`, `session/delete`.
+  Thread visibility follows Codex desktop: `session/delete` is `thread/delete` (permanent);
+  hiding is the `_codex/session_archive` / `_codex/session_unarchive` extension pair
+  (declared as `capabilities._meta.codex.archive`), and `session/list` pages the archive
+  when called with `_meta: {codex: {archived: true}}`.
 - **Asynchronous prompts**: `session/prompt` returns immediately; the turn is
   reported through `state_update` frames (`running`, `requires_action` while a
   permission or form is open, `idle` with `stopReason` and token `usage`).

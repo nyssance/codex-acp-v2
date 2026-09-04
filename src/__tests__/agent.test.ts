@@ -392,8 +392,8 @@ describe("resume, fork, list, close, delete", () => {
         await t.initialize();
         const response = await t.agent.listSessions({cwd: CWD});
         expect(response.sessions).toEqual([
-            {sessionId: THREAD_ID, cwd: CWD, title: "Alpha", updatedAt: new Date(1_700_000_100 * 1000).toISOString()},
-            {sessionId: "t2", cwd: CWD, title: "second prompt", updatedAt: new Date(1_700_000_100 * 1000).toISOString()},
+            {sessionId: THREAD_ID, cwd: CWD, title: "Alpha", updatedAt: new Date(1_700_000_100 * 1000).toISOString(), _meta: {codex: {archived: false}}},
+            {sessionId: "t2", cwd: CWD, title: "second prompt", updatedAt: new Date(1_700_000_100 * 1000).toISOString(), _meta: {codex: {archived: false}}},
         ]);
         expect(response.nextCursor).toBe("c2");
         expect(t.codex.lastParams<{cwd: string}>("thread/list").cwd).toBe(CWD);
@@ -415,13 +415,38 @@ describe("resume, fork, list, close, delete", () => {
         await expectRejects(t.agent.prompt({sessionId: THREAD_ID, prompt: [{type: "text", text: "x"}]}), -32602, "Unknown session");
     });
 
-    it("delete closes and archives the thread", async () => {
+    it("delete closes and deletes the thread for real (Codex desktop's Delete)", async () => {
         const t = createTestAgent();
         await t.initialize();
         await t.openSession();
         await t.agent.deleteSession({sessionId: THREAD_ID});
         expect(t.codex.calls("thread/unsubscribe")).toHaveLength(1);
+        expect(t.codex.lastParams<{threadId: string}>("thread/delete")).toEqual({threadId: THREAD_ID});
+        expect(t.codex.calls("thread/archive")).toHaveLength(0);
+    });
+
+    it("declares the archive extension and archives / unarchives on the _codex/* surface", async () => {
+        const t = createTestAgent();
+        const init = await t.initialize();
+        expect((init.capabilities?._meta as {codex?: {archive?: boolean}})?.codex?.archive).toBe(true);
+        await t.openSession();
+        await t.agent.archiveSession({sessionId: THREAD_ID});
+        expect(t.codex.calls("thread/unsubscribe")).toHaveLength(1);
         expect(t.codex.lastParams<{threadId: string}>("thread/archive")).toEqual({threadId: THREAD_ID});
+        await t.agent.unarchiveSession({sessionId: THREAD_ID});
+        expect(t.codex.lastParams<{threadId: string}>("thread/unarchive")).toEqual({threadId: THREAD_ID});
+    });
+
+    it("session/list pages the archive only when _meta.codex.archived is true", async () => {
+        const t = createTestAgent();
+        t.codex.respond("thread/list", () => ({data: [thread()], nextCursor: null, backwardsCursor: null}));
+        await t.initialize();
+        const live = await t.agent.listSessions({});
+        expect(t.codex.lastParams<{archived?: boolean}>("thread/list").archived).toBeUndefined();
+        expect(live.sessions[0]?._meta).toEqual({codex: {archived: false}});
+        const archived = await t.agent.listSessions({_meta: {codex: {archived: true}}});
+        expect(t.codex.lastParams<{archived?: boolean}>("thread/list").archived).toBe(true);
+        expect(archived.sessions[0]?._meta).toEqual({codex: {archived: true}});
     });
 });
 

@@ -31,6 +31,8 @@ import type {
     SkillsListResponse,
     ThreadArchiveParams,
     ThreadArchiveResponse,
+    ThreadDeleteParams,
+    ThreadDeleteResponse,
     ThreadCompactStartParams,
     ThreadCompactStartResponse,
     ThreadForkParams,
@@ -46,6 +48,8 @@ import type {
     ThreadTurnsListParams,
     ThreadTurnsListResponse,
     ThreadUnsubscribeParams,
+    ThreadUnarchiveParams,
+    ThreadUnarchiveResponse,
     ThreadUnsubscribeResponse,
     ToolRequestUserInputParams,
     ToolRequestUserInputResponse,
@@ -354,6 +358,14 @@ export class AppServerClient {
 
     threadArchive(params: ThreadArchiveParams): Promise<ThreadArchiveResponse> {
         return this.send({method: "thread/archive", params});
+    }
+
+    threadUnarchive(params: ThreadUnarchiveParams): Promise<ThreadUnarchiveResponse> {
+        return this.send({method: "thread/unarchive", params});
+    }
+
+    threadDelete(params: ThreadDeleteParams): Promise<ThreadDeleteResponse> {
+        return this.send({method: "thread/delete", params});
     }
 
     threadUnsubscribe(params: ThreadUnsubscribeParams): Promise<ThreadUnsubscribeResponse> {
