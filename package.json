@@ -3,8 +3,8 @@
   "publishConfig": {
     "access": "public"
   },
-  "version": "0.1.0",
-  "description": "Independent ACP v2 adapter for the OpenAI Codex app-server",
+  "version": "0.2.0",
+  "description": "Native ACP v2 agent for the OpenAI Codex app-server",
   "packageManager": "bun@1.4.0",
   "engines": {
     "bun": ">=1.4.0"
@@ -36,13 +36,11 @@
     "package:win-x64": "cd dist/bin && zip codex-acp-v2-x64-windows.zip codex-acp-v2-x64-windows.exe",
     "package:win-arm64": "cd dist/bin && zip codex-acp-v2-arm64-windows.zip codex-acp-v2-arm64-windows.exe",
     "start": "bun src/index.ts",
-    "example:steering": "bun examples/steering.ts",
-    "example:steering:multistep": "bun examples/steering.ts",
     "generate-types": "codex app-server generate-ts --out src/app-server",
-    "test": "vitest run --no-file-parallelism --retry=2",
-    "test:e2e": "bun run build && RUN_E2E_TESTS=true vitest run --no-file-parallelism --retry=2 src/__tests__/CodexACPAgent/e2e",
+    "test": "vitest run --exclude src/__tests__/e2e.test.ts",
     "test:watch": "vitest",
-    "typecheck": "tsc --noEmit && tsc --noEmit -p examples/tsconfig.json"
+    "typecheck": "tsc --noEmit",
+    "test:e2e": "RUN_E2E_TESTS=true vitest run src/__tests__/e2e.test.ts"
   },
   "homepage": "https://github.com/nyssance/codex-acp-v2#readme",
   "bugs": {
@@ -52,7 +50,12 @@
     "type": "git",
     "url": "git+https://github.com/nyssance/codex-acp-v2.git"
   },
-  "keywords": [],
+  "keywords": [
+    "acp",
+    "agent-client-protocol",
+    "codex",
+    "openai"
+  ],
   "author": "NY",
   "license": "Apache-2.0",
   "type": "module",
@@ -67,7 +70,6 @@
     "@openai/codex": "^0.153.0",
     "diff": "^9.0.0",
     "open": "^11.0.2",
-    "vscode-jsonrpc": "^9.0.2",
-    "zod": "^4.5.4"
+    "vscode-jsonrpc": "^9.0.2"
   }
 }

@@ -1,153 +1,92 @@
 #!/usr/bin/env bun
 
 import * as acp from "@agentclientprotocol/sdk/experimental/v2";
-import {z} from "zod";
 import {Readable, Writable} from "node:stream";
-import {startCodexConnection} from "./CodexJsonRpcConnection";
-import {CodexAcpServer, type CodexProcessState} from "./CodexAcpServer";
-import {isCodexAuthRequest} from "./CodexAuthMethod";
-import {CodexAcpClient} from "./CodexAcpClient";
-import {CodexAppServerClient} from "./CodexAppServerClient";
 import packageJson from "../package.json";
-import {logger} from "./Logger";
-import {runLoginCommand} from "./login";
-import {runCodexCli} from "./CodexCli";
-import {
-    GOAL_CONTROL_METHOD,
-    SESSION_STEERING_METHOD,
-} from "./AcpExtensions";
-import {
-    CodexAcpV2Adapter,
-    createLegacyClientConnection,
-    V2SessionUpdateMapper,
-} from "./v2/CodexAcpV2Adapter";
+import {createAgentApp} from "./agent/createAgent";
+import {AppServerClient} from "./codex/AppServerClient";
+import {startCodexProcess} from "./codex/process";
+import type {JsonObject} from "./codex/sessionConfig";
+import {logger} from "./util/logger";
 
-const sessionSteerParamsParser = z.object({
-    sessionId: z.string(),
-    prompt: z.array(z.any()),
-}).passthrough();
+const CODEX_EXIT_GRACE_MS = 2_000;
 
-const goalControlParamsParser = z.discriminatedUnion("action", [
-    z.object({
-        sessionId: z.string(),
-        action: z.literal("set"),
-        objective: z.string().trim().min(1),
-    }).passthrough(),
-    z.object({
-        sessionId: z.string(),
-        action: z.enum(["pause", "resume", "clear"]),
-    }).passthrough(),
-]);
-
-if (process.argv.includes("--version")) {
+if (process.argv.includes("--version") || process.argv.includes("-v")) {
     console.log(`${packageJson.name} ${packageJson.version}`);
     process.exit(0);
 }
 
-if (process.argv[2] === "login") {
-    const args = process.argv.slice(3);
-    runLoginCommand(args)
-        .then((success) => process.exit(success ? 0 : 1))
-        .catch((error) => {
-            console.error("Login error:", error.message);
-            process.exit(1);
-        });
-} else if (process.argv[2] === "cli") {
-    const args = process.argv.slice(3);
-    runCodexCli(process.env["CODEX_PATH"], args)
-        .then((exitCode) => process.exit(exitCode))
-        .catch((error) => {
-            console.error("Codex CLI error:", error.message);
-            process.exit(1);
-        });
-} else {
-    startAcpV2Server();
+if (process.argv.includes("--help") || process.argv.includes("-h")) {
+    console.log(`${packageJson.name} ${packageJson.version}
+
+ACP v2 agent for the OpenAI Codex app-server. Speaks newline-delimited JSON-RPC on stdin/stdout.
+
+Environment:
+  CODEX_PATH          Codex executable (default: bundled @openai/codex)
+  CODEX_CONFIG        JSON object merged into every thread's Codex config
+  MODEL_PROVIDER      Codex model provider for new threads
+  INITIAL_AGENT_MODE  read-only | agent | agent-full-access (default: agent)
+  CODEX_API_KEY       API key for the api-key auth method (falls back to OPENAI_API_KEY)
+  NO_BROWSER          Hide the browser-based ChatGPT auth method
+  APP_SERVER_LOGS     Directory for the adapter log file`);
+    process.exit(0);
 }
 
-function startAcpV2Server(): void {
+startAgent();
+
+function startAgent(): void {
+    // stdout is the protocol channel; keep any stray console output off it.
+    console.log = console.error;
+    console.info = console.error;
+    console.warn = console.error;
+    console.debug = console.error;
+
     const codexPath = process.env["CODEX_PATH"];
-    const configString = process.env["CODEX_CONFIG"];
-    const authRequestString = process.env["DEFAULT_AUTH_REQUEST"];
+    const config = parseJsonObject(process.env["CODEX_CONFIG"], "CODEX_CONFIG");
     const modelProvider = process.env["MODEL_PROVIDER"];
-    const config = configString ? JSON.parse(configString) : undefined;
-    const parsedAuthRequest = authRequestString ? JSON.parse(authRequestString) : undefined;
-    const defaultAuthRequest = parsedAuthRequest && isCodexAuthRequest(parsedAuthRequest) ? parsedAuthRequest : undefined;
+    logger.log("starting", {name: packageJson.name, version: packageJson.version, codexPath: codexPath ?? null, modelProvider: modelProvider ?? null});
 
-    logger.log("ACP v2 startup", {
-        name: packageJson.name,
-        version: packageJson.version,
-        codexPath,
-        modelProvider: modelProvider ?? null,
-        codexConfig: config ?? null,
-    });
-
-    const codexProcessState: CodexProcessState = {
-        connection: startCodexConnection(codexPath),
-        codexPath,
-        config,
-        modelProvider,
-        stderr: "",
-    };
+    const codexProcess = startCodexProcess(codexPath);
+    const codex = new AppServerClient(codexProcess.connection);
 
     process.stdin.on("close", () => {
-        codexProcessState.connection.process.stdin.end();
+        codexProcess.process.stdin.end();
         setTimeout(() => {
-            if (!codexProcessState.connection.process.killed) {
-                logger.log("Codex still running 2s after stdin closed; terminating process");
-                codexProcessState.connection.process.kill();
+            if (codexProcess.exitCode() === null) {
+                logger.log("codex still running after stdin closed; terminating");
+                codexProcess.process.kill();
             }
-        }, 2000);
+        }, CODEX_EXIT_GRACE_MS).unref();
     });
 
-    const acpJsonStream = acp.ndJsonStream(
+    const stream = acp.ndJsonStream(
         Writable.toWeb(process.stdout),
         Readable.toWeb(process.stdin) as ReadableStream<Uint8Array>,
     );
-    let adapter: CodexAcpV2Adapter | null = null;
-    const getAdapter = (): CodexAcpV2Adapter => {
-        if (adapter === null) {
-            throw acp.RequestError.internalError("ACP v2 agent is not connected");
-        }
-        return adapter;
-    };
+    const app = createAgentApp({
+        codex,
+        process: codexProcess,
+        ...(config === undefined ? {} : {config}),
+        ...(modelProvider === undefined ? {} : {modelProvider}),
+        info: {name: packageJson.name, title: "Codex", version: packageJson.version},
+    });
+    const connection = app.connect(stream);
+    void connection.closed.then(() => {
+        logger.log("client connection closed");
+        codexProcess.process.stdin.end();
+    });
+}
 
-    acp.agent({name: packageJson.name})
-        .onConnect((connection) => {
-            const updateMapper = new V2SessionUpdateMapper();
-            const appServerClient = new CodexAppServerClient(codexProcessState.connection.connection);
-            const codexClient = new CodexAcpClient(appServerClient, config, modelProvider);
-            const legacyAgent = new CodexAcpServer(
-                createLegacyClientConnection(connection.client, updateMapper),
-                codexClient,
-                defaultAuthRequest,
-                undefined,
-                undefined,
-                codexProcessState,
-            );
-            const connectedAdapter = new CodexAcpV2Adapter(legacyAgent, connection.client, updateMapper);
-            adapter = connectedAdapter;
-            connection.signal.addEventListener("abort", () => {
-                if (adapter === connectedAdapter) {
-                    adapter = null;
-                }
-            });
-        })
-        .onRequest(acp.methods.agent.initialize, (ctx) => getAdapter().initialize(ctx.params))
-        .onRequest(acp.methods.agent.session.new, (ctx) => getAdapter().newSession(ctx.params))
-        .onRequest(acp.methods.agent.session.fork, (ctx) => getAdapter().forkSession(ctx.params))
-        .onRequest(acp.methods.agent.session.list, (ctx) => getAdapter().listSessions(ctx.params))
-        .onRequest(acp.methods.agent.session.delete, (ctx) => getAdapter().deleteSession(ctx.params))
-        .onRequest(acp.methods.agent.session.resume, (ctx) => getAdapter().resumeSession(ctx.params))
-        .onRequest(acp.methods.agent.session.close, (ctx) => getAdapter().closeSession(ctx.params))
-        .onRequest(acp.methods.agent.session.setConfigOption, (ctx) => getAdapter().setSessionConfigOption(ctx.params))
-        .onRequest(acp.methods.agent.auth.login, (ctx) => getAdapter().login(ctx.params, ctx.requestId))
-        .onRequest(acp.methods.agent.auth.logout, (ctx) => getAdapter().logout(ctx.params))
-        .onRequest(acp.methods.agent.providers.list, (ctx) => getAdapter().listProviders(ctx.params))
-        .onRequest(acp.methods.agent.providers.set, (ctx) => getAdapter().setProvider(ctx.params))
-        .onRequest(acp.methods.agent.providers.disable, (ctx) => getAdapter().disableProvider(ctx.params))
-        .onRequest(acp.methods.agent.session.prompt, (ctx) => getAdapter().prompt(ctx.params, ctx.signal))
-        .onNotification(acp.methods.agent.session.cancel, (ctx) => getAdapter().cancel(ctx.params))
-        .onRequest(SESSION_STEERING_METHOD, sessionSteerParamsParser, (ctx) => getAdapter().extMethod(SESSION_STEERING_METHOD, ctx.params))
-        .onRequest(GOAL_CONTROL_METHOD, goalControlParamsParser, (ctx) => getAdapter().extMethod(GOAL_CONTROL_METHOD, ctx.params))
-        .connect(acpJsonStream);
+function parseJsonObject(value: string | undefined, name: string): JsonObject | undefined {
+    if (!value) return undefined;
+    try {
+        const parsed: unknown = JSON.parse(value);
+        if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+            throw new Error("expected a JSON object");
+        }
+        return parsed as JsonObject;
+    } catch (error) {
+        console.error(`Invalid ${name}: ${error instanceof Error ? error.message : String(error)}`);
+        process.exit(2);
+    }
 }

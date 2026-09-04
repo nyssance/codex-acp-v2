@@ -27,5 +27,5 @@
     "noUncheckedSideEffectImports": true,
     "skipLibCheck": true,
   },
-  "exclude": [".claude", "examples"]
+  "exclude": [".claude", "dist", "node_modules"]
 }

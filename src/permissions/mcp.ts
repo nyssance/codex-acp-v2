@@ -1,12 +1,9 @@
-import type * as acp from "@agentclientprotocol/sdk";
+import type * as acp from "@agentclientprotocol/sdk/experimental/v2";
 import type {JsonValue} from "../app-server/serde_json/JsonValue";
-import type {
-    McpServerElicitationRequestParams,
-    McpServerElicitationRequestResponse,
-} from "../app-server/v2";
-import {optionPermissionMeta} from "./metadata";
-import {McpApprovalOptionId} from "./option-ids";
+import type {McpServerElicitationRequestParams, McpServerElicitationRequestResponse} from "../app-server/v2";
+import {ToolName} from "../bridge/toolCalls";
 import {isRecord} from "./json";
+import {permissionOption} from "./options";
 
 export type PersistValue = "session" | "always";
 
@@ -16,16 +13,22 @@ export type McpElicitationContext = {
     correlatedCallId: string | undefined;
 };
 
+export const McpOptionId = {
+    AllowOnce: "allow_once",
+    Accept: "accept",
+    AllowSession: "allow_session",
+    AllowAlways: "allow_always",
+    Decline: "decline",
+    Cancel: "cancel",
+} as const;
+
 export function parsePersistOptions(meta: unknown): Set<PersistValue> {
     const result = new Set<PersistValue>();
     if (!isRecord(meta)) return result;
     const persist = meta["persist"];
-    if (persist === "session") result.add("session");
-    else if (persist === "always") result.add("always");
-    else if (Array.isArray(persist)) {
-        if (persist.includes("session")) result.add("session");
-        if (persist.includes("always")) result.add("always");
-    }
+    const values = Array.isArray(persist) ? persist : [persist];
+    if (values.includes("session")) result.add("session");
+    if (values.includes("always")) result.add("always");
     return result;
 }
 
@@ -33,159 +36,109 @@ export function isMcpToolCallApproval(meta: unknown): boolean {
     return isRecord(meta) && meta["codex_approval_kind"] === "mcp_tool_call";
 }
 
-export function buildMcpPermissionOptions(
-    isToolApproval: boolean,
-    persistOptions: Set<PersistValue>,
-): acp.PermissionOption[] {
+export function mcpPermissionOptions(isToolApproval: boolean, persist: ReadonlySet<PersistValue>): acp.PermissionOption[] {
     const options: acp.PermissionOption[] = [permissionOption(
-        isToolApproval ? McpApprovalOptionId.AllowOnce : "accept",
+        isToolApproval ? McpOptionId.AllowOnce : McpOptionId.Accept,
         "Allow",
         "allow_once",
         isToolApproval ? "Run the tool and continue." : "Allow this request and continue.",
     )];
-    if (persistOptions.has("session")) {
-        options.push(permissionOption(
-            McpApprovalOptionId.AllowSession,
-            "Allow for this session",
-            "allow_always",
-            isToolApproval
-                ? "Run the tool and remember this choice for this session."
-                : "Allow this request and remember this choice for this session.",
-        ));
+    if (persist.has("session")) {
+        options.push(permissionOption(McpOptionId.AllowSession, "Allow for this session", "allow_always",
+            isToolApproval ? "Run the tool and remember this choice for this session." : "Allow this request and remember this choice for this session."));
     }
-    if (persistOptions.has("always")) {
-        options.push(permissionOption(
-            McpApprovalOptionId.AllowAlways,
-            "Always allow",
-            "allow_always",
-            isToolApproval
-                ? "Run the tool and remember this choice for future tool calls."
-                : "Allow this request and remember this choice for future requests.",
-        ));
+    if (persist.has("always")) {
+        options.push(permissionOption(McpOptionId.AllowAlways, "Always allow", "allow_always",
+            isToolApproval ? "Run the tool and remember this choice for future tool calls." : "Allow this request and remember this choice for future requests."));
     }
-    if (isToolApproval) {
-        options.push(permissionOption(
-            McpApprovalOptionId.Cancel,
-            "Cancel",
-            "reject_once",
-            "Cancel this tool call",
-        ));
-    } else {
-        options.push(
-            permissionOption(
-                McpApprovalOptionId.Decline,
-                "Deny",
-                "reject_once",
-                "Decline this request and continue.",
-            ),
-            permissionOption(McpApprovalOptionId.Cancel, "Cancel", "reject_once", "Cancel this request"),
-        );
+    if (!isToolApproval) {
+        options.push(permissionOption(McpOptionId.Decline, "Deny", "reject_once", "Decline this request and continue."));
     }
+    options.push(permissionOption(McpOptionId.Cancel, "Cancel", "reject_once", isToolApproval ? "Cancel this tool call." : "Cancel this request."));
     return options;
 }
 
-export function buildMcpPermissionRequest(
-    sessionId: string,
+/** Builds the permission request used when an MCP elicitation carries no form fields. */
+export function mcpPermissionRequest(
     params: McpServerElicitationRequestParams,
     context: McpElicitationContext,
     nextStandaloneToolCallId: () => string,
-): {request: acp.RequestPermissionRequest; correlatedCallId: string | undefined} {
-    const messageContent: acp.ToolCallContent = {
-        type: "content",
-        content: {type: "text", text: params.message},
-    };
-    const options = buildMcpPermissionOptions(context.isToolApproval, context.persistOptions);
-    if (params.mode === "form" || params.mode === "openai/form" || params.mode === "openaiForm") {
-        if (context.correlatedCallId !== undefined) {
-            return {
-                request: {
-                    sessionId,
-                    toolCall: {
-                        toolCallId: context.correlatedCallId,
-                        kind: "execute",
-                        status: "pending",
-                    },
-                    _meta: {is_mcp_tool_approval: true},
-                    options,
-                },
-                correlatedCallId: context.correlatedCallId,
-            };
-        }
+): Omit<acp.RequestPermissionRequest, "sessionId"> {
+    const message: acp.ToolCallContent = {type: "content", content: {type: "text", text: params.message}};
+    const options = mcpPermissionOptions(context.isToolApproval, context.persistOptions);
+    const title = context.isToolApproval ? `Allow MCP tool call on ${params.serverName}?` : `${params.serverName} requests approval`;
+    if (params.mode === "url") {
         return {
-            request: {
-                sessionId,
+            title,
+            description: params.message,
+            subject: {
+                type: "tool_call",
                 toolCall: {
-                    toolCallId: nextStandaloneToolCallId(),
-                    kind: context.isToolApproval ? "execute" : "other",
+                    toolCallId: `elicitation:${params.elicitationId}`,
+                    name: ToolName.Mcp,
+                    kind: "fetch",
                     status: "pending",
-                    content: [messageContent],
-                    rawInput: {serverName: params.serverName, schema: params.requestedSchema},
+                    title: `Open ${params.url}`,
+                    content: [message],
+                    rawInput: {serverName: params.serverName, url: params.url},
                 },
-                ...(context.isToolApproval ? {_meta: {is_mcp_tool_approval: true}} : {}),
-                options,
             },
-            correlatedCallId: undefined,
+            options,
+        };
+    }
+    if (context.correlatedCallId !== undefined) {
+        return {
+            title,
+            description: params.message,
+            subject: {type: "tool_call", toolCall: {toolCallId: context.correlatedCallId, status: "pending"}},
+            options,
         };
     }
     return {
-        request: {
-            sessionId,
+        title,
+        description: params.message,
+        subject: {
+            type: "tool_call",
             toolCall: {
-                toolCallId: `elicitation-${params.elicitationId}`,
-                kind: "fetch",
+                toolCallId: nextStandaloneToolCallId(),
+                name: ToolName.Mcp,
+                kind: context.isToolApproval ? "execute" : "other",
                 status: "pending",
-                content: [messageContent],
-                rawInput: {serverName: params.serverName, url: params.url},
+                title,
+                content: [message],
+                rawInput: {serverName: params.serverName, schema: params.requestedSchema},
             },
-            options,
         },
-        correlatedCallId: undefined,
+        options,
     };
 }
 
-export function convertMcpPermissionResponse(
+export function mcpPermissionResponse(
     response: acp.RequestPermissionResponse,
     isToolApproval: boolean,
-    persistOptions: ReadonlySet<PersistValue>,
+    persist: ReadonlySet<PersistValue>,
 ): McpServerElicitationRequestResponse {
-    if (response.outcome.outcome === "cancelled") return cancelledResponse();
-    switch (response.outcome.optionId) {
-        case McpApprovalOptionId.AllowSession:
-            return persistOptions.has("session")
-                ? {action: "accept", content: null, _meta: {persist: "session"}}
-                : cancelledResponse();
-        case McpApprovalOptionId.AllowAlways:
-            return persistOptions.has("always")
-                ? {action: "accept", content: null, _meta: {persist: "always"}}
-                : cancelledResponse();
-        case McpApprovalOptionId.AllowOnce:
-            return isToolApproval
-                ? {action: "accept", content: null, _meta: null}
-                : cancelledResponse();
-        case "accept":
-            return !isToolApproval
-                ? {action: "accept", content: null, _meta: null}
-                : cancelledResponse();
-        case McpApprovalOptionId.Decline:
-            return !isToolApproval
-                ? {action: "decline", content: null, _meta: null}
-                : cancelledResponse();
-        case McpApprovalOptionId.Cancel:
+    if (response.outcome.outcome !== "selected") return cancelled();
+    switch ((response.outcome as {optionId?: unknown}).optionId) {
+        case McpOptionId.AllowSession:
+            return persist.has("session") ? accepted({persist: "session"}) : cancelled();
+        case McpOptionId.AllowAlways:
+            return persist.has("always") ? accepted({persist: "always"}) : cancelled();
+        case McpOptionId.AllowOnce:
+            return isToolApproval ? accepted(null) : cancelled();
+        case McpOptionId.Accept:
+            return isToolApproval ? cancelled() : accepted(null);
+        case McpOptionId.Decline:
+            return isToolApproval ? cancelled() : {action: "decline", content: null, _meta: null};
         default:
-            return cancelledResponse();
+            return cancelled();
     }
 }
 
-function permissionOption(
-    optionId: string,
-    name: string,
-    kind: acp.PermissionOptionKind,
-    description: string,
-): acp.PermissionOption {
-    const meta = optionPermissionMeta(description);
-    return {optionId, name, kind, ...(meta ? {_meta: meta} : {})};
+function accepted(meta: JsonValue | null): McpServerElicitationRequestResponse {
+    return {action: "accept", content: null, _meta: meta};
 }
 
-function cancelledResponse(): McpServerElicitationRequestResponse {
-    return {action: "cancel", content: null, _meta: null as JsonValue | null};
+export function cancelled(): McpServerElicitationRequestResponse {
+    return {action: "cancel", content: null, _meta: null};
 }
