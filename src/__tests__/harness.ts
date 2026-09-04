@@ -265,7 +265,7 @@ export interface TestAgent {
     openSession(request?: Partial<acp.NewSessionRequest>): Promise<acp.NewSessionResponse>;
 }
 
-export function createTestAgent(options: {env?: NodeJS.ProcessEnv; catalog?: Model[]} = {}): TestAgent {
+export function createTestAgent(options: {env?: NodeJS.ProcessEnv; catalog?: Model[]; closeGraceMs?: number} = {}): TestAgent {
     const codex = new FakeCodexConnection();
     const client = new FakeClient();
     const catalog = options.catalog ?? [model()];
@@ -290,12 +290,15 @@ export function createTestAgent(options: {env?: NodeJS.ProcessEnv; catalog?: Mod
     codex.respond("turn/steer", () => ({turnId: TURN_ID}));
     codex.respond("mcpServerStatus/list", () => ({data: [], nextCursor: null}));
     codex.respond("account/logout", () => ({}));
+    codex.respond("review/start", () => ({turn: turn({id: "review-turn", status: "inProgress"}), reviewThreadId: THREAD_ID}));
+    codex.respond("account/login/cancel", () => ({status: "cancelled"}));
 
     const appServer = new AppServerClient(codex.asMessageConnection());
     const agent = new CodexAgent(client, {
         codex: appServer,
         info: {name: "codex-acp-v2-test", version: "0.0.0"},
         env: options.env ?? {},
+        ...(options.closeGraceMs === undefined ? {} : {closeGraceMs: options.closeGraceMs}),
     });
     const settle = async () => {
         for (let index = 0; index < 8; index += 1) {

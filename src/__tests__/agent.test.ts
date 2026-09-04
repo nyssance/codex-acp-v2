@@ -648,3 +648,163 @@ describe("providers", () => {
 it("exports the v2 SDK protocol version the agent speaks", () => {
     expect(acp.PROTOCOL_VERSION).toBe(2);
 });
+
+describe("remaining commands", () => {
+    it("runs /review inline and ends the turn from the review completion", async () => {
+        const t = createTestAgent();
+        await t.initialize();
+        await t.openSession();
+        await t.agent.prompt({sessionId: THREAD_ID, prompt: [{type: "text", text: "/review focus on tests"}]});
+        await t.settle();
+        expect(t.codex.lastParams<{target: unknown; delivery: string}>("review/start")).toMatchObject({threadId: THREAD_ID, target: {type: "custom", instructions: "focus on tests"}, delivery: "inline"});
+        expect(t.codex.calls("turn/start")).toHaveLength(0);
+        t.codex.emit({method: "turn/completed", params: {threadId: THREAD_ID, turn: turn({id: "review-turn"})}});
+        await t.settle();
+        expect(t.client.states()).toEqual(["running", "idle"]);
+        expect(t.client.updatesOf("state_update").at(-1)).toMatchObject({stopReason: "end_turn"});
+    });
+
+    it("answers /mcp and /skills from Codex and /logout through the account", async () => {
+        const t = createTestAgent();
+        t.codex.respond("mcpServerStatus/list", () => ({data: [{name: "srv", runtimeStatus: null, pluginId: null, serverInfo: null, tools: {a: {}, b: {}}, resources: [], resourceTemplates: [], authStatus: "unsupported"}], nextCursor: null}));
+        t.codex.respond("skills/list", () => ({data: [{cwd: CWD, skills: [{name: "deploy", description: "Ship it", path: "/s", scope: "user", enabled: true, pluginId: null}], errors: []}]}));
+        t.codex.respond("account/logout", () => {
+            setTimeout(() => t.codex.emit({method: "account/updated", params: {authMode: null, planType: null}}), 0);
+            return {};
+        });
+        await t.initialize();
+        await t.agent.newSession({cwd: CWD, mcpServers: [{type: "stdio", name: "local tool", command: "/bin/tool"}]});
+        await t.settle();
+        for (const command of ["/mcp", "/skills", "/logout"]) {
+            t.client.clear();
+            await t.agent.prompt({sessionId: THREAD_ID, prompt: [{type: "text", text: command}]});
+            await t.settle();
+            expect(t.client.states()).toEqual(["running", "idle"]);
+        }
+        const texts = () => t.client.updatesOf("agent_message_chunk").map(chunk => (chunk.content as {text: string}).text);
+        expect(texts().at(-1)).toBe("Logged out of the Codex account.");
+        expect(t.codex.calls("account/logout")).toHaveLength(1);
+        t.client.clear();
+        await t.agent.prompt({sessionId: THREAD_ID, prompt: [{type: "text", text: "/mcp"}]});
+        await t.settle();
+        expect(texts()[0]).toContain("- srv: 2 tools, 0 resources, auth=unsupported");
+        expect(texts()[0]).toContain("- local_tool");
+        t.client.clear();
+        await t.agent.prompt({sessionId: THREAD_ID, prompt: [{type: "text", text: "/skills"}]});
+        await t.settle();
+        expect(texts()[0]).toBe("Available skills:\n- deploy: Ship it");
+    });
+
+    it("shows rate limits in /status once Codex reports them", async () => {
+        const t = createTestAgent();
+        await t.initialize();
+        await t.openSession();
+        t.codex.emit({method: "account/rateLimits/updated", params: {rateLimits: {limitId: "weekly", limitName: "Weekly", primary: {usedPercent: 40, windowDurationMins: 10080, resetsAt: null}, secondary: null, credits: {hasCredits: true, unlimited: true, balance: null}, individualLimit: null, spendControlReached: null, planType: null, rateLimitReachedType: null}}});
+        await t.settle();
+        await t.agent.prompt({sessionId: THREAD_ID, prompt: [{type: "text", text: "/status"}]});
+        await t.settle();
+        const text = (t.client.updatesOf("agent_message_chunk")[0]?.content as {text: string}).text;
+        expect(text).toContain("**Weekly Weekly limit:** 60% left");
+        expect(text).toContain("**Weekly Credits:** unlimited");
+    });
+});
+
+describe("edge paths", () => {
+    it("fails steering with a clear error when Codex rejects it", async () => {
+        const t = createTestAgent();
+        t.codex.respond("turn/steer", () => {
+            throw new Error("turn not steerable");
+        });
+        await t.initialize();
+        await t.openSession();
+        await t.agent.prompt({sessionId: THREAD_ID, prompt: [{type: "text", text: "first"}]});
+        await t.settle();
+        await expectRejects(t.agent.prompt({sessionId: THREAD_ID, prompt: [{type: "text", text: "second"}]}), -32600, "Could not steer");
+    });
+
+    it("close synthesizes the turn end when Codex never answers the interrupt", async () => {
+        const t = createTestAgent({closeGraceMs: 50});
+        await t.initialize();
+        await t.openSession();
+        await t.agent.prompt({sessionId: THREAD_ID, prompt: [{type: "text", text: "stuck"}]});
+        await t.settle();
+        await t.agent.closeSession({sessionId: THREAD_ID});
+        expect(t.codex.calls("turn/interrupt")).toHaveLength(1);
+        expect(t.client.updatesOf("state_update").at(-1)).toMatchObject({state: "idle", stopReason: "cancelled"});
+        expect(t.codex.calls("thread/unsubscribe")).toHaveLength(1);
+    });
+
+    it("pages session/list with the client's cursor", async () => {
+        const t = createTestAgent();
+        t.codex.respond("thread/list", (params) => ({data: params.cursor === "p2" ? [thread({id: "t2"})] : [thread()], nextCursor: params.cursor === "p2" ? null : "p2", backwardsCursor: null}));
+        await t.initialize();
+        const first = await t.agent.listSessions({});
+        expect(first.nextCursor).toBe("p2");
+        const second = await t.agent.listSessions({cursor: "p2"});
+        expect(second.sessions.map(session => session.sessionId)).toEqual(["t2"]);
+        expect(second.nextCursor).toBeNull();
+        expect(t.codex.lastParams<{cwd?: string}>("thread/list").cwd).toBeUndefined();
+    });
+
+    it("logs in with a device code through a URL elicitation", async () => {
+        const t = createTestAgent();
+        t.codex.respond("account/read", () => ({account: null, requiresOpenaiAuth: true}));
+        t.codex.respond("account/login/start", () => {
+            setTimeout(() => t.codex.emit({method: "account/login/completed", params: {loginId: "login-1", success: true, error: null, onboardingEntrypoint: null}}), 20);
+            return {type: "chatgptDeviceCode", loginId: "login-1", verificationUrl: "https://auth.example/device", userCode: "ABCD-1234"};
+        });
+        t.client.elicitationResponder = () => ({action: "accept"});
+        await t.initialize({elicitation: {url: {}}});
+        await expect(t.agent.login({methodId: "chat-gpt-device-code"}, 7)).resolves.toEqual({});
+        const elicitation = t.client.requests.find(entry => entry.method === acp.methods.client.elicitation.create)?.params as {mode: string; requestId: unknown; url: string; message: string; elicitationId: string};
+        expect(elicitation).toMatchObject({mode: "url", requestId: 7, url: "https://auth.example/device", elicitationId: "login-1"});
+        expect(elicitation.message).toContain("ABCD-1234");
+        expect(t.client.notifications.find(entry => entry.method === acp.methods.client.elicitation.complete)?.params).toEqual({elicitationId: "login-1"});
+    });
+
+    it("cancels the device code login when the user declines the URL", async () => {
+        const t = createTestAgent();
+        t.codex.respond("account/read", () => ({account: null, requiresOpenaiAuth: true}));
+        t.codex.respond("account/login/start", () => ({type: "chatgptDeviceCode", loginId: "login-2", verificationUrl: "https://auth.example/device", userCode: "X"}));
+        t.client.elicitationResponder = () => ({action: "decline"});
+        await t.initialize({elicitation: {url: {}}});
+        await expectRejects(t.agent.login({methodId: "chat-gpt-device-code"}), -32000, "cancelled");
+        expect(t.codex.lastParams<{loginId: string}>("account/login/cancel")).toEqual({loginId: "login-2"});
+    });
+
+    it("skips the browser flow when Codex already has a ChatGPT account", async () => {
+        const t = createTestAgent();
+        await t.initialize();
+        await expect(t.agent.login({methodId: "chat-gpt"})).resolves.toEqual({});
+        expect(t.codex.calls("account/login/start")).toHaveLength(0);
+    });
+});
+
+describe("history inputs", () => {
+    it("renders images, mentions, and in-progress commands from history", async () => {
+        const t = createTestAgent();
+        t.codex.respond("thread/turns/list", () => ({nextCursor: null, backwardsCursor: null, data: [turn({items: [
+            {type: "userMessage", id: "u1", clientId: null, content: [
+                {type: "text", text: "look at", text_elements: []},
+                {type: "localImage", path: "/p/shot.png"},
+                {type: "mention", name: "README", path: "/p/README.md"},
+                {type: "skill", name: "deploy", path: "/s/deploy"},
+            ]},
+            {type: "commandExecution", id: "c1", pluginId: null, scriptPath: null, command: "sleep 9", cwd: CWD, processId: null, source: "agent", status: "inProgress", commandActions: [], aggregatedOutput: null, exitCode: null, durationMs: null},
+            {type: "webSearch", id: "w1", query: "acp", action: null, results: null},
+        ]})]}));
+        await t.initialize();
+        await t.agent.resumeSession({sessionId: THREAD_ID, cwd: CWD, replayFrom: {type: "start"}});
+        const user = t.client.updatesOf("user_message")[0];
+        expect(user?.content?.map(block => (block as {text: string}).text)).toEqual([
+            "look at",
+            "[@shot.png](file:///p/shot.png)",
+            "[@README](file:///p/README.md)",
+            "skill:deploy (/s/deploy)",
+        ]);
+        const kinds = t.client.updates().map(update => update.sessionUpdate);
+        expect(kinds).toEqual(["session_info_update", "user_message", "tool_call_update", "terminal_update", "tool_call_update"]);
+        expect(t.client.updatesOf("terminal_update")[0]).not.toHaveProperty("exitStatus");
+        expect(t.client.updatesOf("tool_call_update").at(-1)).toMatchObject({name: "web_search", title: "Web search: acp", status: "completed"});
+    });
+});

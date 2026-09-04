@@ -252,3 +252,44 @@ describe("approval ordering", () => {
         turnCompleted(t.codex);
     });
 });
+
+describe("elicitation edge cases", () => {
+    const toolApproval = {threadId: THREAD_ID, turnId: TURN_ID, serverName: "srv", mode: "form" as const, _meta: {codex_approval_kind: "mcp_tool_call", persist: ["always"]}, message: "Run tool?", requestedSchema: {type: "object" as const, properties: {}}};
+
+    it("maps a declined tool approval to cancel and honours only advertised persistence", async () => {
+        const t = await openPrompting();
+        t.client.permissionResponder = () => ({outcome: {outcome: "selected", optionId: "decline"}});
+        expect(await t.codex.serverRequest("mcpServer/elicitation/request", toolApproval)).toEqual({action: "cancel", content: null, _meta: null});
+        expect(t.client.permissionRequests()[0]?.options.map(option => option.optionId)).toEqual(["allow_once", "allow_always", "cancel"]);
+        t.client.permissionResponder = () => ({outcome: {outcome: "selected", optionId: "allow_session"}});
+        expect(await t.codex.serverRequest("mcpServer/elicitation/request", toolApproval)).toEqual({action: "cancel", content: null, _meta: null});
+        t.client.permissionResponder = () => ({outcome: {outcome: "selected", optionId: "allow_always"}});
+        expect(await t.codex.serverRequest("mcpServer/elicitation/request", toolApproval)).toEqual({action: "accept", content: null, _meta: {persist: "always"}});
+    });
+
+    it("treats openai/form message-only requests as approvals and declines non-tool ones properly", async () => {
+        const t = await openPrompting();
+        t.client.permissionResponder = () => ({outcome: {outcome: "selected", optionId: "decline"}});
+        const response = await t.codex.serverRequest("mcpServer/elicitation/request", {threadId: THREAD_ID, turnId: TURN_ID, serverName: "srv", mode: "openai/form", _meta: null, message: "Allow?", requestedSchema: {type: "object", properties: {}}});
+        expect(response).toEqual({action: "decline", content: null, _meta: null});
+        expect(t.client.permissionRequests()[0]?.options.map(option => option.optionId)).toEqual(["accept", "decline", "cancel"]);
+    });
+
+    it("falls back to a fetch permission for URLs when the client cannot open them", async () => {
+        const t = await openPrompting();
+        t.client.permissionResponder = () => ({outcome: {outcome: "selected", optionId: "accept"}});
+        const response = await t.codex.serverRequest("mcpServer/elicitation/request", {threadId: THREAD_ID, turnId: TURN_ID, serverName: "srv", mode: "url", _meta: null, message: "Sign in", url: "https://login", elicitationId: "e-9"});
+        expect(response).toEqual({action: "accept", content: null, _meta: null});
+        expect(t.client.permissionRequests()[0]).toMatchObject({subject: {toolCall: {toolCallId: "elicitation:e-9", kind: "fetch", rawInput: {url: "https://login"}}}});
+        expect(t.client.requests.filter(entry => entry.method === acp.methods.client.elicitation.create)).toHaveLength(0);
+    });
+
+    it("maps form decline and cancel back to Codex for MCP forms", async () => {
+        const t = await openPrompting({elicitation: {form: {}}});
+        const form = {threadId: THREAD_ID, turnId: TURN_ID, serverName: "srv", mode: "form" as const, _meta: null, message: "Pick", requestedSchema: {type: "object" as const, properties: {x: {type: "string" as const}}}};
+        t.client.elicitationResponder = () => ({action: "decline"});
+        expect(await t.codex.serverRequest("mcpServer/elicitation/request", form)).toEqual({action: "decline", content: null, _meta: null});
+        t.client.elicitationResponder = () => ({action: "cancel"});
+        expect(await t.codex.serverRequest("mcpServer/elicitation/request", form)).toEqual({action: "cancel", content: null, _meta: null});
+    });
+});

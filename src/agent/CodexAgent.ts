@@ -47,6 +47,8 @@ export interface CodexAgentOptions {
     modelProvider?: string;
     info: acp.Implementation;
     env?: NodeJS.ProcessEnv;
+    /** How long session/close waits for an interrupted turn before synthesizing its end. */
+    closeGraceMs?: number;
 }
 
 interface SessionRuntime {
@@ -81,6 +83,7 @@ export class CodexAgent {
     private readonly providers: ProviderRouting;
     private readonly info: acp.Implementation;
     private readonly env: NodeJS.ProcessEnv;
+    private readonly closeGraceMs: number;
     private readonly sessions = new Map<string, SessionRuntime>();
     private capabilities: ClientCapabilitySet | null = null;
     private codexInitialized = false;
@@ -92,6 +95,7 @@ export class CodexAgent {
         this.providers = new ProviderRouting(options.config ?? {}, options.modelProvider ?? null);
         this.info = options.info;
         this.env = options.env ?? process.env;
+        this.closeGraceMs = options.closeGraceMs ?? CLOSE_TURN_GRACE_MS;
         void this.process?.exited.then(() => this.handleCodexExit());
         this.codex.connection.onClose(() => this.handleCodexExit());
     }
@@ -469,7 +473,7 @@ export class CodexAgent {
         const turn = runtime.session.activeTurn;
         if (turn) {
             await this.interruptTurn(runtime, turn);
-            const timeout = new Promise<"timeout">(resolve => setTimeout(() => resolve("timeout"), CLOSE_TURN_GRACE_MS).unref());
+            const timeout = new Promise<"timeout">(resolve => setTimeout(() => resolve("timeout"), this.closeGraceMs).unref());
             if (await Promise.race([turn.finished.then(() => "finished" as const), timeout]) === "timeout" && turn.turnId) {
                 this.codex.resolveTurnInterrupted(turn.threadId, turn.turnId);
                 await turn.finished;
