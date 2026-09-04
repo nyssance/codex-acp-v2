@@ -27,7 +27,9 @@ compatibility layer: everything is written against `@agentclientprotocol/sdk/exp
 - **Tool calls as upserts**: `tool_call_update` only. Shell commands stream through
   ACP terminals (`terminal_update`, `terminal_output_chunk`); file changes carry v2
   diff content (`changes` + a `git_patch`); MCP, dynamic tools, web search, image
-  view/generation, compaction, sub-agents, and guardian reviews are all mapped.
+  view/generation, sub-agents, and guardian reviews are all mapped. Context compaction
+  is reported as `compaction_update` (SDK 1.4), and the user message Codex materializes
+  at turn start is reported as `user_message` so clients know where it landed in history.
 - **Permissions**: Codex command, file-change, sandbox-permission, and MCP approvals
   become `session/request_permission` with a `tool_call` subject. Every option maps
   back to the exact Codex decision it came from; anything else fails closed.
@@ -41,6 +43,16 @@ compatibility layer: everything is written against `@agentclientprotocol/sdk/exp
   `/plan`, `/status`, `/mcp`, `/skills`, `/logout`, plus `$skill` entries from Codex.
 
 See [`docs/protocol.md`](docs/protocol.md) for the exact wire contract.
+
+## Requirements
+
+- Codex CLI **0.153.0 or newer** — the app-server types under `src/app-server` are generated
+  from the `@openai/codex` release named in `optionalDependencies`, and the agent checks
+  `codex --version` before starting the server; an older Codex fails at startup with an
+  upgrade hint.
+- The Codex executable comes from `CODEX_PATH`, or from the optional `@openai/codex`
+  dependency when it is installed. Hosts that ship their own Codex set `CODEX_PATH` and
+  skip the optional dependency (`--omit optional`); nothing is downloaded at runtime.
 
 ## Installation
 

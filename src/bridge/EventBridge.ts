@@ -13,6 +13,7 @@ import {logger} from "../util/logger";
 import {toTokenCount} from "../util/tokens";
 import {terminalExited, terminalOutputChunk, terminalStarted, usesTerminal} from "./terminal";
 import * as tool from "./toolCalls";
+import {fromUserInput} from "../codex/sessionConfig";
 
 export type CompletedPlan = {itemId: string; text: string};
 
@@ -287,8 +288,14 @@ export class EventBridge {
                 this.subAgentActivities.add(item.id);
                 return [tool.subAgentActivity(item, "in_progress", true)];
             case "contextCompaction":
-                return [tool.compactionStarted(item)];
-            case "userMessage":
+                return [tool.compactionUpdate(item.id, "in_progress")];
+            case "userMessage": {
+                // ACP: the agent MUST report where the user message landed in session
+                // history. Codex materializes it as a userMessage item at turn start;
+                // its item id is the messageId a later replay reports under.
+                const content = item.content.flatMap(fromUserInput);
+                return content.length > 0 ? [{sessionUpdate: "user_message", messageId: item.id, content}] : [];
+            }
             case "hookPrompt":
             case "functionCallOutput":
             case "plan":
@@ -334,7 +341,7 @@ export class EventBridge {
             case "subAgentActivity":
                 return [tool.subAgentActivity(item, "completed", !this.subAgentActivities.delete(item.id))];
             case "contextCompaction":
-                return [tool.compactionCompleted(item)];
+                return [tool.compactionUpdate(item.id, "completed")];
             case "plan":
                 return await this.planCompleted(item);
             case "exitedReviewMode": {

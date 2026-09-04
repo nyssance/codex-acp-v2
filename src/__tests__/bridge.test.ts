@@ -152,11 +152,24 @@ describe("other tools", () => {
         expect(updates[3]).toMatchObject({name: "web_search", kind: "fetch", title: "Web search: acp spec", status: "in_progress"});
         expect(updates[4]).toMatchObject({toolCallId: "w1", title: "Open page: https://x", status: "completed", rawOutput: {results: [{url: "https://x"}]}});
         expect(updates[5]).toMatchObject({name: "view_image", kind: "read", status: "completed", locations: [{path: "/tmp/pic.png"}]});
-        expect(updates[6]).toMatchObject({name: "compact", kind: "think", status: "in_progress"});
-        expect(updates[7]).toMatchObject({toolCallId: "k1", status: "completed"});
-        expect(updates[8]).toMatchObject({name: "subagent", title: "Start subagent worker", status: "in_progress"});
-        expect(updates[9]).toMatchObject({toolCallId: "s1", status: "completed"});
-        expect((updates[9] as {name?: string}).name).toBeUndefined();
+        expect(updates[6]).toMatchObject({name: "subagent", title: "Start subagent worker", status: "in_progress"});
+        expect(updates[7]).toMatchObject({toolCallId: "s1", status: "completed"});
+        expect((updates[7] as {name?: string}).name).toBeUndefined();
+        // compaction is its own ACP v2 update, not a tool call
+        expect(t.client.updatesOf("compaction_update")).toMatchObject([
+            {sessionUpdate: "compaction_update", compactionId: "k1", status: "in_progress"},
+            {sessionUpdate: "compaction_update", compactionId: "k1", status: "completed"},
+        ]);
+    });
+
+    it("reports where the user message landed when Codex materializes it", async () => {
+        const t = await openPrompting();
+        itemStarted(t.codex, {type: "userMessage", id: "u1", clientId: null, content: [{type: "text", text: "make it work", text_elements: []}]});
+        itemCompleted(t.codex, {type: "userMessage", id: "u1", clientId: null, content: [{type: "text", text: "make it work", text_elements: []}]});
+        await t.settle();
+        expect(t.client.updatesOf("user_message")).toMatchObject([
+            {sessionUpdate: "user_message", messageId: "u1", content: [{type: "text", text: "make it work"}]},
+        ]);
     });
 
     it("ignores notifications for other threads", async () => {

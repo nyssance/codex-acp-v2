@@ -85,11 +85,13 @@ A failed turn emits an `agent_message_chunk` with the error text and
 | --- | --- |
 | `agent_message_chunk` | `item/agentMessage/delta`; `messageId` is the Codex item id; `_meta.codex.phase` is `commentary` or `final_answer`. Notices (warnings, model reroutes) use `_meta.codex.notice: true`. |
 | `agent_thought_chunk` | reasoning deltas, keyed by item id |
-| `user_message`, `agent_message`, `agent_thought` | history replay only |
+| `user_message` | history replay, and once per turn when Codex materializes the prompt as a `userMessage` item (its item id is the `messageId`) |
+| `agent_message`, `agent_thought` | history replay only |
 | `tool_call_update` | see below |
 | `terminal_update`, `terminal_output_chunk` | shell commands; `terminalId` equals the tool call id; data is base64 |
 | `plan_update` | `turn/plan/updated` → `{type: "items", planId: "codex-turn-plan"}`; plan-mode drafts → `{type: "markdown", planId: <item id>}` |
 | `usage_update` | `thread/tokenUsage/updated`: `used` = last turn total tokens, `size` = model context window |
+| `compaction_update` | `compactionId` = Codex `contextCompaction` item id; `in_progress` on item/started, `completed` on item/completed (history snapshots report `completed`). No `compaction_summary_chunk`: Codex exposes no summary text. |
 | `session_info_update` | `title` from Codex thread names, or the first prompt line as a fallback; `_meta.codex.retry` for transient errors Codex is retrying |
 | `available_commands_update` | built-in slash commands plus `$<skill>` entries |
 | `config_option_update` | after every `session/set_config_option` and `/plan` |
@@ -112,7 +114,6 @@ to status `cancelled`, and a cancelled turn marks every still-open tool call
 | `web_search` | `fetch` | web search |
 | `view_image` | `read` | image view |
 | `image_generation` | `other` | image generation; result as image content |
-| `compact` | `think` | context compaction |
 | `subagent`, `collab` | `other` | sub-agent activity and collaboration calls; `_meta.codex.subagent` / `_meta.codex.collaboration` |
 | `fuzzy_file_search` | `search` | Codex fuzzy file search sessions |
 | `guardian_review` | `think` | auto-approval reviews |

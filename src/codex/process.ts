@@ -1,5 +1,6 @@
-import {spawn, type ChildProcessWithoutNullStreams} from "node:child_process";
+import {spawn, spawnSync, type ChildProcessWithoutNullStreams} from "node:child_process";
 import {createRequire} from "node:module";
+import packageJson from "../../package.json";
 import type {Readable, Writable} from "node:stream";
 import * as rpc from "vscode-jsonrpc/node";
 import type {
@@ -26,15 +27,73 @@ export interface CodexProcess {
 const STDERR_RETAIN_BYTES = 8 * 1024;
 
 /**
+ * The oldest Codex this agent is written against: the app-server types under
+ * `src/app-server` are generated from exactly the `@openai/codex` release the
+ * optional dependency names (`bun run generate-types`), so that range is the
+ * single source of the floor. Older servers speak a schema no test here covers.
+ */
+export const MINIMUM_CODEX_VERSION = packageJson.optionalDependencies["@openai/codex"].replace(/^[\^~]/, "");
+
+/** The `codex --version` line is `codex-cli <semver>`; anything else is not a Codex CLI. */
+export function parseCodexVersion(output: string): [number, number, number] {
+    const match = /(\d+)\.(\d+)\.(\d+)/.exec(output);
+    if (match === null) throw new Error(`Could not read a Codex version from: ${output.trim() || "(empty output)"}`);
+    const [, major, minor, patch] = match;
+    return [Number(major), Number(minor), Number(patch)];
+}
+
+export function assertCodexVersion(output: string, minimum: string = MINIMUM_CODEX_VERSION): void {
+    const actual = parseCodexVersion(output);
+    const floor = parseCodexVersion(minimum);
+    const [actualMajor, actualMinor, actualPatch] = actual;
+    const [floorMajor, floorMinor, floorPatch] = floor;
+    const olderThanFloor = actualMajor !== floorMajor
+        ? actualMajor < floorMajor
+        : actualMinor !== floorMinor
+            ? actualMinor < floorMinor
+            : actualPatch < floorPatch;
+    if (olderThanFloor) {
+        throw new Error(
+            `Codex ${actual.join(".")} is older than the ${minimum} this agent is generated against; `
+            + "upgrade the Codex CLI (npm install -g @openai/codex or brew upgrade codex)",
+        );
+    }
+}
+
+/**
+ * One Codex launcher: the executable `CODEX_PATH` names, or the `@openai/codex`
+ * optional dependency when it is installed. Neither = fail loud; there is no
+ * silent download and no other place to look.
+ */
+export function resolveCodexLauncher(codexPath: string | undefined): {command: string; prefixArgs: string[]; shell: boolean} {
+    if (codexPath !== undefined) {
+        return process.platform === "win32"
+            ? {command: `"${codexPath}"`, prefixArgs: [], shell: true}
+            : {command: codexPath, prefixArgs: [], shell: false};
+    }
+    try {
+        return {command: process.execPath, prefixArgs: [createRequire(import.meta.url).resolve("@openai/codex/bin/codex.js")], shell: false};
+    } catch (error) {
+        throw new Error(
+            "No Codex CLI: set CODEX_PATH to an installed Codex executable, or install the optional "
+            + `@openai/codex dependency (${String(error)})`,
+        );
+    }
+}
+
+/**
  * Spawns `codex app-server` and wires a newline-delimited JSON-RPC connection to it.
- * `codexPath` overrides the bundled `@openai/codex` executable.
+ * `codexPath` overrides the bundled `@openai/codex` executable. The Codex version is
+ * checked first: a server older than the generated schema fails here, not mid-turn.
  */
 export function startCodexProcess(codexPath?: string, env: NodeJS.ProcessEnv = process.env): CodexProcess {
-    const child = codexPath
-        ? (process.platform === "win32"
-            ? spawn(`"${codexPath}" app-server`, {shell: true, env})
-            : spawn(codexPath, ["app-server"], {env}))
-        : spawn(process.execPath, [createRequire(import.meta.url).resolve("@openai/codex/bin/codex.js"), "app-server"], {env});
+    const launcher = resolveCodexLauncher(codexPath);
+    const probe = spawnSync(launcher.command, [...launcher.prefixArgs, "--version"], {shell: launcher.shell, env, encoding: "utf8"});
+    if (probe.error !== undefined) throw new Error(`Could not run Codex (${launcher.command}): ${probe.error.message}`);
+    assertCodexVersion(probe.stdout.length > 0 ? probe.stdout : probe.stderr);
+    const child = launcher.shell
+        ? spawn(`${launcher.command} app-server`, {shell: true, env})
+        : spawn(launcher.command, [...launcher.prefixArgs, "app-server"], {env});
 
     let stderr = "";
     child.stderr.on("data", (data: Buffer) => {

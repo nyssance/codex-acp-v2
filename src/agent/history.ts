@@ -90,7 +90,7 @@ function itemHistory(item: ThreadItem): acp.SessionUpdate[] {
         case "subAgentActivity":
             return [tool.subAgentActivity(item, "completed", true)];
         case "contextCompaction":
-            return [tool.compactionSnapshot(item)];
+            return [tool.compactionUpdate(item.id, "completed")];
         case "enteredReviewMode":
             return [];
         case "exitedReviewMode": {

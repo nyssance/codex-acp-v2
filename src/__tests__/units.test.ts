@@ -150,3 +150,15 @@ describe("ClientSession state reporting", () => {
         expect(link.states()).toEqual(["running", "requires_action", "running"]);
     });
 });
+
+describe("codex version floor", () => {
+    it("reads the semver out of `codex --version` and enforces the generated-schema floor", async () => {
+        const {assertCodexVersion, parseCodexVersion, MINIMUM_CODEX_VERSION} = await import("../codex/process");
+        expect(parseCodexVersion("codex-cli 0.153.0\n")).toEqual([0, 153, 0]);
+        expect(MINIMUM_CODEX_VERSION).toMatch(/^\d+\.\d+\.\d+$/);
+        expect(() => assertCodexVersion("codex-cli 0.153.0", "0.153.0")).not.toThrow();
+        expect(() => assertCodexVersion("codex-cli 0.160.2", "0.153.0")).not.toThrow();
+        expect(() => assertCodexVersion("codex-cli 0.149.1", "0.153.0")).toThrow("older than the 0.153.0");
+        expect(() => assertCodexVersion("not a codex", "0.153.0")).toThrow("Could not read a Codex version");
+    });
+});

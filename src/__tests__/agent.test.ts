@@ -473,7 +473,7 @@ describe("slash commands", () => {
         });
         await t.agent.prompt({sessionId: THREAD_ID, prompt: [{type: "text", text: "/compact"}]});
         await t.settle();
-        expect(t.client.updatesOf("tool_call_update").at(-1)).toMatchObject({toolCallId: "c1", status: "completed"});
+        expect(t.client.updatesOf("compaction_update").at(-1)).toMatchObject({sessionUpdate: "compaction_update", compactionId: "c1", status: "completed"});
         expect(t.client.states()).toEqual(["running", "idle"]);
     });
 

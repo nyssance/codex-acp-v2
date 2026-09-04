@@ -43,7 +43,6 @@ export const ToolName = {
     WebSearch: "web_search",
     ViewImage: "view_image",
     ImageGeneration: "image_generation",
-    Compact: "compact",
     SubAgent: "subagent",
     Collab: "collab",
     FuzzySearch: "fuzzy_file_search",
@@ -359,22 +358,13 @@ function imageGenerationContent(item: Item<"imageGeneration">): acp.ToolCallCont
     return content;
 }
 
-export function compactionStarted(item: Item<"contextCompaction">): ToolCallFrame {
-    return frame({
-        toolCallId: item.id,
-        name: ToolName.Compact,
-        title: "Compact conversation",
-        kind: "think",
-        status: "in_progress",
-    });
-}
-
-export function compactionCompleted(item: Item<"contextCompaction">): ToolCallFrame {
-    return frame({toolCallId: item.id, status: "completed"});
-}
-
-export function compactionSnapshot(item: Item<"contextCompaction">): ToolCallFrame {
-    return {...compactionStarted(item), status: "completed"};
+/**
+ * Context compaction is its own ACP v2 update (`compaction_update`, SDK 1.4), not a
+ * tool call: Codex's contextCompaction item id is the compactionId. Codex reports no
+ * summary text on the item, so no `compaction_summary_chunk` is emitted.
+ */
+export function compactionUpdate(compactionId: string, status: "in_progress" | "completed"): acp.SessionUpdate {
+    return {sessionUpdate: "compaction_update", compactionId, status};
 }
 
 // ---- sub-agents ----------------------------------------------------------------
