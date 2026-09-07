@@ -1,15 +1,16 @@
+import {existsSync} from "node:fs";
+import path from "node:path";
 import {spawn, spawnSync, type ChildProcessWithoutNullStreams} from "node:child_process";
 import {createRequire} from "node:module";
 import packageJson from "../../package.json";
-import * as rpc from "vscode-jsonrpc/node";
 import type {MessageConnection} from "vscode-jsonrpc/node";
-import {createReader, createWriter} from "./transport";
+import {createCodexConnection} from "./transport";
 import {logger} from "../util/logger";
 
 export interface CodexProcess {
     readonly connection: MessageConnection;
     readonly process: ChildProcessWithoutNullStreams;
-    /** Resolves with the exit code once the Codex process is gone. */
+    /** Resolves after process exit, pipe closure, and dispatch of buffered stdout. */
     readonly exited: Promise<number | null>;
     /** Last few KB of stderr, for diagnostics when the process dies. */
     recentStderr(): string;
@@ -64,7 +65,23 @@ export function resolveCodexLauncher(codexPath: string | undefined): {command: s
             : {command: codexPath, prefixArgs: [], shell: false};
     }
     try {
-        return {command: process.execPath, prefixArgs: [createRequire(import.meta.url).resolve("@openai/codex/bin/codex.js")], shell: false};
+        const require = createRequire(import.meta.url);
+        const launcher = require.resolve("@openai/codex/bin/codex.js");
+        const platformRequire = createRequire(launcher);
+        const targets: Record<string, string> = {
+            "linux-x64": "x86_64-unknown-linux-musl", "linux-arm64": "aarch64-unknown-linux-musl",
+            "darwin-x64": "x86_64-apple-darwin", "darwin-arm64": "aarch64-apple-darwin",
+            "win32-x64": "x86_64-pc-windows-msvc", "win32-arm64": "aarch64-pc-windows-msvc",
+        };
+        const platform = `${process.platform}-${process.arch}`;
+        const target = targets[platform];
+        if (!target) throw new Error(`Unsupported Codex platform: ${platform}`);
+        let vendor = path.resolve(path.dirname(launcher), "..", "vendor");
+        try { vendor = path.join(path.dirname(platformRequire.resolve(`@openai/codex-${platform}/package.json`)), "vendor"); } catch {}
+        const command = path.join(vendor, target, "bin", process.platform === "win32" ? "codex.exe" : "codex");
+        if (!existsSync(command)) throw new Error(`Missing Codex platform binary: ${command}`);
+        // A compiled adapter's execPath is itself, not a JS runtime. Spawn the native binary directly.
+        return {command, prefixArgs: [], shell: false};
     } catch (error) {
         throw new Error(
             "No Codex CLI: set CODEX_PATH to an installed Codex executable, or install the optional "
@@ -93,11 +110,13 @@ export function startCodexProcess(codexPath?: string, env: NodeJS.ProcessEnv = p
         logger.log("[codex stderr]", {data: data.toString()});
     });
 
-    const connection = rpc.createMessageConnection(createReader(child.stdout), createWriter(child.stdin));
+    const {connection, drained} = createCodexConnection(child.stdout, child.stdin);
     connection.listen();
+    void drained.then(() => connection.dispose());
     const exited = new Promise<number | null>((resolve) => {
-        child.on("exit", (code, signal) => {
+        child.on("close", async (code, signal) => {
             logger.log("codex exited", {code, signal});
+            await drained;
             connection.dispose();
             resolve(code);
         });

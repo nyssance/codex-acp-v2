@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "timestamp": "2026-09-07T06:37:37.489Z",
+  "environment": {
+    "platform": "darwin",
+    "arch": "arm64",
+    "runtime": "v26.8.1",
+    "cpu": "Apple M4 Pro"
+  },
+  "workload": {
+    "turns": 500,
+    "chunksPerTurn": 200,
+    "bytesPerChunk": 144,
+    "interruptedTurns": 100
+  },
+  "durationMs": 386.62266700000004,
+  "chunksPerSecond": 258650.1220322915,
+  "turnLatencyMs": {
+    "p50": 0.23575000000005275,
+    "p95": 0.7382920000000013,
+    "max": 4.130291
+  },
+  "heapSamplesBytes": [
+    61192816,
+    88761736,
+    81771352,
+    115710704,
+    124098368,
+    121493032,
+    127505864,
+    128831032,
+    138418152,
+    165490776
+  ],
+  "scope": "In-process adapter plus client validation; excludes model/network/stdio latency. Heap samples are observational, without forced GC."
+}

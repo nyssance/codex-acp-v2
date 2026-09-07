@@ -39,6 +39,12 @@ export class ProviderRouting {
         private readonly configuredProvider: string | null,
     ) {}
 
+    copy(): ProviderRouting {
+        const copy = new ProviderRouting(this.baseConfig, this.configuredProvider);
+        copy.gateway = this.gateway;
+        return copy;
+    }
+
     get active(): Gateway | null {
         return this.gateway;
     }

@@ -1,0 +1,26 @@
+{
+  "scope": "Isolated EventBridge and ClientSession with schema-validating sink; forced GC; excludes CodexAgent, RPC, network and inference",
+  "runtime": "v26.3.0",
+  "platform": "darwin",
+  "arch": "arm64",
+  "rounds": 5000,
+  "interruptedRounds": 1000,
+  "chunks": 500000,
+  "durationMs": 1389.7099159999998,
+  "frames": 545700,
+  "before": {
+    "rss": 135020544,
+    "heapTotal": 25397248,
+    "heapUsed": 23682403,
+    "external": 3488675,
+    "arrayBuffers": 0
+  },
+  "after": {
+    "rss": 224444416,
+    "heapTotal": 52527104,
+    "heapUsed": 24109387,
+    "external": 3874603,
+    "arrayBuffers": 0
+  },
+  "heapGrowthBytes": 426984
+}

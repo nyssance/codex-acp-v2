@@ -3,7 +3,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import readline from "node:readline";
-import {afterAll, beforeAll, describe, expect, it} from "vitest";
+import {afterAll, afterEach, beforeAll, describe, expect, it} from "vitest";
+import {ProtocolOracle} from "./protocolOracle";
 import {startFakeGateway, type FakeGateway} from "./fakeGateway";
 
 /**
@@ -25,6 +26,7 @@ class StdioClient {
     private readonly pending = new Map<number, (message: Message) => void>();
     private nextId = 1;
     readonly updates: Update[] = [];
+    readonly oracle = new ProtocolOracle();
     readonly permissionRequests: any[] = [];
     private readonly waiters = new Set<(update: Update) => void>();
     permissionResponder: (request: any) => {outcome: "selected"; optionId: string} | {outcome: "cancelled"} = (request) => {
@@ -84,10 +86,11 @@ class StdioClient {
     }
 
     text(mark: number, sessionId: string): string {
-        return this.since(mark, sessionId)
-            .filter(update => update.sessionUpdate === "agent_message_chunk" && !update._meta?.codex?.notice)
-            .map(update => update.content.text as string)
-            .join("");
+        const reducer = new ProtocolOracle();
+        for (const update of this.since(mark, sessionId)) {
+            if (!update._meta?.codex?.notice) reducer.accept(sessionId, update);
+        }
+        return [...reducer.messages.values()].join("");
     }
 
     close(): void {
@@ -103,6 +106,7 @@ class StdioClient {
         }
         if (message.method === "session/update") {
             const update = {sessionId: message.params.sessionId, ...message.params.update} as Update;
+            this.oracle.accept(update.sessionId, update);
             this.updates.push(update);
             for (const waiter of [...this.waiters]) waiter(update);
             return;
@@ -132,6 +136,10 @@ describe.skipIf(!RUN)("live codex", {timeout: 240_000}, () => {
         if (process.env["CODEX_API_KEY"] || process.env["OPENAI_API_KEY"]) {
             await client.call("auth/login", {methodId: "api-key"});
         }
+    });
+
+    afterEach(() => {
+        expect(client.oracle.issues).toEqual([]);
     });
 
     afterAll(() => {
@@ -218,13 +226,19 @@ describe.skipIf(!RUN)("live codex", {timeout: 240_000}, () => {
     it("routes a session through a client-configured gateway", async () => {
         const gateway: FakeGateway = await startFakeGateway({token: "e2e-token", reply: "pong from the fake gateway"});
         try {
-            await client.call("providers/set", {
+            const providerRequest = {
                 providerId: "openai",
                 apiType: "openai",
                 baseUrl: gateway.baseUrl,
                 headers: {authorization: "Bearer e2e-token"},
                 _meta: {alwith: {model: "fake-model", models: [{id: "fake-model", label: "Fake model"}]}},
-            });
+            };
+            const empty = await client.call("session/new", {cwd, mcpServers: []});
+            await expect(client.call("providers/set", providerRequest)).rejects.toThrow("Cannot reload this session's history");
+            expect((await client.call("providers/list", {})).providers[0].current.baseUrl).toBe("https://api.openai.com/v1");
+            await client.call("session/close", {sessionId: empty.sessionId});
+            const existing = await client.call("session/new", {cwd, mcpServers: [], _meta: {codex: {seedHistory: [{role: "user", text: "Earlier context for the gateway routing test."}]}}});
+            await client.call("providers/set", providerRequest);
             const listed = await client.call("providers/list", {});
             expect(listed.providers[0].current.baseUrl).toBe(gateway.baseUrl);
             const created = await client.call("session/new", {cwd, mcpServers: []});
@@ -236,8 +250,19 @@ describe.skipIf(!RUN)("live codex", {timeout: 240_000}, () => {
             expect(idle.stopReason).toBe("end_turn");
             expect(client.text(mark, sessionId)).toBe("pong from the fake gateway");
             expect(gateway.requests.map(request => [request.path, request.authorization, request.body["model"]])).toEqual([["/v1/responses", "Bearer e2e-token", "fake-model"]]);
+            const existingMark = client.mark();
+            await client.call("session/prompt", {sessionId: existing.sessionId, prompt: [{type: "text", text: "ping existing session"}]});
+            expect((await client.idle(existing.sessionId, 60_000, existingMark)).stopReason).toBe("end_turn");
+            expect(client.text(existingMark, existing.sessionId)).toBe("pong from the fake gateway");
+            expect(gateway.requests).toHaveLength(2);
             await client.call("session/close", {sessionId});
             await client.call("providers/disable", {providerId: "openai"});
+            const nativeMark = client.mark();
+            await client.call("session/prompt", {sessionId: existing.sessionId, prompt: [{type: "text", text: "Reply with exactly: native route restored"}]});
+            const nativeIdle = await client.idle(existing.sessionId, TURN_TIMEOUT_MS, nativeMark);
+            expect(nativeIdle.stopReason, client.text(nativeMark, existing.sessionId)).toBe("end_turn");
+            expect(gateway.requests).toHaveLength(2);
+            await client.call("session/close", {sessionId: existing.sessionId});
             expect((await client.call("providers/list", {})).providers[0].current.baseUrl).toBe("https://api.openai.com/v1");
         } finally {
             await gateway.close();

@@ -20,9 +20,9 @@ describe("command execution", () => {
         itemCompleted(t.codex, {...item, status: "completed", aggregatedOutput: "file\n", exitCode: 0, durationMs: 12});
         await t.settle();
         const updates = t.client.updates();
-        expect(updates.map(update => update.sessionUpdate)).toEqual(["tool_call_update", "terminal_update", "terminal_output_chunk", "terminal_update", "tool_call_update"]);
-        expect(updates[0]).toMatchObject({name: "shell", title: "ls -la", kind: "execute", status: "in_progress", content: [{type: "terminal", terminalId: "c1"}], rawInput: {command: "/bin/zsh -lc 'ls -la'", cwd: CWD}});
-        expect(updates[1]).toMatchObject({terminalId: "c1", command: "/bin/zsh -lc 'ls -la'", cwd: CWD});
+        expect(updates.map(update => update.sessionUpdate)).toEqual(["terminal_update", "tool_call_update", "terminal_output_chunk", "terminal_update", "tool_call_update"]);
+        expect(updates[1]).toMatchObject({name: "shell", title: "ls -la", kind: "execute", status: "in_progress", content: [{type: "terminal", terminalId: "c1"}], rawInput: {command: "/bin/zsh -lc 'ls -la'", cwd: CWD}});
+        expect(updates[0]).toMatchObject({terminalId: "c1", command: "/bin/zsh -lc 'ls -la'", cwd: CWD});
         expect(updates[2]).toMatchObject({terminalId: "c1", data: Buffer.from("file\n").toString("base64")});
         expect(updates[3]).toMatchObject({terminalId: "c1", exitStatus: {exitCode: 0, signal: null}, output: {data: Buffer.from("file\n").toString("base64")}});
         expect(updates[4]).toMatchObject({toolCallId: "c1", status: "completed", rawOutput: {output: "file\n", exitCode: 0, durationMs: 12}});

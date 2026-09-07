@@ -127,6 +127,7 @@ export class AppServerClient {
     private readonly earlyTurnCompletions = new Map<string, TurnCompletedNotification>();
     private readonly startingThreads = new Map<string, number>();
     private startingReviews = 0;
+    private modelCatalog: {expires: number; pending: Promise<Model[]>} | null = null;
     private readonly mcpStartupStates = new Map<string, McpStartupSnapshot>();
     private readonly mcpStartupWaiters: McpStartupWaiter[] = [];
     private readonly notificationWaiters: NotificationWaiter[] = [];
@@ -164,6 +165,8 @@ export class AppServerClient {
             return handler ? await handler.handleUserInput(params) : {answers: {}};
         });
     }
+
+    get disconnectSignal(): AbortSignal { return this.disconnected.signal; }
 
     // ---- thread routing -------------------------------------------------
 
@@ -227,7 +230,16 @@ export class AppServerClient {
         }
     }
 
+    private readonly observers = new Set<NotificationHandler>();
+
+    observeNotifications(handler: NotificationHandler): () => void {
+        this.observers.add(handler);
+        return () => {this.observers.delete(handler);};
+    }
+
     private dispatchNotification(notification: ServerNotification): void {
+        if (notification.method === "account/updated") this.modelCatalog = null;
+        for (const observer of this.observers) observer(notification);
         if (this.notificationWaiters.length > 0) {
             const remaining: NotificationWaiter[] = [];
             for (const waiter of this.notificationWaiters) {
@@ -298,11 +310,18 @@ export class AppServerClient {
             this.earlyTurnCompletions.delete(key);
             return Promise.resolve(early);
         }
-        const completed = new Promise<TurnCompletedNotification>((resolve) => {
-            this.turnCompletionWaiters.set(key, resolve);
+        const lifetime = signal ? AbortSignal.any([signal, this.disconnected.signal]) : this.disconnected.signal;
+        return new Promise<TurnCompletedNotification>((resolve, reject) => {
+            const cleanup = () => {
+                lifetime.removeEventListener("abort", aborted);
+                this.turnCompletionWaiters.delete(key);
+            };
+            const aborted = () => { cleanup(); reject(lifetime.reason); };
+            if (lifetime.aborted) { reject(lifetime.reason); return; }
+            lifetime.addEventListener("abort", aborted, {once: true});
+            // Remove the abort listener synchronously with delivery, before EOF can win.
+            this.turnCompletionWaiters.set(key, event => { cleanup(); resolve(event); });
         });
-        return abortable(completed, signal ? AbortSignal.any([signal, this.disconnected.signal]) : this.disconnected.signal)
-            .finally(() => this.turnCompletionWaiters.delete(key));
     }
 
     /** Synthesizes an interrupted completion, for when Codex can no longer deliver one. */
@@ -477,13 +496,29 @@ export class AppServerClient {
     }
 
     /** Fetches every page of the model catalog. */
-    async allModels(): Promise<Model[]> {
+    invalidateModels(): void { this.modelCatalog = null; }
+
+    allModels(refresh = false): Promise<Model[]> {
+        if (!refresh && this.modelCatalog && this.modelCatalog.expires > performance.now()) return this.modelCatalog.pending;
+        const pending = this.loadModels();
+        const entry = {expires: performance.now() + 30_000, pending};
+        this.modelCatalog = entry;
+        void pending.catch(() => {if (this.modelCatalog === entry) this.modelCatalog = null;});
+        return pending;
+    }
+
+    private async loadModels(): Promise<Model[]> {
         const models: Model[] = [];
+        const cursors = new Set<string>();
         let cursor: string | null = null;
         do {
             const page: ModelListResponse = await this.modelList({cursor, limit: null});
             models.push(...page.data);
             cursor = page.nextCursor;
+            if (cursor) {
+                if (cursors.has(cursor)) throw new Error("Codex model/list returned a repeated pagination cursor; retry after restarting Codex");
+                cursors.add(cursor);
+            }
         } while (cursor);
         return models;
     }

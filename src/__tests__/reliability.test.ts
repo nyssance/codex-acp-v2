@@ -181,6 +181,7 @@ describe("close deadlines", () => {
         await t.openSession();
         const skills = deferred<{data: []}>();
         t.codex.respond("skills/list", () => skills.promise);
+        t.codex.emit({method: "skills/changed", params: {}});
         await t.agent.prompt({sessionId: THREAD_ID, prompt: [{type: "text", text: "work"}]});
         await t.settle();
         await t.agent.cancel({sessionId: THREAD_ID});

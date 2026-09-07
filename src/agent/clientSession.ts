@@ -20,6 +20,9 @@ export class ClientSession {
     private turnActive = false;
     private turnGeneration = 0;
     private disposed = false;
+    private readonly output = new AbortController();
+    private terminalAttempted = false;
+    get signal(): AbortSignal { return this.output.signal; }
 
     constructor(
         readonly sessionId: string,
@@ -29,7 +32,7 @@ export class ClientSession {
 
     async update(update: acp.SessionUpdate): Promise<void> {
         if (this.disposed) return;
-        await this.link.notify(acp.methods.client.session.update, {sessionId: this.sessionId, update});
+        await abortable(this.link.notify(acp.methods.client.session.update, {sessionId: this.sessionId, update}), this.output.signal);
     }
 
     async updateAll(updates: readonly acp.SessionUpdate[]): Promise<void> {
@@ -40,36 +43,41 @@ export class ClientSession {
         request: Omit<acp.RequestPermissionRequest, "sessionId">,
         signal?: AbortSignal,
     ): Promise<acp.RequestPermissionResponse> {
-        signal?.throwIfAborted();
+        signal = signal ? AbortSignal.any([signal, this.output.signal]) : this.output.signal;
+        signal.throwIfAborted();
         return await this.waitingOnClient(() => {
+            signal?.throwIfAborted();
             const pending = this.link.request(
                 acp.methods.client.session.requestPermission,
                 {sessionId: this.sessionId, ...request},
                 signal ? {cancellationSignal: signal} : undefined,
             );
             return signal ? abortable(pending, signal) : pending;
-        });
+        }, signal);
     }
 
     async createElicitation(request: acp.CreateElicitationRequest, signal?: AbortSignal): Promise<acp.CreateElicitationResponse> {
-        signal?.throwIfAborted();
+        signal = signal ? AbortSignal.any([signal, this.output.signal]) : this.output.signal;
+        signal.throwIfAborted();
         return await this.waitingOnClient(() => {
+            signal?.throwIfAborted();
             const pending = this.link.request(
                 acp.methods.client.elicitation.create,
                 request,
                 signal ? {cancellationSignal: signal} : undefined,
             );
             return signal ? abortable(pending, signal) : pending;
-        });
+        }, signal);
     }
 
     async completeElicitation(elicitationId: string): Promise<void> {
         if (this.disposed) return;
-        await this.link.notify(acp.methods.client.elicitation.complete, {elicitationId});
+        await abortable(this.link.notify(acp.methods.client.elicitation.complete, {elicitationId}), this.output.signal);
     }
 
     /** Foreground work started: report `running` (fire-and-forget, the frame is already queued). */
     reportRunning(): void {
+        this.terminalAttempted = false;
         this.turnGeneration += 1;
         this.turnActive = true;
         this.waiting = 0;
@@ -77,6 +85,8 @@ export class ClientSession {
     }
 
     async reportIdle(stopReason: acp.StopReason, extra?: {usage?: acp.Usage | null; _meta?: Record<string, unknown>}): Promise<void> {
+        if (this.terminalAttempted) return;
+        this.terminalAttempted = true;
         this.turnActive = false;
         this.waiting = 0;
         await this.update({
@@ -88,18 +98,20 @@ export class ClientSession {
         });
     }
 
-    private async waitingOnClient<T>(operation: () => Promise<T>): Promise<T> {
+    private async waitingOnClient<T>(operation: () => Promise<T>, signal?: AbortSignal): Promise<T> {
         if (this.disposed) throw new Error("Session is closed");
         // An old request may resolve after idle and after a new turn has started.
         const generation = this.turnActive ? this.turnGeneration : null;
-        if (generation !== null && this.waiting++ === 0) {
-            await this.state({sessionUpdate: "state_update", state: "requires_action"});
-        }
         try {
+            if (generation !== null && this.waiting++ === 0) {
+                const pending = this.state({sessionUpdate: "state_update", state: "requires_action"});
+                await (signal ? abortable(pending, signal) : pending);
+            }
             return await operation();
         } finally {
             if (this.turnActive && generation === this.turnGeneration && --this.waiting === 0) {
-                await this.state({sessionUpdate: "state_update", state: "running"});
+                const pending = this.state({sessionUpdate: "state_update", state: "running"});
+                await (signal ? abortable(pending, signal).catch(() => {}) : pending);
             }
         }
     }
@@ -114,6 +126,7 @@ export class ClientSession {
 
     dispose(): void {
         this.disposed = true;
+        this.output.abort();
         this.turnActive = false;
         this.waiting = 0;
     }

@@ -10,7 +10,11 @@ permissions: {}
 
 jobs:
   ci:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     permissions:
       contents: read
     steps:
@@ -24,5 +28,12 @@ jobs:
         run: bun run typecheck
       - name: Run unit tests
         run: bun run test
+      - name: Build native smoke binary
+        run: bun build src/index.ts --compile --outfile dist/codex-acp-smoke
+      - name: Verify compiled stdio
+        env:
+          SMOKE_BINARY: dist/codex-acp-smoke${{ runner.os == 'Windows' && '.exe' || '' }}
+        run: bun x vitest run src/__tests__/stdio.test.ts
       - name: Bundle binaries
+        if: runner.os == 'Linux'
         run: bun run bundle:all

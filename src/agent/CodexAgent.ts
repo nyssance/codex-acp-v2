@@ -1,3 +1,5 @@
+import type {ThreadItem} from "../app-server/v2";
+import {classifyTurnError} from "./turnErrors";
 import * as acp from "@agentclientprotocol/sdk/experimental/v2";
 import type {JsonValue} from "../app-server/serde_json/JsonValue";
 import path from "node:path";
@@ -32,12 +34,12 @@ import {TurnContext} from "../permissions/turnContext";
 import {errorMessage, logger} from "../util/logger";
 import {toAcpUsage} from "../util/tokens";
 import {abortable} from "../util/abort";
-import {authMethods, authRequired, login, logout} from "./auth";
+import {authMethods, login, logout} from "./auth";
 import {ClientSession, type ClientCapabilitySet, type ClientLink} from "./clientSession";
 import {availableCommands, mcpMessage, parseCommand, resolveCommand, skillsMessage, statusMessage} from "./commands";
 import {applyConfigOption, sessionConfigOptions} from "./configOptions";
 import {historyTitle, historyUpdates} from "./history";
-import {ProviderRouting} from "./providers";
+import {OPENAI_PROVIDER_ID, ProviderRouting} from "./providers";
 import {createActiveTurn, type ActiveTurn, type Session} from "./session";
 
 export interface CodexAgentOptions {
@@ -49,11 +51,14 @@ export interface CodexAgentOptions {
     modelProvider?: string;
     info: acp.Implementation;
     env?: NodeJS.ProcessEnv;
-    /** How long session/close waits for an interrupted turn before synthesizing its end. */
+    /** Total local close budget, including turn finalization and remote unsubscribe. */
     closeGraceMs?: number;
 }
 
 interface SessionRuntime {
+    config: JsonObject;
+    modelProvider: string | null;
+    stale: boolean;
     session: Session;
     client: ClientSession;
     bridge: EventBridge;
@@ -72,7 +77,6 @@ type OpenRequest =
 const CLOSE_TURN_GRACE_MS = 5_000;
 const HISTORY_PAGE_SIZE = 50;
 /** Custom stop reason (`_`-prefixed per ACP extensibility) for a turn Codex reported as failed. */
-export const ERROR_STOP_REASON = "_error";
 const IMPLEMENT_PLAN_OPTION = "implement_plan";
 const REVISE_PLAN_OPTION = "revise_plan";
 
@@ -83,7 +87,12 @@ const REVISE_PLAN_OPTION = "revise_plan";
 export class CodexAgent {
     private readonly codex: AppServerClient;
     private readonly process: CodexProcess | null;
-    private readonly providers: ProviderRouting;
+    private providers: ProviderRouting;
+    private switching = false;
+    private admissions = 0;
+    private readonly pendingUnsubscribes = new Map<string, Promise<unknown>>();
+    private readonly sessionMutations = new Set<string>();
+    private providerQueue: Promise<unknown> = Promise.resolve();
     private readonly info: acp.Implementation;
     private readonly env: NodeJS.ProcessEnv;
     private readonly closeGraceMs: number;
@@ -91,7 +100,15 @@ export class CodexAgent {
     private capabilities: ClientCapabilitySet | null = null;
     private codexInitialized = false;
     private initializing: Promise<void> | null = null;
+    private readonly terminalTurns = new WeakSet<ActiveTurn>();
+    private readonly completedTurns = new WeakMap<ActiveTurn, string>();
     private skillRoots: string[] = [];
+    private skillsGeneration = 0;
+    private changingSkillRoots = false;
+    private readonly publishedSkills = new WeakMap<SessionRuntime, Awaited<ReturnType<AppServerClient["skillsList"]>>>();
+    private readonly skillSnapshots = new Map<string, Awaited<ReturnType<AppServerClient["skillsList"]>>>();
+    private skillsQueue: Promise<unknown> = Promise.resolve();
+    private accountGeneration = 0;
 
     constructor(private readonly link: ClientLink, options: CodexAgentOptions) {
         this.codex = options.codex;
@@ -102,6 +119,17 @@ export class CodexAgent {
         this.closeGraceMs = options.closeGraceMs ?? CLOSE_TURN_GRACE_MS;
         void this.process?.exited.then(() => this.handleCodexExit());
         this.codex.connection.onClose(() => this.handleCodexExit());
+        const stopObserving = this.codex.observeNotifications(notification => {
+            if (notification.method === "skills/changed") {
+                this.skillsGeneration += 1;
+                this.skillSnapshots.clear();
+                // Codex emits skills/changed for our own extraRoots/set. Republish here would
+                // alternate session roots forever; the current operation already reloads them.
+                if (!this.changingSkillRoots) for (const runtime of this.sessions.values()) void this.refreshAvailableCommands(runtime);
+            }
+            if (notification.method === "account/updated") void this.refreshAccounts().catch(error => logger.error("refreshing account failed", error));
+        });
+        this.codex.disconnectSignal.addEventListener("abort", stopObserving, {once: true});
     }
 
     // ---- initialize -----------------------------------------------------------
@@ -180,7 +208,10 @@ export class CodexAgent {
     }
 
     private async refreshAccounts(): Promise<void> {
+        this.codex.invalidateModels();
+        const generation = ++this.accountGeneration;
         const account = (await this.codex.accountRead({refreshToken: false})).account;
+        if (generation !== this.accountGeneration) return;
         for (const runtime of this.sessions.values()) runtime.session.account = account;
     }
 
@@ -193,17 +224,14 @@ export class CodexAgent {
 
     async setProvider(params: acp.SetProviderRequest): Promise<acp.SetProviderResponse> {
         this.requireInitialized("providers/set");
-        this.assertNoActiveTurns("providers/set");
-        this.providers.set(params);
-        await this.rebindSessions();
+        await this.changeProvider(candidate => candidate.set(params));
         return {};
     }
 
     async disableProvider(params: acp.DisableProviderRequest): Promise<acp.DisableProviderResponse> {
         this.requireInitialized("providers/disable");
-        this.assertNoActiveTurns("providers/disable");
-        this.providers.disable(params);
-        await this.rebindSessions();
+        if (params.providerId !== OPENAI_PROVIDER_ID) return {};
+        await this.changeProvider(candidate => candidate.disable(params));
         return {};
     }
 
@@ -214,50 +242,140 @@ export class CodexAgent {
         }
     }
 
-    /**
-     * Provider routing is a thread property in Codex, so every open session is
-     * resumed in place with the new `model_providers` config. Codex rejoins the
-     * live thread; history and subscriptions survive.
-     */
-    private async rebindSessions(): Promise<void> {
-        const gateway = this.providers.active;
-        for (const runtime of this.sessions.values()) {
-            const {session} = runtime;
-            const config = buildThreadConfig(this.providers.threadConfig(), session.cwd, session.additionalDirectories, [], new Set());
-            const thread = await this.withCodex(() => this.codex.threadResume({
-                threadId: session.id,
-                cwd: session.cwd,
-                config,
-                modelProvider: this.providers.modelProvider(),
-                excludeTurns: true,
-            }));
-            const codexCatalog = await this.withCodex(() => this.codex.allModels());
-            session.catalog = this.providers.catalog(codexCatalog);
-            session.model = resolveModelSelection(session.catalog, gateway?.model ?? thread.model, thread.reasoningEffort);
-            await runtime.client.update({sessionUpdate: "config_option_update", configOptions: sessionConfigOptions(session)});
+    private assertRoutingAvailable(): void {
+        if (this.switching) throw acp.RequestError.invalidRequest(undefined, "Provider routing is changing; retry after providers/set or providers/disable finishes");
+    }
+
+    private async admission<T>(operation: () => Promise<T>, sessionId?: string): Promise<T> {
+        this.assertRoutingAvailable();
+        if (sessionId && this.sessionMutations.has(sessionId)) throw acp.RequestError.invalidRequest({sessionId}, "Session lifecycle or configuration work is in progress; retry when it finishes");
+        if (sessionId) this.sessionMutations.add(sessionId);
+        this.admissions += 1;
+        try { return await operation(); }
+        finally {
+            this.admissions -= 1;
+            if (sessionId) this.sessionMutations.delete(sessionId);
         }
+    }
+
+    private async changeProvider(change: (candidate: ProviderRouting) => void): Promise<void> {
+        const pending = this.providerQueue.then(async () => {
+            this.assertNoActiveTurns("providers/set or providers/disable");
+            if (this.admissions > 0) throw acp.RequestError.invalidRequest(undefined, "Session configuration or lifecycle work is in progress; retry the provider change when it finishes");
+            this.switching = true;
+            const candidate = this.providers.copy();
+            const attempted: SessionRuntime[] = [];
+            const staged = new Map<SessionRuntime, {config: JsonObject; catalog: Session["catalog"]; model: Session["model"]}>();
+            try {
+                change(candidate);
+                const catalog = await this.withCodex(() => this.codex.allModels(true));
+                const modelProvider = await this.resolveModelProvider(candidate);
+                // Codex cannot cold-resume a thread before its history storage exists.
+                // Validate every session before detaching any subscription.
+                for (const runtime of this.sessions.values()) {
+                    try {
+                        await this.codex.threadTurnsList({threadId: runtime.session.id, limit: 1, itemsView: "notLoaded"});
+                    } catch (error) {
+                        throw acp.RequestError.invalidRequest({sessionId: runtime.session.id, details: errorMessage(error)},
+                            "Cannot reload this session's history for a provider change; close empty sessions and configure the provider before creating them, or retry after history is available");
+                    }
+                }
+                for (const runtime of this.sessions.values()) {
+                    const config = {...runtime.config};
+                    const providers = candidate.threadConfig()["model_providers"];
+                    if (providers === undefined) delete config["model_providers"];
+                    else config["model_providers"] = providers;
+                    const nextCatalog = candidate.catalog(catalog);
+                    const requestedModel = candidate.active?.model
+                        ?? (findModel(nextCatalog, runtime.session.model.model) ? runtime.session.model.model : null);
+                    const selection = resolveModelSelection(nextCatalog, requestedModel, requestedModel === runtime.session.model.model ? runtime.session.model.effort : null);
+                    attempted.push(runtime);
+                    // A subscribed live thread treats resume as rejoin and ignores routing overrides.
+                    await this.codex.threadUnsubscribe({threadId: runtime.session.id});
+                    const thread = await this.withCodex(() => this.codex.threadResume({
+                        threadId: runtime.session.id, cwd: runtime.session.cwd, config,
+                        modelProvider, model: selection.model, excludeTurns: true,
+                    }));
+                    staged.set(runtime, {config, catalog: nextCatalog, model: resolveModelSelection(nextCatalog, candidate.active?.model ?? thread.model, thread.reasoningEffort)});
+                }
+                this.providers = candidate;
+                for (const [runtime, next] of staged) {
+                    runtime.config = next.config;
+                    runtime.modelProvider = modelProvider;
+                    runtime.session.catalog = next.catalog;
+                    runtime.session.model = next.model;
+                    runtime.stale = false;
+                    // Notification delivery cannot roll back an already committed routing transaction.
+                    void runtime.client.update({sessionUpdate: "config_option_update", configOptions: sessionConfigOptions(runtime.session), _meta: {codex: {routing: {stale: false}}}}).catch(error => logger.error("Provider config notification failed", error));
+                }
+            } catch (error) {
+                if (attempted.length === 0 && error instanceof acp.RequestError) throw error;
+                const staleSessions: string[] = [];
+                for (const runtime of attempted) {
+                    try {
+                        await this.codex.threadUnsubscribe({threadId: runtime.session.id});
+                        await this.codex.threadResume({threadId: runtime.session.id, cwd: runtime.session.cwd,
+                            config: runtime.config, modelProvider: runtime.modelProvider, model: runtime.session.model.model, excludeTurns: true});
+                    } catch (rollbackError) {
+                        runtime.stale = true;
+                        staleSessions.push(runtime.session.id);
+                        logger.error("Provider rollback failed", rollbackError, {sessionId: runtime.session.id});
+                        void runtime.client.update({sessionUpdate: "config_option_update", configOptions: sessionConfigOptions(runtime.session), _meta: {codex: {routing: {stale: true}}}}).catch(() => {});
+                    }
+                }
+                throw acp.RequestError.internalError({staleSessions, attemptedSessions: attempted.map(runtime => runtime.session.id)},
+                    `Provider change failed: ${errorMessage(error)}${staleSessions.length ? "; resume affected sessions or retry the provider change before prompting" : "; previous routing restored"}`);
+            } finally { this.switching = false; }
+        });
+        this.providerQueue = pending.catch(() => {});
+        await pending;
     }
 
     // ---- sessions ---------------------------------------------------------------
 
-    async newSession(params: acp.NewSessionRequest): Promise<acp.NewSessionResponse> {
-        const runtime = await this.openSession({kind: "new", request: params});
+    async newSession(params: acp.NewSessionRequest, signal?: AbortSignal): Promise<acp.NewSessionResponse> {
+        const runtime = await this.openSession({kind: "new", request: params}, signal);
         return {sessionId: runtime.session.id, configOptions: sessionConfigOptions(runtime.session)};
     }
 
-    async resumeSession(params: acp.ResumeSessionRequest): Promise<acp.ResumeSessionResponse> {
-        const runtime = await this.openSession({kind: "resume", request: params});
+    async resumeSession(params: acp.ResumeSessionRequest, signal?: AbortSignal): Promise<acp.ResumeSessionResponse> {
+        const runtime = await this.openSession({kind: "resume", request: params}, signal);
         return {configOptions: sessionConfigOptions(runtime.session)};
     }
 
-    async forkSession(params: acp.ForkSessionRequest): Promise<acp.ForkSessionResponse> {
-        const runtime = await this.openSession({kind: "fork", request: params});
+    async forkSession(params: acp.ForkSessionRequest, signal?: AbortSignal): Promise<acp.ForkSessionResponse> {
+        const runtime = await this.openSession({kind: "fork", request: params}, signal);
         return {sessionId: runtime.session.id, configOptions: sessionConfigOptions(runtime.session)};
     }
 
-    private async openSession(open: OpenRequest): Promise<SessionRuntime> {
+    private async openSession(open: OpenRequest, signal?: AbortSignal): Promise<SessionRuntime> {
+        if (signal?.aborted) throw acp.RequestError.requestCancelled(undefined, "Session opening was cancelled");
+        const pending = this.admission(async () => {
+            const runtime = await this.openSessionInternal(open, signal);
+            if (signal?.aborted) {
+                await this.closeRuntime(runtime.session.id);
+                throw acp.RequestError.requestCancelled(undefined, "Session opening was cancelled");
+            }
+            return runtime;
+        }, open.kind === "new" ? undefined : open.request.sessionId);
+        try {
+            return signal ? await abortable(pending, signal) : await pending;
+        } catch (error) {
+            if (signal?.aborted) throw acp.RequestError.requestCancelled(undefined, "Session opening was cancelled; any thread returned later will be unsubscribed");
+            throw error;
+        }
+    }
+
+    private assertUnsubscribeSettled(sessionId: string): void {
+        if (this.pendingUnsubscribes.has(sessionId)) {
+            throw acp.RequestError.invalidRequest({sessionId}, "A previous unsubscribe is still pending; retry after Codex responds or reconnect the agent");
+        }
+    }
+
+    private async openSessionInternal(open: OpenRequest, signal?: AbortSignal): Promise<SessionRuntime> {
         const method = {new: "session/new", resume: "session/resume", fork: "session/fork"}[open.kind];
         const capabilities = this.requireInitialized(method);
+        if (open.kind !== "new") this.assertUnsubscribeSettled(open.request.sessionId);
         const {request} = open;
         if (typeof request.cwd !== "string" || !path.isAbsolute(request.cwd)) {
             throw acp.RequestError.invalidParams({cwd: request.cwd}, "cwd must be an absolute path");
@@ -270,20 +388,23 @@ export class CodexAgent {
         if (open.kind === "resume" && this.sessions.has(open.request.sessionId)) {
             // A second open for a live session replaces it; close the old runtime first.
             await this.closeRuntime(open.request.sessionId);
+            this.assertUnsubscribeSettled(open.request.sessionId);
         }
         const mcpServers = request.mcpServers ?? [];
 
         // A client-configured gateway carries its own credentials; only native OpenAI routing needs a login.
-        if (this.providers.active === null && await this.withCodex(() => authRequired(this.codex))) {
+        let accountVersion = this.accountGeneration;
+        const account = await this.withCodex(() => this.codex.accountRead({refreshToken: false}));
+        if (this.providers.active === null && account.requiresOpenaiAuth && account.account === null) {
             throw acp.RequestError.authRequired(undefined, "Log in to Codex first (auth/login)");
         }
-        await this.withCodex(() => this.refreshSkills(request.cwd, additionalDirectories));
         const existingMcp = mcpServers.length > 0 ? await this.withCodex(() => this.configuredMcpServerNames(request.cwd)) : new Set<string>();
         const config = buildThreadConfig(this.providers.threadConfig(), request.cwd, additionalDirectories, mcpServers, existingMcp);
         const mcpStartupGeneration = this.codex.mcpStartupGeneration;
         const modelProvider = await this.withCodex(() => this.resolveModelProvider());
 
-        const thread = await this.withCodex(async () => {
+        const {thread, skills} = await this.withSkillsContext(request.cwd, additionalDirectories, async skills => ({skills, thread: await this.withCodex(async () => {
+            if (signal?.aborted) throw acp.RequestError.requestCancelled(undefined, "Session opening was cancelled");
             switch (open.kind) {
                 case "new":
                     return await this.codex.threadStart({config, cwd: request.cwd, modelProvider});
@@ -293,13 +414,29 @@ export class CodexAgent {
                 case "fork":
                     return await this.codex.threadFork({threadId: open.request.sessionId, config, cwd: request.cwd, modelProvider, excludeTurns: true});
             }
-        });
+        })}));
         const sessionId = thread.thread.id;
+        let removeCancellation = () => {};
+        const openingCompletions = new Map<string, TurnCompletedNotification>();
+        const openingStarts = new Set<string>();
+        const stopObservingOpen = this.codex.observeNotifications(notification => {
+            if (notification.method === "turn/completed" && notification.params.threadId === sessionId) {
+                if (openingCompletions.size >= 32) openingCompletions.delete(openingCompletions.keys().next().value!);
+                openingCompletions.set(notification.params.turn.id, notification.params);
+            }
+            if (notification.method === "turn/started" && notification.params.threadId === sessionId && this.sessions.has(sessionId)) {
+                if (openingStarts.size >= 32) openingStarts.delete(openingStarts.values().next().value!);
+                openingStarts.add(notification.params.turn.id);
+            }
+        });
         try {
-            const [codexCatalog, account] = await this.withCodex(() => Promise.all([
-                this.codex.allModels(),
-                this.codex.accountRead({refreshToken: false}),
-            ]));
+            if (signal?.aborted) throw acp.RequestError.requestCancelled(undefined, "Session opening was cancelled");
+            const codexCatalog = await this.withCodex(() => this.codex.allModels());
+            let openedAccount = account.account;
+            while (accountVersion !== this.accountGeneration) {
+                accountVersion = this.accountGeneration;
+                openedAccount = (await this.withCodex(() => this.codex.accountRead({refreshToken: false}))).account;
+            }
             const gateway = this.providers.active;
             const catalog = this.providers.catalog(codexCatalog);
             const model = resolveModelSelection(catalog, gateway?.model ?? thread.model, thread.reasoningEffort);
@@ -313,7 +450,7 @@ export class CodexAgent {
                 mode: initialAgentMode(this.env),
                 collaborationMode: DEFAULT_COLLABORATION_MODE,
                 fastMode: thread.serviceTier === FAST_SERVICE_TIER,
-                account: account.account,
+                account: openedAccount,
                 title: null,
                 titleIsExplicit: false,
                 activeTurn: null,
@@ -321,7 +458,15 @@ export class CodexAgent {
                 contextWindow: null,
                 closed: false,
             };
-            const runtime = this.installRuntime(session, capabilities);
+            const runtime = this.installRuntime(session, capabilities, config, thread.modelProvider);
+            const cancelOpening = () => {
+                runtime.session.closed = true;
+                runtime.lifetime.abort();
+                runtime.client.dispose();
+            };
+            signal?.addEventListener("abort", cancelOpening, {once: true});
+            removeCancellation = () => signal?.removeEventListener("abort", cancelOpening);
+            if (signal?.aborted) cancelOpening();
             const replay = open.kind === "fork" || (open.kind === "resume" && open.request.replayFrom?.type === "start");
             if (open.kind !== "new") {
                 await this.replayHistory(runtime, replay, thread.thread);
@@ -330,8 +475,16 @@ export class CodexAgent {
                     await this.withCodex(() => this.codex.threadInjectItems({threadId: sessionId, items: seed.map(seedItem)}));
                 }
             }
+            if (thread.thread.status.type === "active" && runtime.session.activeTurn === null) {
+                const latest = await this.withCodex(() => this.codex.threadTurnsList({threadId: session.id, limit: 1, sortDirection: "desc", itemsView: "full"}));
+                const active = latest.data.find(turn => turn.status === "inProgress");
+                if (active && !(openingStarts.has(active.id) && openingCompletions.has(active.id))) {
+                    const completed = openingCompletions.get(active.id);
+                    this.observeForeignTurn(runtime, active.id, completed ? Promise.resolve(completed) : undefined, active.items);
+                }
+            }
             if (mcpServers.length > 0) void this.reportMcpStartup(runtime, mcpStartupGeneration);
-            void this.publishAvailableCommands(runtime);
+            void this.publishAvailableCommands(runtime, skills);
             return runtime;
         } catch (error) {
             // The thread is loaded and subscribed on the Codex side; do not leak it.
@@ -344,25 +497,28 @@ export class CodexAgent {
             }
             this.sessions.delete(sessionId);
             this.codex.detachThread(sessionId);
-            await this.codex.threadUnsubscribe({threadId: sessionId}).catch(() => {});
+            await within(this.unsubscribeThread(sessionId), this.closeGraceMs).catch(() => {});
             throw error;
+        } finally {
+            removeCancellation();
+            stopObservingOpen();
         }
     }
 
-    private installRuntime(session: Session, capabilities: ClientCapabilitySet): SessionRuntime {
+    private installRuntime(session: Session, capabilities: ClientCapabilitySet, config: JsonObject, modelProvider: string | null): SessionRuntime {
         const client = new ClientSession(session.id, this.link, capabilities);
         const bridge = new EventBridge(client, session);
         const turnContext = new TurnContext(session.id);
         const signal = () => {
             const turn = session.activeTurn;
-            return turn ? AbortSignal.any([turn.abort.signal, turn.stop.signal]) : undefined;
+            return AbortSignal.any([this.codex.disconnectSignal, ...(turn ? [turn.abort.signal, turn.stop.signal] : [])]);
         };
         const approval = new CodexApprovalHandler(client, turnContext, signal);
         const elicitation = new CodexElicitationHandler(client, turnContext, signal);
-        const runtime: SessionRuntime = {session, client, bridge, turnContext, elicitation, lifetime: new AbortController(), queue: Promise.resolve()};
+        const runtime: SessionRuntime = {config, modelProvider, stale: false, session, client, bridge, turnContext, elicitation, lifetime: new AbortController(), queue: Promise.resolve()};
         // Frames already queued (e.g. the tool call under review) must reach the client before its prompt.
         const drained = <P, T>(operation: (params: P) => Promise<T>) => async (params: P): Promise<T> => {
-            await this.drain(runtime);
+            await abortable(this.drain(runtime), this.codex.disconnectSignal);
             return await operation(params);
         };
         this.codex.attachThread(session.id, {
@@ -382,7 +538,19 @@ export class CodexAgent {
     }
 
     private enqueue(runtime: SessionRuntime, notification: ServerNotification): void {
+        if (runtime.lifetime.signal.aborted) return;
+        if (notification.method === "turn/started" && runtime.session.activeTurn === null) {
+            this.observeForeignTurn(runtime, notification.params.turn.id);
+        }
+        const turn = runtime.session.activeTurn;
+        if (notification.method.startsWith("item/") && "turnId" in notification.params && typeof notification.params.turnId === "string") {
+            // A start response may trail its first items; filter only once ownership is known.
+            if (!turn || (turn.turnId !== null && notification.params.turnId !== turn.turnId)) return;
+        }
+        if (turn && notification.method === "turn/completed") this.completedTurns.set(turn, notification.params.turn.id);
+        if (runtime.lifetime.signal.aborted) return;
         const run = async () => {
+            if (runtime.lifetime.signal.aborted) return;
             try {
                 runtime.turnContext.observe(notification);
                 await runtime.elicitation.observe(notification);
@@ -394,11 +562,21 @@ export class CodexAgent {
         runtime.queue = runtime.queue.then(run, run);
     }
 
+    private observeForeignTurn(runtime: SessionRuntime, turnId: string, completion?: Promise<TurnCompletedNotification>, items: readonly ThreadItem[] = []): void {
+        if (runtime.session.activeTurn || runtime.session.closed) return;
+        const turn = createActiveTurn(runtime.session.id);
+        runtime.session.activeTurn = turn;
+        this.turnStarted(runtime, turn, turnId, runtime.session.id);
+        runtime.client.reportRunning();
+        const completed = completion ?? this.codex.awaitTurnCompleted(runtime.session.id, turnId, turn.stop.signal);
+        void this.runPrompt(runtime, turn, {sessionId: runtime.session.id, prompt: []}, completed, items);
+    }
+
     private async drain(runtime: SessionRuntime): Promise<void> {
         let current: Promise<void>;
         do {
             current = runtime.queue;
-            await current;
+            await abortable(current, runtime.client.signal);
         } while (runtime.queue !== current);
     }
 
@@ -424,12 +602,17 @@ export class CodexAgent {
             await publishTitle(firstPage.data);
             return;
         }
+        const cursors = new Set<string>();
         let cursor: string | null = null;
         do {
             const page: {data: Turn[]; nextCursor: string | null} = await this.turnPage(session.id, cursor);
             await publishTitle(page.data);
             await client.updateAll(historyUpdates(page.data));
             cursor = page.nextCursor;
+            if (cursor !== null) {
+                if (cursors.has(cursor)) throw acp.RequestError.internalError({sessionId: session.id}, "Codex history pagination repeated a cursor; retry after restarting Codex");
+                cursors.add(cursor);
+            }
         } while (cursor !== null && !session.closed);
         await publishTitle([]);
     }
@@ -455,11 +638,12 @@ export class CodexAgent {
         }
     }
 
-    private async publishAvailableCommands(runtime: SessionRuntime): Promise<void> {
+    private async publishAvailableCommands(runtime: SessionRuntime, snapshot?: Awaited<ReturnType<AppServerClient["skillsList"]>>): Promise<void> {
         try {
-            const skills = await this.codex.skillsList({cwds: [runtime.session.cwd, ...runtime.session.additionalDirectories]});
+            const skills = snapshot ?? await this.codex.skillsList({cwds: [runtime.session.cwd, ...runtime.session.additionalDirectories]});
             if (runtime.session.closed) return;
             await runtime.client.update({sessionUpdate: "available_commands_update", availableCommands: availableCommands(skills.data)});
+            this.publishedSkills.set(runtime, skills);
         } catch (error) {
             logger.error("publishing available commands failed", error, {sessionId: runtime.session.id});
         }
@@ -489,12 +673,19 @@ export class CodexAgent {
     }
 
     async closeSession(params: acp.CloseSessionRequest): Promise<acp.CloseSessionResponse> {
+        return await this.admission(() => this.closeSessionInternal(params), params.sessionId);
+    }
+
+    private async closeSessionInternal(params: acp.CloseSessionRequest): Promise<acp.CloseSessionResponse> {
         this.requireInitialized("session/close");
-        await this.closeRuntime(params.sessionId);
-        return {};
+        return await this.closeRuntime(params.sessionId);
     }
 
     async deleteSession(params: acp.DeleteSessionRequest): Promise<acp.DeleteSessionResponse> {
+        return await this.admission(() => this.deleteSessionInternal(params), params.sessionId);
+    }
+
+    private async deleteSessionInternal(params: acp.DeleteSessionRequest): Promise<acp.DeleteSessionResponse> {
         this.requireInitialized("session/delete");
         await this.closeRuntime(params.sessionId);
         // Real deletion, like Codex desktop's Delete; hiding is `_codex/session_archive`.
@@ -503,6 +694,10 @@ export class CodexAgent {
     }
 
     async archiveSession(params: SessionIdParams): Promise<Record<string, never>> {
+        return await this.admission(() => this.archiveSessionInternal(params), params.sessionId);
+    }
+
+    private async archiveSessionInternal(params: SessionIdParams): Promise<Record<string, never>> {
         this.requireInitialized("_codex/session_archive");
         await this.closeRuntime(params.sessionId);
         await this.withCodex(() => this.codex.threadArchive({threadId: params.sessionId}));
@@ -510,41 +705,70 @@ export class CodexAgent {
     }
 
     async unarchiveSession(params: SessionIdParams): Promise<Record<string, never>> {
+        return await this.admission(() => this.unarchiveSessionInternal(params), params.sessionId);
+    }
+
+    private async unarchiveSessionInternal(params: SessionIdParams): Promise<Record<string, never>> {
         this.requireInitialized("_codex/session_unarchive");
         await this.withCodex(() => this.codex.threadUnarchive({threadId: params.sessionId}));
         return {};
     }
 
-    private async closeRuntime(sessionId: string): Promise<void> {
+    private async closeRuntime(sessionId: string): Promise<acp.CloseSessionResponse> {
+        const deadline = performance.now() + this.closeGraceMs;
         const runtime = this.sessions.get(sessionId);
-        if (!runtime) return;
+        if (!runtime) return {};
         runtime.session.closed = true;
         runtime.lifetime.abort();
         const turn = runtime.session.activeTurn;
         if (turn) {
-            // Start the deadline before interrupting: even turn/start or turn/interrupt can stall.
             void this.interruptTurn(runtime, turn);
-            let timer: ReturnType<typeof setTimeout> | undefined;
-            const timeout = new Promise<"timeout">(resolve => { timer = setTimeout(() => resolve("timeout"), this.closeGraceMs); });
-            try {
-                if (await Promise.race([turn.finished.then(() => "finished" as const), timeout]) === "timeout") {
-                    turn.stop.abort();
-                    await turn.finished;
-                }
-            } finally {
-                clearTimeout(timer);
+            // Reserve half the total budget for unsubscribe, even if interruption stalls.
+            await within(turn.finished, Math.max(0, this.closeGraceMs / 2));
+            if (runtime.session.activeTurn === turn) {
+                // One best-effort terminal write; disposal releases any backpressured write.
+                await within(this.reportIdle(runtime, turn, "cancelled", {usage: usageOf(runtime.session)}), Math.max(0, (deadline - performance.now()) / 2)).catch(() => {});
             }
+            turn.stop.abort();
         }
-        this.sessions.delete(sessionId);
+        if (this.sessions.get(sessionId) === runtime) this.sessions.delete(sessionId);
         this.codex.detachThread(sessionId);
-        runtime.bridge.dispose();
         runtime.client.dispose();
-        await this.codex.threadUnsubscribe({threadId: sessionId}).catch(error => {
+        runtime.bridge.dispose();
+        if (turn) {
+            turn.resolveStarted(null);
+            runtime.session.activeTurn = null;
+            turn.resolveFinished();
+        }
+        const unsubscribe = this.unsubscribeThread(sessionId);
+        let remoteUnsubscribe: "confirmed" | "timed_out" | "failed" = "confirmed";
+        try {
+            if (!await within(unsubscribe, Math.max(0, deadline - performance.now()))) {
+                remoteUnsubscribe = "timed_out";
+            }
+        } catch (error) {
+            remoteUnsubscribe = "failed";
             logger.error("thread/unsubscribe failed", error, {sessionId});
-        });
+        }
+        if (remoteUnsubscribe !== "confirmed") logger.log("session close detached locally", {sessionId, remoteUnsubscribe});
+        return {_meta: {codex: {close: {attempted: true, localDetached: true, remoteUnsubscribe}}}};
+    }
+
+    private unsubscribeThread(sessionId: string): Promise<unknown> {
+        const unsubscribe = this.codex.threadUnsubscribe({threadId: sessionId});
+        this.pendingUnsubscribes.set(sessionId, unsubscribe);
+        const release = () => {
+            if (this.pendingUnsubscribes.get(sessionId) === unsubscribe) this.pendingUnsubscribes.delete(sessionId);
+        };
+        void unsubscribe.then(release, release);
+        return unsubscribe;
     }
 
     async setSessionConfigOption(params: acp.SetSessionConfigOptionRequest): Promise<acp.SetSessionConfigOptionResponse> {
+        return await this.admission(() => this.setSessionConfigOptionInternal(params), params.sessionId);
+    }
+
+    private async setSessionConfigOptionInternal(params: acp.SetSessionConfigOptionRequest): Promise<acp.SetSessionConfigOptionResponse> {
         const runtime = this.runtime(params.sessionId, "session/set_config_option");
         await this.withCodex(() => applyConfigOption(runtime.session, this.codex, params));
         const configOptions = sessionConfigOptions(runtime.session);
@@ -562,7 +786,10 @@ export class CodexAgent {
     // ---- prompts ------------------------------------------------------------------
 
     async prompt(params: acp.PromptRequest): Promise<acp.PromptResponse> {
+        this.assertRoutingAvailable();
+        if (this.sessionMutations.has(params.sessionId)) throw acp.RequestError.invalidRequest({sessionId: params.sessionId}, "Session lifecycle or configuration work is in progress; retry when it finishes");
         const runtime = this.runtime(params.sessionId, "session/prompt");
+        if (runtime.stale) throw acp.RequestError.invalidRequest({sessionId: params.sessionId, _meta: {codex: {routing: {stale: true}}}}, "Session routing is stale; resume the session or successfully change providers before prompting");
         const {session} = runtime;
         if (!Array.isArray(params.prompt) || params.prompt.length === 0) {
             throw acp.RequestError.invalidParams(undefined, "prompt must contain at least one content block");
@@ -591,25 +818,30 @@ export class CodexAgent {
             await this.codex.turnSteer({threadId: runtime.session.id, expectedTurnId: turnId, input: toUserInput(params.prompt)});
             return {_meta: {codex: {steered: turnId}}};
         } catch (error) {
+            // Retry as a new prompt only after a matching completion proves the steer lost the race.
+            if (this.completedTurns.get(turn) === turnId || runtime.session.activeTurn !== turn) {
+                await turn.finished;
+                return await this.prompt(params);
+            }
             throw acp.RequestError.invalidRequest({sessionId: params.sessionId, turnId}, `Could not steer the running turn: ${errorMessage(error)}`);
         }
     }
 
-    private async runPrompt(runtime: SessionRuntime, turn: ActiveTurn, params: acp.PromptRequest): Promise<void> {
+    private async runPrompt(runtime: SessionRuntime, turn: ActiveTurn, params: acp.PromptRequest, observed?: Promise<TurnCompletedNotification>, items: readonly ThreadItem[] = []): Promise<void> {
         const {session, bridge} = runtime;
         bridge.beginTurn();
+        if (items.length) runtime.queue = runtime.queue.then(() => bridge.restore(items));
         try {
             const command = parseCommand(params.prompt);
             const outcome = command ? resolveCommand(command, session) : {kind: "prompt" as const};
-            let completed = await abortable(this.executePrompt(runtime, turn, command, outcome, params), turn.stop.signal);
+            let completed = await abortable(observed ?? this.executePrompt(runtime, turn, command, outcome, params), turn.stop.signal);
             await this.drain(runtime);
             await bridge.flush();
 
-            if (completed?.turn.status === "completed" && !turn.abort.signal.aborted) {
+            if (completed?.turn.status === "completed" && !turn.abort.signal.aborted && !this.exitHandled) {
                 completed = await abortable(this.maybeImplementPlan(runtime, turn, completed), turn.stop.signal);
             }
             if (completed?.turn.status === "interrupted" || turn.abort.signal.aborted) {
-                await bridge.cancelOpenToolCalls();
                 await this.reportIdle(runtime, turn, "cancelled", {usage: usageOf(session)});
                 return;
             }
@@ -625,8 +857,12 @@ export class CodexAgent {
             await this.publishFallbackTitle(runtime, promptTitle(params.prompt));
             await this.reportIdle(runtime, turn, "end_turn", {usage: usageOf(session)});
         } catch (error) {
+            if (this.terminalTurns.has(turn)) {
+                logger.error("Terminal update failed", error, {sessionId: session.id});
+                return;
+            }
+            if (turn.stop.signal.aborted && session.closed) return;
             if (turn.abort.signal.aborted || session.closed) {
-                await bridge.cancelOpenToolCalls().catch(() => {});
                 await this.reportIdle(runtime, turn, "cancelled", {usage: usageOf(session)}).catch(() => {});
                 return;
             }
@@ -673,24 +909,37 @@ export class CodexAgent {
         const {session} = runtime;
         const model = findModel(session.catalog, session.model.model);
         const disableSummary = session.account?.type === "apiKey" || modelLacksReasoning(model);
-        await abortable(this.withCodex(() => this.refreshSkills(session.cwd, session.additionalDirectories)), turn.abort.signal);
-        if (turn.abort.signal.aborted) {
-            return interruptedTurn(session.id);
+        let startSent = false;
+        const beforeStart = new AbortController();
+        const cancelBeforeStart = () => {if (!startSent) beforeStart.abort(turn.abort.signal.reason);};
+        turn.abort.signal.addEventListener("abort", cancelBeforeStart, {once: true});
+        if (turn.abort.signal.aborted) cancelBeforeStart();
+        try {
+            const result = await abortable(this.withSkillsContext(session.cwd, session.additionalDirectories, async skills => {
+                if (this.publishedSkills.get(runtime) !== skills) void this.publishAvailableCommands(runtime, skills);
+                if (turn.abort.signal.aborted || turn.stop.signal.aborted) return {completed: Promise.resolve(interruptedTurn(session.id))};
+                startSent = true;
+                const completed = this.withCodex(() => this.codex.runTurn({
+                    threadId: session.id,
+                    input: toUserInput(prompt),
+                    approvalPolicy: session.mode.approvalPolicy,
+                    approvalsReviewer: session.mode.approvalsReviewer,
+                    sandboxPolicy: withWritableRoots(session.mode.sandboxPolicy, session.additionalDirectories),
+                    model: session.model.model,
+                    effort: session.model.effort,
+                    summary: disableSummary ? "none" : "auto",
+                    serviceTier: session.fastMode ? FAST_SERVICE_TIER : null,
+                }, (turnId) => {
+                    // A cancel that raced turn/start is parked on `started` and interrupts from there.
+                    this.turnStarted(runtime, turn, turnId, session.id);
+                }, turn.stop.signal));
+                await Promise.race([turn.started, completed]);
+                return {completed};
+            }), beforeStart.signal);
+            return await result.completed;
+        } finally {
+            turn.abort.signal.removeEventListener("abort", cancelBeforeStart);
         }
-        return await this.withCodex(() => this.codex.runTurn({
-            threadId: session.id,
-            input: toUserInput(prompt),
-            approvalPolicy: session.mode.approvalPolicy,
-            approvalsReviewer: session.mode.approvalsReviewer,
-            sandboxPolicy: withWritableRoots(session.mode.sandboxPolicy, session.additionalDirectories),
-            model: session.model.model,
-            effort: session.model.effort,
-            summary: disableSummary ? "none" : "auto",
-            serviceTier: session.fastMode ? FAST_SERVICE_TIER : null,
-        }, (turnId) => {
-            // A cancel that raced turn/start is parked on `started` and interrupts from there.
-            this.turnStarted(runtime, turn, turnId, session.id);
-        }, turn.stop.signal));
     }
 
     private async runCompaction(runtime: SessionRuntime, turn: ActiveTurn): Promise<void> {
@@ -717,6 +966,7 @@ export class CodexAgent {
     private async maybeImplementPlan(runtime: SessionRuntime, turn: ActiveTurn, completed: TurnCompletedNotification): Promise<TurnCompletedNotification> {
         const plan = runtime.bridge.takeCompletedPlan();
         if (!plan || runtime.session.collaborationMode !== PLAN_COLLABORATION_MODE) return completed;
+        this.completedTurns.delete(turn);
         const signal = AbortSignal.any([turn.abort.signal, turn.stop.signal]);
         const approved = await this.requestPlanApproval(runtime, plan, signal);
         if (!approved || signal.aborted) return completed;
@@ -774,22 +1024,26 @@ export class CodexAgent {
     }
 
     private async reportIdle(runtime: SessionRuntime, turn: ActiveTurn, reason: acp.StopReason, extra?: Parameters<ClientSession["reportIdle"]>[1]): Promise<void> {
+        if (this.terminalTurns.has(turn)) return;
+        this.terminalTurns.add(turn);
+        await runtime.bridge.finishOpenToolCalls(reason === "cancelled" ? "cancelled" : reason === "end_turn" ? "completed" : "failed");
         // The client may send its next prompt as soon as it receives idle.
         if (runtime.session.activeTurn === turn) runtime.session.activeTurn = null;
         await runtime.client.reportIdle(reason, extra);
     }
 
     private async reportTurnFailure(runtime: SessionRuntime, turn: ActiveTurn, error: TurnError): Promise<void> {
+        const {stopReason, ...classification} = classifyTurnError(error.codexErrorInfo);
         const message = error.additionalDetails ? `${error.message}\n\n${error.additionalDetails}` : error.message;
         await runtime.client.update({
             sessionUpdate: "agent_message_chunk",
             messageId: `codex-error:${runtime.session.id}:${Date.now()}`,
             content: {type: "text", text: message},
-            _meta: {codex: {error: {message: error.message, codexErrorInfo: error.codexErrorInfo, additionalDetails: error.additionalDetails}}},
+            _meta: {codex: {error: {...classification, message: error.message, codexErrorInfo: error.codexErrorInfo, additionalDetails: error.additionalDetails}}},
         });
-        await this.reportIdle(runtime, turn, ERROR_STOP_REASON, {
+        await this.reportIdle(runtime, turn, stopReason, {
             usage: usageOf(runtime.session),
-            _meta: {codex: {error: {message: error.message, codexErrorInfo: error.codexErrorInfo}}},
+            _meta: {codex: {error: {...classification, message: error.message, codexErrorInfo: error.codexErrorInfo}}},
         });
     }
 
@@ -819,6 +1073,7 @@ export class CodexAgent {
         let pending = turn.interrupts.get(key);
         if (!pending) {
             pending = this.codex.turnInterrupt({threadId: turn.threadId, turnId}).then(() => {}, error => {
+                turn.interrupts.delete(key);
                 logger.error("turn/interrupt failed", error, {sessionId: runtime.session.id, turnId});
             });
             turn.interrupts.set(key, pending);
@@ -836,13 +1091,57 @@ export class CodexAgent {
 
     // ---- helpers ------------------------------------------------------------------
 
-    private async refreshSkills(cwd: string, additionalDirectories: readonly string[]): Promise<void> {
-        const roots = additionalDirectories.map(root => path.join(root, ".agents", "skills"));
-        if (roots.length !== this.skillRoots.length || roots.some((root, index) => root !== this.skillRoots[index])) {
-            await this.codex.skillsExtraRootsSet({extraRoots: roots});
-            this.skillRoots = roots;
+    private withSkillsContext<T>(cwd: string, additionalDirectories: readonly string[], operation: (skills: Awaited<ReturnType<AppServerClient["skillsList"]>>) => Promise<T>): Promise<T> {
+        const run = async () => {
+            const roots = additionalDirectories.map(root => path.join(root, ".agents", "skills"));
+            if (roots.length !== this.skillRoots.length || roots.some((root, index) => root !== this.skillRoots[index])) {
+                this.changingSkillRoots = true;
+                try {
+                    await this.codex.skillsExtraRootsSet({extraRoots: roots});
+                } finally {
+                    this.changingSkillRoots = false;
+                }
+                this.skillRoots = roots;
+                this.skillSnapshots.clear();
+            }
+            const skills = await this.loadSkills(cwd, additionalDirectories);
+            return await operation(skills);
+        };
+        // Extra roots are process-global. Hold the context through thread/turn start, not inference.
+        const result = this.skillsQueue.then(run, run);
+        this.skillsQueue = result.then(() => {}, () => {});
+        return result;
+    }
+
+    private async loadSkills(cwd: string, additionalDirectories: readonly string[]) {
+        const key = JSON.stringify([cwd, ...additionalDirectories]);
+        let skills = this.skillSnapshots.get(key);
+        if (!skills) {
+            const generation = this.skillsGeneration;
+            skills = await this.withCodex(() => this.codex.skillsList({cwds: [cwd, ...additionalDirectories], forceReload: true}));
+            if (generation === this.skillsGeneration) {
+                if (this.skillSnapshots.size >= 64) this.skillSnapshots.delete(this.skillSnapshots.keys().next().value!);
+                this.skillSnapshots.set(key, skills);
+            }
         }
-        await this.codex.skillsList({cwds: [cwd, ...additionalDirectories], forceReload: true});
+        return skills;
+    }
+
+    private async refreshAvailableCommands(runtime: SessionRuntime): Promise<void> {
+        const run = async () => {
+            const roots = runtime.session.additionalDirectories.map(root => path.join(root, ".agents", "skills"));
+            // A change notification must never itself switch this process-global setting.
+            if (runtime.session.closed || roots.length !== this.skillRoots.length || roots.some((root, i) => root !== this.skillRoots[i])) return undefined;
+            return await this.loadSkills(runtime.session.cwd, runtime.session.additionalDirectories);
+        };
+        const pending = this.skillsQueue.then(run, run);
+        this.skillsQueue = pending.then(() => {}, () => {});
+        try {
+            const skills = await pending;
+            if (skills && !runtime.session.closed) await this.publishAvailableCommands(runtime, skills);
+        } catch (error) {
+            logger.error("refreshing available commands failed", error, {sessionId: runtime.session.id});
+        }
     }
 
     private async configuredMcpServerNames(cwd: string): Promise<Set<string>> {
@@ -855,12 +1154,12 @@ export class CodexAgent {
         return names;
     }
 
-    private async resolveModelProvider(): Promise<string | null> {
-        const routed = this.providers.modelProvider();
+    private async resolveModelProvider(routing: ProviderRouting = this.providers): Promise<string> {
+        const routed = routing.modelProvider();
         if (routed) return routed;
         const config = await this.codex.configRead({includeLayers: false});
         const provider = config.config["model_provider"];
-        return typeof provider === "string" && provider.length > 0 ? provider : null;
+        return typeof provider === "string" && provider.length > 0 ? provider : OPENAI_PROVIDER_ID;
     }
 
     /** Runs a Codex request, replacing a dead-process transport error with a diagnosable one. */
@@ -909,7 +1208,7 @@ export class CodexAgent {
         this.exitHandled = true;
         for (const runtime of this.sessions.values()) {
             const turn = runtime.session.activeTurn;
-            if (!turn) continue;
+            if (!turn || this.completedTurns.get(turn) === turn.turnId) continue;
             const stderr = this.process?.recentStderr() || null;
             // The stop abort wins the race against the synthesized completion below, so the
             // stderr tail rides on the abort reason too; it is the only diagnostic left.
@@ -992,4 +1291,15 @@ function seedItem(message: SeedMessage): JsonValue {
         role: message.role,
         content: [{type: message.role === "user" ? "input_text" : "output_text", text: message.text}],
     };
+}
+
+/** A single local deadline; late settlement remains observed after timeout. */
+async function within(operation: Promise<unknown>, ms: number): Promise<boolean> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+        return await Promise.race([
+            operation.then(() => true),
+            new Promise<false>(resolve => { timer = setTimeout(() => resolve(false), ms); }),
+        ]);
+    } finally { clearTimeout(timer); }
 }

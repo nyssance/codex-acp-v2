@@ -1,3 +1,4 @@
+import {pathToFileURL} from "node:url";
 import * as acp from "@agentclientprotocol/sdk/experimental/v2";
 import path from "node:path";
 import type {JsonValue} from "../app-server/serde_json/JsonValue";
@@ -146,7 +147,7 @@ export function fromUserInput(input: UserInput): acp.ContentBlock[] {
 }
 
 function toFileUri(value: string): string {
-    return value.startsWith("file://") ? value : `file://${value}`;
+    return value.startsWith("file://") ? value : pathToFileURL(value).href;
 }
 
 function isSupportedImageUrl(uri: string | null | undefined): uri is string {

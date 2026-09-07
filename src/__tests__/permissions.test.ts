@@ -247,7 +247,7 @@ describe("approval ordering", () => {
         };
         itemStarted(t.codex, {type: "commandExecution", id: "cmd-1", pluginId: null, scriptPath: null, command: "ls", cwd: CWD, processId: null, source: "agent", status: "inProgress", commandActions: [], aggregatedOutput: null, exitCode: null, durationMs: null});
         await t.codex.serverRequest("item/commandExecution/requestApproval", commandParams());
-        expect(order.slice(0, 3)).toEqual(["notify:tool_call_update", "notify:terminal_update", "notify:state_update"]);
+        expect(order.slice(0, 3)).toEqual(["notify:terminal_update", "notify:tool_call_update", "notify:state_update"]);
         expect(order).toContain("permission");
         turnCompleted(t.codex);
     });

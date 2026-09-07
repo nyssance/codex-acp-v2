@@ -13,6 +13,7 @@ import {logger} from "../util/logger";
 import {toTokenCount} from "../util/tokens";
 import {terminalExited, terminalOutputChunk, terminalStarted, usesTerminal} from "./terminal";
 import * as tool from "./toolCalls";
+import {itemSnapshot} from "./itemSnapshot";
 import {fromUserInput} from "../codex/sessionConfig";
 
 export type CompletedPlan = {itemId: string; text: string};
@@ -33,6 +34,7 @@ export class EventBridge {
 
     /** Tool calls reported as pending or in progress and not yet completed. */
     private readonly openToolCalls = new Set<string>();
+    private readonly announcedTools = new Set<string>();
     private readonly messagePhases = new Map<string, string | null>();
     private readonly reasoningWithDeltas = new Set<string>();
     private readonly terminalItems = new Set<string>();
@@ -52,6 +54,14 @@ export class EventBridge {
         this.lastError = null;
         this.completedPlan = null;
         this.openToolCalls.clear();
+        this.announcedTools.clear();
+        this.messagePhases.clear();
+        this.reasoningWithDeltas.clear();
+        this.terminalItems.clear();
+        this.imageGenerations.clear();
+        this.subAgentActivities.clear();
+        this.fuzzySearches.clear();
+        this.guardianReviews.clear();
         this.clearPlanState();
     }
 
@@ -67,29 +77,50 @@ export class EventBridge {
         return plan;
     }
 
+    async restore(items: readonly ThreadItem[]): Promise<void> {
+        for (const item of items) {
+            if (item.type === "commandExecution" && item.status === "inProgress" && usesTerminal(item)) this.terminalItems.add(item.id);
+            for (const update of itemSnapshot(item)) {
+                this.trackToolCall(update);
+                await this.client.update(update);
+            }
+        }
+    }
+
     async handle(notification: ServerNotification): Promise<void> {
-        const updates = await this.translate(notification);
+        let updates = await this.translate(notification);
+        if (notification.method === "item/completed") {
+            const snapshots = itemSnapshot(notification.params.item);
+            const first = snapshots.find(update => update.sessionUpdate === "tool_call_update");
+            if (first?.sessionUpdate === "tool_call_update" && !this.announcedTools.has((first as acp.ToolCallUpdate).toolCallId)) {
+                updates = snapshots;
+            }
+        }
         for (const update of updates) {
             this.trackToolCall(update);
             await this.client.update(update);
         }
     }
 
-    /**
-     * Cancelled turns leave Codex items without a completion; the protocol expects
-     * every unfinished tool call to end as `cancelled` before the idle frame.
-     */
-    async cancelOpenToolCalls(): Promise<void> {
+    /** Reconcile missing item completions before ending the enclosing turn. */
+    async finishOpenToolCalls(status: "cancelled" | "failed" | "completed"): Promise<void> {
         const ids = [...this.openToolCalls];
+        const terminals = [...this.terminalItems];
         this.openToolCalls.clear();
+        this.terminalItems.clear();
+        for (const terminalId of terminals) {
+            // Turn completion does not prove a process exit code or OS signal.
+            await this.client.update({sessionUpdate: "terminal_update", terminalId, exitStatus: {exitCode: null, signal: null}, _meta: {codex: {reconciled: true, turnOutcome: status}}});
+        }
         for (const toolCallId of ids) {
-            await this.client.update(tool.toolCallCancelled(toolCallId));
+            await this.client.update({sessionUpdate: "tool_call_update", toolCallId, status, _meta: {codex: {reconciled: true}}});
         }
     }
 
     private trackToolCall(update: acp.SessionUpdate): void {
         if (update.sessionUpdate !== "tool_call_update") return;
         const {toolCallId, status} = update as acp.ToolCallUpdate;
+        this.announcedTools.add(toolCallId);
         if (status === "pending" || status === "in_progress") this.openToolCalls.add(toolCallId);
         else if (status !== undefined && status !== null) this.openToolCalls.delete(toolCallId);
     }
@@ -99,7 +130,7 @@ export class EventBridge {
     }
 
     dispose(): void {
-        this.clearPlanState();
+        this.beginTurn();
     }
 
     private async translate(notification: ServerNotification): Promise<acp.SessionUpdate[]> {
@@ -128,14 +159,17 @@ export class EventBridge {
                 return this.terminalItems.has(itemId) ? [terminalOutputChunk(itemId, `\n${stdin}\n`)] : [];
             }
             case "item/fileChange/patchUpdated":
-                return [tool.fileChangePatched({
+                return [(this.announcedTools.has(notification.params.itemId) ? tool.fileChangePatched : tool.fileChangeStarted)({
                     type: "fileChange",
                     id: notification.params.itemId,
                     changes: notification.params.changes,
                     status: "inProgress",
                 })];
             case "item/mcpToolCall/progress":
-                return [tool.mcpToolCallProgress(notification.params.itemId, notification.params.message)];
+                return [{
+                    ...(!this.announcedTools.has(notification.params.itemId) ? {name: tool.ToolName.Mcp, title: "MCP tool", kind: "execute" as const, status: "in_progress" as const} : {}),
+                    ...tool.mcpToolCallProgress(notification.params.itemId, notification.params.message),
+                }];
             case "item/plan/delta":
                 this.planDelta(notification.params.itemId, notification.params.delta);
                 return [];
@@ -155,9 +189,11 @@ export class EventBridge {
                 this.fuzzySearches.add(id);
                 return [tool.fuzzySearchUpdated(notification.params, create)];
             }
-            case "fuzzyFileSearch/sessionCompleted":
+            case "fuzzyFileSearch/sessionCompleted": {
+                const create = !this.fuzzySearches.has(notification.params.sessionId);
                 this.fuzzySearches.delete(notification.params.sessionId);
-                return [tool.fuzzySearchCompleted(notification.params)];
+                return [tool.fuzzySearchCompleted(notification.params, create)];
+            }
             case "thread/tokenUsage/updated": {
                 const usage = notification.params.tokenUsage;
                 this.session.lastUsage = toTokenCount(usage.last);
@@ -268,7 +304,7 @@ export class EventBridge {
             case "commandExecution":
                 if (usesTerminal(item)) {
                     this.terminalItems.add(item.id);
-                    return [tool.commandStarted(item), terminalStarted(item)];
+                    return [terminalStarted(item), tool.commandStarted(item)];
                 }
                 return [tool.commandStarted(item)];
             case "mcpToolCall":
@@ -311,7 +347,7 @@ export class EventBridge {
         switch (item.type) {
             case "agentMessage":
                 this.messagePhases.delete(item.id);
-                return [];
+                return itemSnapshot(item);
             case "reasoning": {
                 if (this.reasoningWithDeltas.delete(item.id)) return [];
                 const parts = item.summary.length > 0 ? item.summary : item.content;

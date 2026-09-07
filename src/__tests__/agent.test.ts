@@ -275,6 +275,7 @@ describe("session/cancel", () => {
         t.codex.respond("skills/list", () => new Promise(resolve => {
             releaseSkills = () => resolve({data: []});
         }));
+        t.codex.emit({method: "skills/changed", params: {}});
         await t.agent.prompt({sessionId: THREAD_ID, prompt: [{type: "text", text: "x"}]});
         await t.settle();
         const cancelled = t.agent.cancel({sessionId: THREAD_ID});
@@ -345,7 +346,7 @@ describe("resume, fork, list, close, delete", () => {
         const response = await t.agent.resumeSession({sessionId: THREAD_ID, cwd: CWD, replayFrom: {type: "start"}});
         expect(t.codex.lastParams<{excludeTurns?: boolean}>("thread/resume").excludeTurns).toBe(true);
         expect(response.configOptions?.length).toBeGreaterThan(0);
-        expect(t.client.updates().map(update => update.sessionUpdate)).toEqual(["session_info_update", "user_message", "agent_message"]);
+        expect(t.client.updates().filter(update => update.sessionUpdate !== "available_commands_update").map(update => update.sessionUpdate)).toEqual(["session_info_update", "user_message", "agent_message"]);
         expect(t.client.updatesOf("session_info_update")[0]).toMatchObject({title: "make it work"});
         expect(t.client.updatesOf("user_message")[0]).toMatchObject({messageId: "u1", content: [{type: "text", text: "make it work"}]});
     });
@@ -355,7 +356,7 @@ describe("resume, fork, list, close, delete", () => {
         t.codex.respond("thread/resume", (params) => threadResponse({id: params.threadId, name: "Named"}));
         await t.initialize();
         await t.agent.resumeSession({sessionId: THREAD_ID, cwd: CWD, replayFrom: null});
-        expect(t.client.updates().map(update => update.sessionUpdate)).toEqual(["session_info_update"]);
+        expect(t.client.updates().filter(update => update.sessionUpdate !== "available_commands_update").map(update => update.sessionUpdate)).toEqual(["session_info_update"]);
         expect(t.client.updatesOf("session_info_update")[0]).toMatchObject({title: "Named"});
         expect(t.codex.calls("thread/turns/list")).toHaveLength(0);
     });
@@ -383,7 +384,7 @@ describe("resume, fork, list, close, delete", () => {
         const calls = t.codex.calls("thread/turns/list").map(call => (call.params as {cursor: string | null; limit: number; sortDirection: string}));
         expect(calls.map(call => call.cursor)).toEqual([null, "c2"]);
         expect(calls[0]).toMatchObject({limit: 50, sortDirection: "asc"});
-        expect(t.client.updates().map(update => update.sessionUpdate)).toEqual(["session_info_update", "user_message", "agent_message"]);
+        expect(t.client.updates().filter(update => update.sessionUpdate !== "available_commands_update").map(update => update.sessionUpdate)).toEqual(["session_info_update", "user_message", "agent_message"]);
     });
 
     it("lists sessions as ACP session info", async () => {
@@ -617,8 +618,8 @@ describe("history mapping", () => {
         }));
         await t.initialize();
         await t.agent.resumeSession({sessionId: THREAD_ID, cwd: CWD, replayFrom: {type: "start"}});
-        const kinds = t.client.updates().map(update => update.sessionUpdate);
-        expect(kinds).toEqual(["agent_thought", "tool_call_update", "terminal_update", "tool_call_update", "tool_call_update"]);
+        const kinds = t.client.updates().filter(update => update.sessionUpdate !== "available_commands_update").map(update => update.sessionUpdate);
+        expect(kinds).toEqual(["agent_thought", "terminal_update", "tool_call_update", "tool_call_update", "tool_call_update"]);
         expect(t.client.updatesOf("terminal_update")[0]).toMatchObject({terminalId: "c1", command: "ls", output: {data: Buffer.from("a\nb\n").toString("base64")}, exitStatus: {exitCode: 0}});
         expect(t.client.updatesOf("tool_call_update").at(-1)).toMatchObject({toolCallId: "f1", name: "apply_patch", status: "completed", content: [{type: "diff", changes: [{operation: "add", path: `${CWD}/a.txt`}]}]});
     });
@@ -678,7 +679,7 @@ describe("providers", () => {
         expect(resume.config?.["model_providers"]).toBeDefined();
         expect(t.client.updatesOf("config_option_update")).toHaveLength(1);
         await t.agent.disableProvider({providerId: "openai"});
-        expect(t.codex.lastParams<{modelProvider: string | null}>("thread/resume").modelProvider).toBeNull();
+        expect(t.codex.lastParams<{modelProvider: string | null}>("thread/resume").modelProvider).toBe("openai");
         expect(t.agent.listProviders({}).providers[0]?.current?.baseUrl).toBe("https://api.openai.com/v1");
     });
 
@@ -859,8 +860,8 @@ describe("history inputs", () => {
             "[@README](file:///p/README.md)",
             "skill:deploy (/s/deploy)",
         ]);
-        const kinds = t.client.updates().map(update => update.sessionUpdate);
-        expect(kinds).toEqual(["session_info_update", "user_message", "tool_call_update", "terminal_update", "tool_call_update"]);
+        const kinds = t.client.updates().filter(update => update.sessionUpdate !== "available_commands_update").map(update => update.sessionUpdate);
+        expect(kinds).toEqual(["session_info_update", "user_message", "terminal_update", "tool_call_update", "tool_call_update"]);
         expect(t.client.updatesOf("terminal_update")[0]).not.toHaveProperty("exitStatus");
         expect(t.client.updatesOf("tool_call_update").at(-1)).toMatchObject({name: "web_search", title: "Web search: acp", status: "completed"});
     });

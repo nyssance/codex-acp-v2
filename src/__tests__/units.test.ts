@@ -1,3 +1,5 @@
+import path from "node:path";
+import {pathToFileURL} from "node:url";
 import {describe, expect, it} from "vitest";
 import {diffContent, gitPatch} from "../bridge/diff";
 import {parseCommand, resolveCommand} from "../agent/commands";
@@ -24,6 +26,11 @@ describe("gitPatch", () => {
 });
 
 describe("prompt conversion", () => {
+    it("escapes local image paths as native file URLs", () => {
+        const file = path.resolve("images", "hello #🌍.png");
+        expect(fromUserInput({type: "localImage", path: file})).toEqual([{type: "text", text: expect.stringContaining(pathToFileURL(file).href)}]);
+    });
+
     it("maps ACP content blocks to Codex user input", () => {
         expect(toUserInput([
             {type: "text", text: "hi"},

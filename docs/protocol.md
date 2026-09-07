@@ -42,8 +42,8 @@ which is where Codex's OpenAI-protocol traffic goes.
 
 | Method | Behaviour |
 | --- | --- |
-| `providers/list` | Reports the slot with `supported: ["openai"]` and the `baseUrl` currently in effect. |
-| `providers/set` | `{providerId: "openai", apiType: "openai", baseUrl, headers?}` routes Codex through that gateway: new and open sessions get a `model_providers.custom-gateway` config entry and `modelProvider: "custom-gateway"`. Open sessions are resumed in place; a running turn makes the request fail with `-32600`. |
+| `providers/list` | Reports the committed routing for new sessions with `supported: ["openai"]` and its `baseUrl`. |
+| `providers/set` | `{providerId: "openai", apiType: "openai", baseUrl, headers?}` routes Codex through that gateway: new and open sessions get a `model_providers.custom-gateway` config entry and `modelProvider: "custom-gateway"`. Open sessions with persisted history are unsubscribed and resumed with the new routing; a running turn makes the request fail with `-32600`. |
 | `providers/disable` | `{providerId: "openai"}` restores native routing; other ids are a no-op. |
 
 Accepted hints on `providers/set._meta`: `alwith.models` (`[{id, label?, description?}]`)
@@ -59,7 +59,7 @@ chat completions. With a gateway active `session/new` does not require an OpenAI
 | `session/resume` | `replayFrom: {type: "start"}` replays the transcript as `session/update` frames before the response, paged through Codex `thread/turns/list` in pages of 50 turns; `null` or omitted restores context only. Other cursors are rejected. |
 | `session/fork` | Forks the Codex thread and replays the copied transcript under the new session id. The source session remains open, including any running turn. |
 | `session/list` | `cwd` filters by exact Codex thread cwd; `cursor` pages. |
-| `session/close` | Interrupts a running turn, waits up to 5 seconds for its local prompt flow to finish, then unsubscribes. The grace period includes waiting for `turn/start` and `turn/interrupt`; a late start is interrupted when its id becomes known. |
+| `session/close` | Detaches locally within a single 5-second budget, subject to event-loop scheduling. At most half is spent waiting for an interrupted turn; the remainder is reserved for unsubscribe. Stalled client writes do not prevent cleanup. A late start is interrupted when its id becomes known. |
 | `session/delete` | Close plus `thread/delete` (permanent deletion). |
 | `_codex/session_archive` | `{sessionId}` closes and archives the thread (reversible hiding). Advertised as `capabilities._meta.codex.archive: true`. |
 | `_codex/session_unarchive` | `{sessionId}` restores an archived thread's visibility. |
@@ -113,7 +113,7 @@ A failed turn emits an `agent_message_chunk` with the error text and
 generically) and the same `_meta.codex.error`.
 
 `session/cancel` calls `turn/interrupt`; the turn ends with `idle` / `cancelled`.
-Repeated cancel/close requests send at most one interrupt per Codex turn.
+Repeated cancel/close requests coalesce an in-flight or successfully acknowledged interrupt. After an explicit rejection, a subsequent cancel or close retries; there is no automatic retry loop.
 Cancellation before `turn/start` prevents that turn from being sent, even if
 the preceding skills refresh is still pending. For `/compact`, cancellation
 ends the adapter's wait and reports `idle` / `cancelled`; Codex exposes no
@@ -192,3 +192,117 @@ Option descriptions ride in `_meta.codex.description`.
 - Codex user-input questions (`item/tool/requestUserInput`) become a form whose
   `toolCallId` is the Codex item; questions with an "other" answer add a
   `<id>__other` text field.
+
+### Shutdown and routing failure details
+
+`session/close` reports `_meta.codex.close` with `attempted: true`,
+`localDetached: true`, and `remoteUnsubscribe: "confirmed" | "timed_out" | "failed"`
+when a loaded session is closed. Closing an unknown session remains a no-op.
+A timeout confirms only local cleanup, not remote unsubscription. Terminal updates
+are best effort: a completed local write is not acknowledgement by the client.
+Codex stdout EOF drains already received RPC frames through the dispatcher before
+publishing connection loss; an already dispatched turn completion remains authoritative.
+Shutdown does not wait for user approvals to finish.
+
+Provider changes are staged and committed only after all open sessions rebind.
+All sessions' history is checked before changing subscriptions. Codex cannot resume
+an empty thread whose history storage has not yet been created; in that case the
+request fails with `-32600` before changing routing. Close empty sessions, configure
+the provider, then create them again. Rebinding unsubscribes before resume because
+Codex treats resume of a subscribed thread as rejoin and ignores routing overrides.
+Competing provider changes are serialized. During a switch, prompt admission,
+session lifecycle changes, and config changes fail with a retryable `-32600` error.
+A switch also fails if lifecycle/config work or a turn is already active.
+Overlapping lifecycle/config operations on the same session and prompts during
+those operations are rejected with `-32600`; retry after the operation finishes. Inference
+turns do not hold a global lifecycle lock.
+
+On failure, the adapter retains the previous committed routing and attempts remote
+compensation for every attempted session, including the request that failed.
+The error data includes `attemptedSessions` and `staleSessions`. Failed compensation
+marks affected sessions with `_meta.codex.routing.stale: true` on a standard
+`config_option_update`; their prompts are rejected until a successful resume or
+provider switch. Successful switching emits `stale: false`. The config update does
+not contain or attest to a provider URL. JSON-RPC errors do not imply no remote side
+effects; uncertain remote state is reported explicitly.
+
+Wire logging redacts structured credential/header fields and complete `env` maps,
+including arbitrarily named MCP environment variables. Logs are not guaranteed to
+be secret-free: command arguments, free-form tool output, and Codex stderr may
+contain sensitive text and are not heuristically redacted.
+
+A timed-out unsubscribe fences subsequent resume/fork of that thread until the
+outstanding RPC settles. These attempts fail promptly with `-32600`, rather than
+racing a late unsubscribe against a new subscription. Delete/archive requests
+after local close still wait for Codex to acknowledge the remote mutation; the
+local close deadline is not a deadline for those separate remote operations.
+
+### Recovery and terminal outcomes
+
+Live `agent_message` completion updates carry the authoritative full content for
+that message id. ACP v2 clients replace previously accumulated content when a
+concrete `content` array arrives; they must not append the snapshot to earlier
+`agent_message_chunk` text. History replay uses the same snapshot mapping.
+Completed-only tools, and progress/patch events received without a start, emit a
+complete first upsert with `name`, `title`, and `kind`.
+
+Before an idle update, unfinished tool calls are reconciled to the enclosing
+turn's outcome and marked `_meta.codex.reconciled: true`. Orphan terminals receive
+an `exitStatus` with unknown (`null`) exit code and signal; this does not assert
+that a process exited successfully or received a particular OS signal. Their
+`_meta.codex.turnOutcome` records `completed`, `failed`, or `cancelled`.
+
+Terminal snapshots retain full output. For all commands, duplicate
+`tool_call_update.rawOutput.output` is capped at 16,384 UTF-16 code units, without
+splitting a surrogate pair. A capped result has `_meta.codex.outputTruncated`,
+`outputCharacters`, and (for terminal-backed commands) `terminalId`; obtain the
+complete output from the terminal or the classified tool call’s text content.
+
+Context-window exhaustion ends with `max_tokens`; Codex policy violations end
+with `refusal`. Other failures retain `_error`. Error metadata under
+`_meta.codex.error` includes `category` and `retryable`; retryability is advisory
+and never causes automatic resubmission of a failed model turn.
+
+A rejected steer becomes a new prompt only after a matching completion or local
+turn finalization proves the old turn ended. Unexpected `turn/started` events are
+observed as running foreground work, including cancellation and finalization.
+Resuming an active thread discovers its current turn through paged history.
+
+Repeated cursors in automatically paginated model catalogs or history fail with
+an actionable error. Failed-open cleanup has the same bounded unsubscribe wait
+and pending-unsubscribe fence as session close.
+
+
+### Cache freshness and cancellation
+
+Skill metadata is reused for an unchanged working-directory context. A Codex
+`skills/changed` notification invalidates it. Commands refresh immediately for the
+current root context; other sessions refresh on their next foreground prompt.
+Notifications never switch roots, preventing delayed watcher echoes from causing
+a refresh loop.
+Because extra skill roots are process-global in Codex, context changes are
+serialized through thread/turn start acknowledgement; model inference can run
+concurrently. Switching roots invalidates the previous snapshot. Model catalogs
+are shared for up to 30 seconds, invalidated on `account/updated` and local login/logout, and forcibly
+refreshed for provider changes. Account notifications also refresh live session
+account-dependent settings.
+
+Request cancellation for `session/new`, `session/resume`, and `session/fork`
+returns `-32800` promptly. A remote request already in flight may still finish;
+its late result is unsubscribed rather than left as an inaccessible open session.
+Lifecycle admission stays held until that operation settles, so a replacement or
+provider transition cannot race the cleanup. Cancellation is not a rollback of
+already completed remote actions.
+
+
+Skill-root serialization covers foreground turns started by this adapter and
+steering into those turns. It is not thread or tenant isolation. Codex-created
+subagent/automatic turns and turns started by other app-server clients snapshot
+process-global roots at their own start time and are outside this guarantee.
+The pinned Codex 0.153 implementation constructs the skill snapshot before
+returning a started turn: [turn input handling](https://github.com/openai/codex/blob/rust-v0.153.0/codex-rs/core/src/session/turn_input.rs)
+and [turn context construction](https://github.com/openai/codex/blob/rust-v0.153.0/codex-rs/core/src/session/turn_context.rs).
+
+Turn-scoped `item/*` notifications are ignored while idle or when they name a
+known different active turn. Items are accepted while a local turn's id is still
+unknown, because Codex may deliver them before its start response.

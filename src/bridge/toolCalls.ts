@@ -167,14 +167,17 @@ export function commandStarted(item: Item<"commandExecution">): ToolCallFrame {
 }
 
 export function commandCompleted(item: Item<"commandExecution">): ToolCallFrame {
+    const output = item.aggregatedOutput ?? "";
+    const truncated = output.length > 16_384;
     return frame({
         toolCallId: item.id,
         status: item.status === "completed" ? "completed" : "failed",
         rawOutput: {
-            output: item.aggregatedOutput ?? "",
+            output: truncated ? output.slice(0, 16_384).replace(/[\uD800-\uDBFF]$/, "") : output,
             exitCode: item.exitCode,
             durationMs: item.durationMs,
         },
+        ...(truncated ? {_meta: {codex: {outputTruncated: true, outputCharacters: output.length, ...(usesTerminal(item) ? {terminalId: item.id} : {})}}} : {}),
         ...(usesTerminal(item) || !item.aggregatedOutput ? {} : {content: [textContent(item.aggregatedOutput)]}),
     });
 }
@@ -420,8 +423,8 @@ export function fuzzySearchUpdated(event: FuzzyFileSearchSessionUpdatedNotificat
     });
 }
 
-export function fuzzySearchCompleted(event: FuzzyFileSearchSessionCompletedNotification): ToolCallFrame {
-    return frame({toolCallId: fuzzySearchToolCallId(event.sessionId), status: "completed"});
+export function fuzzySearchCompleted(event: FuzzyFileSearchSessionCompletedNotification, create = false): ToolCallFrame {
+    return frame({toolCallId: fuzzySearchToolCallId(event.sessionId), ...(create ? {name: ToolName.FuzzySearch, title: "File search", kind: "search"} : {}), status: "completed"});
 }
 
 // ---- guardian review -----------------------------------------------------------

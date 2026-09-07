@@ -1,13 +1,13 @@
 import {StringDecoder} from "node:string_decoder";
 import type {Readable, Writable} from "node:stream";
-import {Emitter, type DataCallback, type Message, type MessageReader, type MessageWriter, type PartialMessageInfo} from "vscode-jsonrpc/node";
+import {createMessageConnection, Emitter, type DataCallback, type Message, type MessageReader, type MessageWriter, type PartialMessageInfo} from "vscode-jsonrpc/node";
 import {logger} from "../util/logger";
 
 /** Redacts structured credentials, including client-supplied gateway headers. */
 export function wireLog(value: unknown): string {
     return JSON.stringify(value, (key, nested: unknown) => {
         const normalized = key.replace(/[_-]/g, "").toLowerCase();
-        if (/^(apikey|accesskey|accesstoken|refreshtoken|idtoken|secretaccesskey|sessiontoken|authorization|proxyauthorization|password|secret|token|cookie|setcookie|headers|httpheaders)$/.test(normalized)) return "***";
+        if (/^(apikey|accesskey|accesstoken|refreshtoken|idtoken|secretaccesskey|sessiontoken|authorization|proxyauthorization|password|secret|token|cookie|setcookie|headers|httpheaders|env|queryparams)$/.test(normalized)) return "***";
         return nested;
     });
 }
@@ -70,7 +70,7 @@ export function createReader(readable: Readable): MessageReader {
     const closed = new Emitter<void>();
     const partial = new Emitter<PartialMessageInfo>();
     const decoder = new StringDecoder("utf8");
-    let buffer = "";
+    let fragments: string[] = [];
     let ended = false;
     let callback: DataCallback | null = null;
     const deliver = (line: string) => {
@@ -93,14 +93,18 @@ export function createReader(readable: Readable): MessageReader {
         callback?.(message);
     };
     const onData = (chunk: Buffer | string) => {
-        buffer += typeof chunk === "string" ? chunk : decoder.write(chunk);
+        const text = typeof chunk === "string" ? chunk : decoder.write(chunk);
+        let offset = 0;
         for (;;) {
-            const newline = buffer.indexOf("\n");
+            const newline = text.indexOf("\n", offset);
             if (newline < 0) break;
-            const line = buffer.slice(0, newline);
-            buffer = buffer.slice(newline + 1);
+            const part = text.slice(offset, newline);
+            const line = fragments.length ? fragments.join("") + part : part;
+            fragments = [];
             deliver(line);
+            offset = newline + 1;
         }
+        if (offset < text.length) fragments.push(text.slice(offset));
     };
     const onClose = () => {
         if (ended) return;
@@ -108,9 +112,9 @@ export function createReader(readable: Readable): MessageReader {
         closed.fire();
     };
     const onEnd = () => {
-        buffer += decoder.end();
-        deliver(buffer);
-        buffer = "";
+        fragments.push(decoder.end());
+        deliver(fragments.join(""));
+        fragments = [];
         onClose();
     };
     const onError = (error: Error) => errors.fire(error);
@@ -120,7 +124,7 @@ export function createReader(readable: Readable): MessageReader {
         readable.off("close", onClose);
         readable.off("error", onError);
         callback = null;
-        buffer = "";
+        fragments = [];
     };
     return {
         listen(receive) {
@@ -136,4 +140,74 @@ export function createReader(readable: Readable): MessageReader {
         onPartialMessage: partial.event,
         dispose() { stop(); errors.dispose(); closed.dispose(); partial.dispose(); },
     };
+}
+
+/** Drain received frames through the RPC dispatcher before publishing EOF. Async
+ * request handlers are deliberately not awaited: they may be waiting on a user. */
+export function createCodexConnection(readable: Readable, writable: Writable) {
+    const reader = createReader(readable);
+    const writer = createWriter(writable);
+    const closed = new Emitter<void>();
+    let queued = 0;
+    let eof = false;
+    let finished = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let resolveDrained!: () => void;
+    const drained = new Promise<void>(resolve => { resolveDrained = resolve; });
+    const finish = () => {
+        if (finished) return;
+        finished = true;
+        clearTimeout(timer);
+        closed.fire();
+        resolveDrained();
+    };
+    const check = () => {
+        if (eof && queued === 0) setImmediate(() => {
+            if (queued === 0) finish();
+        });
+    };
+    reader.onClose(() => {
+        eof = true;
+        timer ??= setTimeout(() => {
+            logger.error("Codex dispatch drain deadline exceeded", new Error(`Undispatched frames: ${queued}`));
+            finish();
+        }, 5_000);
+        check();
+    });
+    // A broken stdin must not discard responses still arriving on stdout.
+    const inputFailed = () => {
+        if (finished || timer) return;
+        timer = setTimeout(() => {
+            logger.error("Codex stdout did not close after stdin", new Error("Transport shutdown deadline exceeded"));
+            finish();
+        }, 5_000);
+    };
+    writer.onClose(inputFailed);
+    // JSON-RPC may consume cancellation controls synchronously without the strategy.
+    const counted = (message: Message) => !("method" in message && message.method === "$/cancelRequest");
+    const connection = createMessageConnection({
+        ...reader,
+        onClose: closed.event,
+        listen(receive) { return reader.listen(message => { if (counted(message)) queued += 1; receive(message); }); },
+    }, {
+        ...writer,
+        onClose: () => ({dispose() {}}),
+        async write(message) {
+            try { await writer.write(message); }
+            catch (error) {
+                // vscode-jsonrpc rethrows write failures inside an async Promise executor.
+                // Let bounded shutdown reject its pending requests instead of leaking that rejection.
+                logger.error("Codex write failed; draining stdout before disconnect", error);
+                inputFailed();
+                await drained;
+            }
+        },
+    }, undefined, {
+        messageStrategy: {handleMessage(message, next) {
+            try { return next(message); }
+            finally { if (counted(message)) queued -= 1; check(); }
+        }},
+    });
+    connection.onDispose(() => { finished = true; clearTimeout(timer); resolveDrained(); closed.dispose(); });
+    return {connection, drained};
 }
