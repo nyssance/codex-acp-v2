@@ -1,4 +1,5 @@
 import * as acp from "@agentclientprotocol/sdk/experimental/v2";
+import {pathToFileURL} from "node:url";
 import {describe, expect, it} from "vitest";
 import type {ThreadStartParams, TurnStartParams} from "../app-server/v2";
 import {createTestAgent, CWD, expectRejects, itemCompleted, itemStarted, model, thread, threadResponse, THREAD_ID, turn, turnCompleted, TURN_ID} from "./harness";
@@ -856,8 +857,8 @@ describe("history inputs", () => {
         const user = t.client.updatesOf("user_message")[0];
         expect(user?.content?.map(block => (block as {text: string}).text)).toEqual([
             "look at",
-            "[@shot.png](file:///p/shot.png)",
-            "[@README](file:///p/README.md)",
+            `[@shot.png](${pathToFileURL("/p/shot.png").href})`,
+            `[@README](${pathToFileURL("/p/README.md").href})`,
             "skill:deploy (/s/deploy)",
         ]);
         const kinds = t.client.updates().filter(update => update.sessionUpdate !== "available_commands_update").map(update => update.sessionUpdate);

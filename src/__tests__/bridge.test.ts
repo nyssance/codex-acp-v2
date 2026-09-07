@@ -1,3 +1,4 @@
+import path from "node:path";
 import {describe, expect, it} from "vitest";
 import {createTestAgent, CWD, itemCompleted, itemStarted, THREAD_ID, TURN_ID} from "./harness";
 
@@ -223,7 +224,7 @@ describe("remaining item and notification mappings", () => {
         expect(updates[1]).toMatchObject({toolCallId: "guardian-review:rv1", status: "failed"});
         expect((updates[1] as {name?: string}).name).toBeUndefined();
         expect((updates[1]?.content?.[0] as {content: {text: string}}).content.text).toContain("Rationale: destructive");
-        expect(updates[2]).toMatchObject({toolCallId: "fuzzy-file-search:fz1", name: "fuzzy_file_search", kind: "search", title: "Search for 'cfg'", locations: [{path: `${CWD}/src/config.ts`}]});
+        expect(updates[2]).toMatchObject({toolCallId: "fuzzy-file-search:fz1", name: "fuzzy_file_search", kind: "search", title: "Search for 'cfg'", locations: [{path: path.join(CWD, "src/config.ts")}]});
         expect((updates[3] as {name?: string}).name).toBeUndefined();
         expect(updates[3]).toMatchObject({title: "Search for 'config'"});
         expect(updates[4]).toMatchObject({toolCallId: "fuzzy-file-search:fz1", status: "completed"});

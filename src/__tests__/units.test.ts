@@ -52,8 +52,8 @@ describe("prompt conversion", () => {
 
     it("renders Codex input back for history", () => {
         expect(fromUserInput({type: "text", text: "hello", text_elements: []})).toEqual([{type: "text", text: "hello"}]);
-        expect(fromUserInput({type: "localImage", path: "/p/i.png"})).toEqual([{type: "text", text: "[@i.png](file:///p/i.png)"}]);
-        expect(fromUserInput({type: "mention", name: "doc", path: "/p/doc.md"})).toEqual([{type: "text", text: "[@doc](file:///p/doc.md)"}]);
+        expect(fromUserInput({type: "localImage", path: "/p/i.png"})).toEqual([{type: "text", text: `[@i.png](${pathToFileURL("/p/i.png").href})`}]);
+        expect(fromUserInput({type: "mention", name: "doc", path: "/p/doc.md"})).toEqual([{type: "text", text: `[@doc](${pathToFileURL("/p/doc.md").href})`}]);
     });
 
     it("derives a title from the first non-empty line", () => {
