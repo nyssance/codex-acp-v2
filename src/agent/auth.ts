@@ -74,56 +74,60 @@ async function loginWithApiKey(codex: AppServerClient, request: acp.LoginAuthReq
             `No API key: set ${CODEX_API_KEY_ENV} or ${OPENAI_API_KEY_ENV}, or pass _meta["api-key"].apiKey`,
         );
     }
-    const completed = codex.awaitNotification("account/login/completed");
-    await codex.accountLogin({type: "apiKey", apiKey});
-    const result = await completed;
-    if (!result.success) throw acp.RequestError.authRequired({error: result.error}, result.error ?? "API key login failed");
+    await codex.withNotification("account/login/completed", async completed => {
+        await codex.accountLogin({type: "apiKey", apiKey});
+        const result = await completed;
+        if (!result.success) throw acp.RequestError.authRequired({error: result.error}, result.error ?? "API key login failed");
+    });
 }
 
 async function loginWithChatGpt(codex: AppServerClient): Promise<void> {
     const account = await codex.accountRead({refreshToken: true});
     if (account.account?.type === "chatgpt") return;
-    const completed = codex.awaitNotification("account/login/completed");
-    const started = await codex.accountLogin({type: "chatgpt"});
-    if (started.type !== "chatgpt") throw acp.RequestError.internalError({type: started.type}, "Unexpected login response");
-    logger.log("opening browser for ChatGPT login", {loginId: started.loginId});
-    await open(started.authUrl);
-    const result = await completed;
-    if (!result.success) throw acp.RequestError.authRequired({error: result.error}, result.error ?? "ChatGPT login failed");
+    await codex.withNotification("account/login/completed", async completed => {
+        const started = await codex.accountLogin({type: "chatgpt"});
+        if (started.type !== "chatgpt") throw acp.RequestError.internalError({type: started.type}, "Unexpected login response");
+        logger.log("opening browser for ChatGPT login", {loginId: started.loginId});
+        await open(started.authUrl);
+        const result = await completed;
+        if (!result.success) throw acp.RequestError.authRequired({error: result.error}, result.error ?? "ChatGPT login failed");
+    });
 }
 
 async function loginWithDeviceCode(codex: AppServerClient, link: ClientLink, requestId: acp.JsonRpcId | null): Promise<void> {
     const account = await codex.accountRead({refreshToken: true});
     if (account.account?.type === "chatgpt") return;
-    const completed = codex.awaitNotification("account/login/completed");
-    const started = await codex.accountLogin({type: "chatgptDeviceCode"});
-    if (started.type !== "chatgptDeviceCode") throw acp.RequestError.internalError({type: started.type}, "Unexpected login response");
-    // The login is not tied to a session, so the elicitation is scoped to the auth/login request.
-    const elicitation = link.request(acp.methods.client.elicitation.create, {
-        mode: "url",
-        requestId,
-        elicitationId: started.loginId,
-        url: started.verificationUrl,
-        message: `Sign in to ChatGPT and enter this code: ${started.userCode}`,
+    await codex.withNotification("account/login/completed", async completed => {
+        const started = await codex.accountLogin({type: "chatgptDeviceCode"});
+        if (started.type !== "chatgptDeviceCode") throw acp.RequestError.internalError({type: started.type}, "Unexpected login response");
+        // The login is not tied to a session, so the elicitation is scoped to the auth/login request.
+        const elicitation = link.request(acp.methods.client.elicitation.create, {
+            mode: "url",
+            requestId,
+            elicitationId: started.loginId,
+            url: started.verificationUrl,
+            message: `Sign in to ChatGPT and enter this code: ${started.userCode}`,
+        });
+        void elicitation.catch(() => {});
+        const first = await Promise.race([
+            completed.then(result => ({kind: "completed" as const, result})),
+            elicitation.then(response => ({kind: "elicitation" as const, response})),
+        ]);
+        if (first.kind === "elicitation" && !acp.CreateElicitationResponse.isAccept(first.response)) {
+            await codex.accountLoginCancel({loginId: started.loginId});
+            throw acp.RequestError.authRequired(undefined, "ChatGPT device code login was cancelled");
+        }
+        const result = first.kind === "completed" ? first.result : await completed;
+        await link.notify(acp.methods.client.elicitation.complete, {elicitationId: started.loginId});
+        if (!result.success) throw acp.RequestError.authRequired({error: result.error}, result.error ?? "ChatGPT login failed");
     });
-    void elicitation.catch(() => {});
-    const first = await Promise.race([
-        completed.then(result => ({kind: "completed" as const, result})),
-        elicitation.then(response => ({kind: "elicitation" as const, response})),
-    ]);
-    if (first.kind === "elicitation" && !acp.CreateElicitationResponse.isAccept(first.response)) {
-        await codex.accountLoginCancel({loginId: started.loginId});
-        throw acp.RequestError.authRequired(undefined, "ChatGPT device code login was cancelled");
-    }
-    const result = first.kind === "completed" ? first.result : await completed;
-    await link.notify(acp.methods.client.elicitation.complete, {elicitationId: started.loginId});
-    if (!result.success) throw acp.RequestError.authRequired({error: result.error}, result.error ?? "ChatGPT login failed");
 }
 
 export async function logout(codex: AppServerClient): Promise<void> {
-    const updated = codex.awaitNotification("account/updated");
-    await codex.accountLogout();
-    await updated;
+    await codex.withNotification("account/updated", async updated => {
+        await codex.accountLogout();
+        await updated;
+    });
 }
 
 /** True when Codex needs an OpenAI login before it can serve turns. */

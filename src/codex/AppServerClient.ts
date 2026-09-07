@@ -66,6 +66,7 @@ import type {
 } from "../app-server/v2";
 import type {ModeKind} from "../app-server/ModeKind";
 import {logger} from "../util/logger";
+import {abortable} from "../util/abort";
 
 export interface ApprovalHandler {
     handleCommandExecution(params: CommandExecutionRequestApprovalParams): Promise<CommandExecutionRequestApprovalResponse>;
@@ -109,7 +110,7 @@ type CodexRequest = ClientRequest extends infer R ? (R extends {method: string} 
 
 type McpStartupSnapshot = {status: McpServerStartupState; error: string | null; version: number};
 type NotificationWaiter = {method: string; matches: (params: unknown) => boolean; resolve: (params: unknown) => void};
-type McpStartupWaiter = {serverNames: string[]; afterVersion: number; resolve: (result: McpStartupResult) => void};
+type McpStartupWaiter = {serverNames: string[]; afterVersion: number; threadId: string | null; resolve: (result: McpStartupResult) => void};
 
 /**
  * Typed client over the Codex app-server JSON-RPC API (v2 surface only).
@@ -124,12 +125,17 @@ export class AppServerClient {
     private readonly elicitationHandlers = new Map<string, ElicitationHandler>();
     private readonly turnCompletionWaiters = new Map<string, (event: TurnCompletedNotification) => void>();
     private readonly earlyTurnCompletions = new Map<string, TurnCompletedNotification>();
+    private readonly startingThreads = new Map<string, number>();
+    private startingReviews = 0;
     private readonly mcpStartupStates = new Map<string, McpStartupSnapshot>();
     private readonly mcpStartupWaiters: McpStartupWaiter[] = [];
     private readonly notificationWaiters: NotificationWaiter[] = [];
     private mcpStartupVersion = 0;
+    private readonly disconnected = new AbortController();
 
     constructor(readonly connection: MessageConnection) {
+        connection.onClose(() => this.disconnected.abort(new Error("Connection to Codex was lost")));
+        connection.onDispose(() => this.disconnected.abort(new Error("Connection to Codex was lost")));
         connection.onUnhandledNotification((message) => {
             this.dispatchNotification(message as ServerNotification);
         });
@@ -175,6 +181,9 @@ export class AppServerClient {
         this.threadHandlers.delete(threadId);
         this.approvalHandlers.delete(threadId);
         this.elicitationHandlers.delete(threadId);
+        for (const key of this.mcpStartupStates.keys()) {
+            if (key.startsWith(`${threadId}\u0000`)) this.mcpStartupStates.delete(key);
+        }
     }
 
     /**
@@ -184,15 +193,38 @@ export class AppServerClient {
     awaitNotification<M extends ServerNotification["method"]>(
         method: M,
         predicate: (params: NotificationParams<M>) => boolean = () => true,
+        signal?: AbortSignal,
     ): Promise<NotificationParams<M>> {
+        let waiter: NotificationWaiter;
         const settled = new Promise<unknown>((resolve) => {
-            this.notificationWaiters.push({
+            waiter = {
                 method,
                 matches: (params) => predicate(params as NotificationParams<M>),
                 resolve,
-            });
+            };
+            this.notificationWaiters.push(waiter);
         });
-        return settled as Promise<NotificationParams<M>>;
+        const result = abortable(settled, signal ? AbortSignal.any([signal, this.disconnected.signal]) : this.disconnected.signal)
+            .finally(() => {
+                const index = this.notificationWaiters.indexOf(waiter);
+                if (index >= 0) this.notificationWaiters.splice(index, 1);
+            }) as Promise<NotificationParams<M>>;
+        // Waiters are installed before sending the triggering request; that request can fail first.
+        void result.catch(() => {});
+        return result;
+    }
+
+    /** Installs before the triggering RPC and releases the waiter even if that RPC fails. */
+    async withNotification<M extends ServerNotification["method"], T>(
+        method: M,
+        operation: (completed: Promise<NotificationParams<M>>) => Promise<T>,
+    ): Promise<T> {
+        const scope = new AbortController();
+        try {
+            return await operation(this.awaitNotification(method, () => true, scope.signal));
+        } finally {
+            scope.abort();
+        }
     }
 
     private dispatchNotification(notification: ServerNotification): void {
@@ -206,7 +238,7 @@ export class AppServerClient {
         }
         if (notification.method === "mcpServer/startupStatus/updated") {
             this.mcpStartupVersion += 1;
-            this.mcpStartupStates.set(notification.params.name, {
+            this.mcpStartupStates.set(mcpKey(notification.params.threadId, notification.params.name), {
                 status: notification.params.status,
                 error: notification.params.error,
                 version: this.mcpStartupVersion,
@@ -229,28 +261,48 @@ export class AppServerClient {
     // ---- turns ----------------------------------------------------------
 
     /** Starts a turn and resolves when Codex reports it completed, failed, or was interrupted. */
-    async runTurn(params: TurnStartParams, onTurnStarted?: (turnId: string) => void): Promise<TurnCompletedNotification> {
-        const started = await this.turnStart(params);
-        onTurnStarted?.(started.turn.id);
-        return await this.awaitTurnCompleted(params.threadId, started.turn.id);
+    async runTurn(params: TurnStartParams, onTurnStarted?: (turnId: string) => void, signal?: AbortSignal): Promise<TurnCompletedNotification> {
+        this.startingThreads.set(params.threadId, (this.startingThreads.get(params.threadId) ?? 0) + 1);
+        let completed: Promise<TurnCompletedNotification>;
+        try {
+            const started = await this.turnStart(params);
+            onTurnStarted?.(started.turn.id);
+            completed = this.awaitTurnCompleted(params.threadId, started.turn.id, signal);
+        } finally {
+            const remaining = (this.startingThreads.get(params.threadId) ?? 1) - 1;
+            if (remaining === 0) this.startingThreads.delete(params.threadId);
+            else this.startingThreads.set(params.threadId, remaining);
+            this.pruneEarlyCompletions();
+        }
+        return await completed;
     }
 
-    async runReview(params: ReviewStartParams, onTurnStarted?: (turnId: string, threadId: string) => void): Promise<TurnCompletedNotification> {
-        const started = await this.reviewStart(params);
-        onTurnStarted?.(started.turn.id, started.reviewThreadId);
-        return await this.awaitTurnCompleted(started.reviewThreadId, started.turn.id);
+    async runReview(params: ReviewStartParams, onTurnStarted?: (turnId: string, threadId: string) => void, signal?: AbortSignal): Promise<TurnCompletedNotification> {
+        this.startingReviews += 1;
+        let completed: Promise<TurnCompletedNotification>;
+        try {
+            const started = await this.reviewStart(params);
+            onTurnStarted?.(started.turn.id, started.reviewThreadId);
+            completed = this.awaitTurnCompleted(started.reviewThreadId, started.turn.id, signal);
+        } finally {
+            this.startingReviews -= 1;
+            this.pruneEarlyCompletions();
+        }
+        return await completed;
     }
 
-    awaitTurnCompleted(threadId: string, turnId: string): Promise<TurnCompletedNotification> {
+    awaitTurnCompleted(threadId: string, turnId: string, signal?: AbortSignal): Promise<TurnCompletedNotification> {
         const key = turnKey(threadId, turnId);
         const early = this.earlyTurnCompletions.get(key);
         if (early) {
             this.earlyTurnCompletions.delete(key);
             return Promise.resolve(early);
         }
-        return new Promise((resolve) => {
+        const completed = new Promise<TurnCompletedNotification>((resolve) => {
             this.turnCompletionWaiters.set(key, resolve);
         });
+        return abortable(completed, signal ? AbortSignal.any([signal, this.disconnected.signal]) : this.disconnected.signal)
+            .finally(() => this.turnCompletionWaiters.delete(key));
     }
 
     /** Synthesizes an interrupted completion, for when Codex can no longer deliver one. */
@@ -287,7 +339,14 @@ export class AppServerClient {
             return;
         }
         // turn/completed can arrive before turn/start returns for trivially short turns.
-        this.earlyTurnCompletions.set(key, event);
+        if (this.startingThreads.has(event.threadId) || this.startingReviews > 0) this.earlyTurnCompletions.set(key, event);
+    }
+
+    private pruneEarlyCompletions(): void {
+        if (this.startingReviews > 0) return;
+        for (const [key, event] of this.earlyTurnCompletions) {
+            if (!this.startingThreads.has(event.threadId)) this.earlyTurnCompletions.delete(key);
+        }
     }
 
     // ---- MCP startup ----------------------------------------------------
@@ -296,30 +355,39 @@ export class AppServerClient {
         return this.mcpStartupVersion;
     }
 
-    awaitMcpStartup(serverNames: string[], afterVersion: number): Promise<McpStartupResult> {
+    awaitMcpStartup(serverNames: string[], afterVersion: number, signal?: AbortSignal, threadId: string | null = null): Promise<McpStartupResult> {
         const names = [...new Set(serverNames.map(name => name.trim()).filter(name => name.length > 0))];
         if (names.length === 0) return Promise.resolve({ready: [], failed: [], cancelled: []});
-        const immediate = this.buildMcpStartupResult(names, afterVersion);
+        const immediate = this.buildMcpStartupResult(names, afterVersion, threadId);
         if (immediate) return Promise.resolve(immediate);
-        return new Promise((resolve) => {
-            this.mcpStartupWaiters.push({serverNames: names, afterVersion, resolve});
+        let waiter: McpStartupWaiter;
+        const completed = new Promise<McpStartupResult>((resolve) => {
+            waiter = {serverNames: names, afterVersion, threadId, resolve};
+            this.mcpStartupWaiters.push(waiter);
         });
+        return abortable(completed, signal ? AbortSignal.any([signal, this.disconnected.signal]) : this.disconnected.signal)
+            .finally(() => {
+                const index = this.mcpStartupWaiters.indexOf(waiter);
+                if (index >= 0) this.mcpStartupWaiters.splice(index, 1);
+            });
     }
 
     private settleMcpStartupWaiters(): void {
         const pending: McpStartupWaiter[] = [];
         for (const waiter of this.mcpStartupWaiters) {
-            const result = this.buildMcpStartupResult(waiter.serverNames, waiter.afterVersion);
+            const result = this.buildMcpStartupResult(waiter.serverNames, waiter.afterVersion, waiter.threadId);
             if (result) waiter.resolve(result);
             else pending.push(waiter);
         }
         this.mcpStartupWaiters.splice(0, this.mcpStartupWaiters.length, ...pending);
     }
 
-    private buildMcpStartupResult(serverNames: string[], afterVersion: number): McpStartupResult | null {
+    private buildMcpStartupResult(serverNames: string[], afterVersion: number, threadId: string | null): McpStartupResult | null {
         const result: McpStartupResult = {ready: [], failed: [], cancelled: []};
         for (const name of serverNames) {
-            const state = this.mcpStartupStates.get(name);
+            const scoped = this.mcpStartupStates.get(mcpKey(threadId, name));
+            const global = this.mcpStartupStates.get(mcpKey(null, name));
+            const state = scoped && scoped.version > afterVersion ? scoped : global;
             if (!state || state.version <= afterVersion || state.status === "starting") return null;
             if (state.status === "ready") result.ready.push(name);
             else if (state.status === "failed") result.failed.push({server: name, error: state.error ?? "unknown MCP startup error"});
@@ -383,8 +451,9 @@ export class AppServerClient {
     }
 
     async threadSettingsUpdate(params: ThreadSettingsUpdateParams): Promise<void> {
+        this.disconnected.signal.throwIfAborted();
         logger.log("[codex request]", {method: "thread/settings/update"});
-        await this.connection.sendRequest("thread/settings/update", params);
+        await abortable(this.connection.sendRequest("thread/settings/update", params), this.disconnected.signal);
     }
 
     turnStart(params: TurnStartParams): Promise<TurnStartResponse> {
@@ -452,16 +521,21 @@ export class AppServerClient {
     }
 
     private async send<R>(request: CodexRequest): Promise<R> {
+        this.disconnected.signal.throwIfAborted();
         logger.log("[codex request]", {method: request.method});
         const params: unknown = "params" in request ? request.params : undefined;
-        return params === undefined
-            ? await this.connection.sendRequest<R>(request.method)
-            : await this.connection.sendRequest<R>(request.method, params);
+        return await abortable(params === undefined
+            ? this.connection.sendRequest<R>(request.method)
+            : this.connection.sendRequest<R>(request.method, params), this.disconnected.signal);
     }
 }
 
 function turnKey(threadId: string, turnId: string): string {
     return `${threadId} ${turnId}`;
+}
+
+function mcpKey(threadId: string | null, name: string): string {
+    return `${threadId ?? ""}\u0000${name}`;
 }
 
 export function threadIdOf(notification: ServerNotification): string | null {

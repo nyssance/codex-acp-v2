@@ -1,17 +1,9 @@
 import {spawn, spawnSync, type ChildProcessWithoutNullStreams} from "node:child_process";
 import {createRequire} from "node:module";
 import packageJson from "../../package.json";
-import type {Readable, Writable} from "node:stream";
 import * as rpc from "vscode-jsonrpc/node";
-import type {
-    DataCallback,
-    Disposable,
-    Message,
-    MessageConnection,
-    MessageReader,
-    MessageWriter,
-    PartialMessageInfo,
-} from "vscode-jsonrpc/node";
+import type {MessageConnection} from "vscode-jsonrpc/node";
+import {createReader, createWriter} from "./transport";
 import {logger} from "../util/logger";
 
 export interface CodexProcess {
@@ -117,67 +109,5 @@ export function startCodexProcess(codexPath?: string, env: NodeJS.ProcessEnv = p
         exited,
         recentStderr: () => stderr.trim(),
         exitCode: () => child.exitCode,
-    };
-}
-
-/** Keeps credentials out of the wire log. */
-function redactSecrets(line: string): string {
-    return line.replace(/"(apiKey|accessToken|secretAccessKey|sessionToken)":"[^"]*"/g, '"$1":"***"');
-}
-
-/**
- * Codex app-server speaks JSON-RPC without the `jsonrpc` envelope field. The reader
- * adds it so vscode-jsonrpc accepts the frames; the writer strips it again.
- */
-function createWriter(writable: Writable): MessageWriter {
-    return {
-        async write(message: Message) {
-            const {jsonrpc: _jsonrpc, ...frame} = message as Message & {jsonrpc?: string};
-            const line = JSON.stringify(frame);
-            logger.log("[codex <-]", {line: redactSecrets(line)});
-            writable.write(`${line}\n`);
-        },
-        end() {
-            writable.end();
-        },
-        onError: new rpc.Emitter<[Error, Message | undefined, number | undefined]>().event,
-        onClose: new rpc.Emitter<void>().event,
-        dispose() {},
-    };
-}
-
-function createReader(readable: Readable): MessageReader {
-    return {
-        listen(callback: DataCallback): Disposable {
-            let buffer = "";
-            const onData = (chunk: Buffer) => {
-                buffer += chunk.toString();
-                for (;;) {
-                    const newline = buffer.indexOf("\n");
-                    if (newline < 0) break;
-                    const line = buffer.slice(0, newline).trim();
-                    buffer = buffer.slice(newline + 1);
-                    if (line.length === 0) continue;
-                    logger.log("[codex ->]", {line: redactSecrets(line)});
-                    try {
-                        const message = JSON.parse(line) as Record<string, unknown>;
-                        if (message["jsonrpc"] === undefined) message["jsonrpc"] = "2.0";
-                        callback(message as unknown as Message);
-                    } catch (error) {
-                        logger.error("Malformed JSON-RPC frame from codex", error, {line});
-                    }
-                }
-            };
-            readable.on("data", onData);
-            return {
-                dispose() {
-                    readable.off("data", onData);
-                },
-            };
-        },
-        onError: new rpc.Emitter<Error>().event,
-        onClose: new rpc.Emitter<void>().event,
-        onPartialMessage: new rpc.Emitter<PartialMessageInfo>().event,
-        dispose() {},
     };
 }

@@ -562,6 +562,8 @@ describe("plan mode", () => {
         await t.settle();
         const request = t.client.permissionRequests()[0];
         expect(request).toMatchObject({title: "Implement this plan?", subject: {type: "tool_call", toolCall: {kind: "switch_mode", rawInput: {plan: "1. do x"}}}});
+        expect(t.client.updatesOf("tool_call_update").find(update => update.toolCallId === "plan-review:plan-1"))
+            .toMatchObject({name: "plan_review", title: "Implement this plan?", kind: "switch_mode", status: "pending"});
         expect(t.client.updatesOf("plan_update")[0]).toMatchObject({plan: {type: "markdown", planId: "plan-1", content: "1. do x"}});
         expect(starts).toBe(2);
         expect(t.codex.lastParams<TurnStartParams>("turn/start").input).toEqual([{type: "text", text: "Implement the approved plan.", text_elements: []}]);
@@ -573,6 +575,21 @@ describe("plan mode", () => {
 });
 
 describe("codex process loss", () => {
+    it("keeps the stderr tail as the error details when the process dies mid-turn", async () => {
+        const t = createTestAgent({codexStderr: "thread 'main' panicked at core.rs:12"});
+        await t.initialize();
+        await t.openSession();
+        await t.agent.prompt({sessionId: THREAD_ID, prompt: [{type: "text", text: "x"}]});
+        await t.settle();
+        t.codex.close();
+        await t.settle();
+        expect(t.client.updatesOf("agent_message_chunk").at(-1)).toMatchObject({
+            content: {type: "text", text: "Connection to Codex was lost\n\nthread 'main' panicked at core.rs:12"},
+            _meta: {codex: {error: {message: "Connection to Codex was lost", additionalDetails: "thread 'main' panicked at core.rs:12"}}},
+        });
+        expect(t.client.updatesOf("state_update").at(-1)).toMatchObject({state: "idle", stopReason: "_error"});
+    });
+
     it("fails the active turn with a connection error", async () => {
         const t = createTestAgent();
         await t.initialize();

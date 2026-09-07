@@ -1,5 +1,6 @@
 import * as acp from "@agentclientprotocol/sdk/experimental/v2";
 import {logger} from "../util/logger";
+import {abortable} from "../util/abort";
 
 /** The subset of `AgentContext` the agent uses, so tests can substitute a recorder. */
 export type ClientLink = Pick<acp.AgentContext, "notify" | "request">;
@@ -17,6 +18,8 @@ export interface ClientCapabilitySet {
 export class ClientSession {
     private waiting = 0;
     private turnActive = false;
+    private turnGeneration = 0;
+    private disposed = false;
 
     constructor(
         readonly sessionId: string,
@@ -25,6 +28,7 @@ export class ClientSession {
     ) {}
 
     async update(update: acp.SessionUpdate): Promise<void> {
+        if (this.disposed) return;
         await this.link.notify(acp.methods.client.session.update, {sessionId: this.sessionId, update});
     }
 
@@ -36,27 +40,37 @@ export class ClientSession {
         request: Omit<acp.RequestPermissionRequest, "sessionId">,
         signal?: AbortSignal,
     ): Promise<acp.RequestPermissionResponse> {
-        return await this.waitingOnClient(() => this.link.request(
-            acp.methods.client.session.requestPermission,
-            {sessionId: this.sessionId, ...request},
-            signal ? {cancellationSignal: signal} : undefined,
-        ));
+        signal?.throwIfAborted();
+        return await this.waitingOnClient(() => {
+            const pending = this.link.request(
+                acp.methods.client.session.requestPermission,
+                {sessionId: this.sessionId, ...request},
+                signal ? {cancellationSignal: signal} : undefined,
+            );
+            return signal ? abortable(pending, signal) : pending;
+        });
     }
 
     async createElicitation(request: acp.CreateElicitationRequest, signal?: AbortSignal): Promise<acp.CreateElicitationResponse> {
-        return await this.waitingOnClient(() => this.link.request(
-            acp.methods.client.elicitation.create,
-            request,
-            signal ? {cancellationSignal: signal} : undefined,
-        ));
+        signal?.throwIfAborted();
+        return await this.waitingOnClient(() => {
+            const pending = this.link.request(
+                acp.methods.client.elicitation.create,
+                request,
+                signal ? {cancellationSignal: signal} : undefined,
+            );
+            return signal ? abortable(pending, signal) : pending;
+        });
     }
 
     async completeElicitation(elicitationId: string): Promise<void> {
+        if (this.disposed) return;
         await this.link.notify(acp.methods.client.elicitation.complete, {elicitationId});
     }
 
     /** Foreground work started: report `running` (fire-and-forget, the frame is already queued). */
     reportRunning(): void {
+        this.turnGeneration += 1;
         this.turnActive = true;
         this.waiting = 0;
         void this.state({sessionUpdate: "state_update", state: "running"});
@@ -75,16 +89,18 @@ export class ClientSession {
     }
 
     private async waitingOnClient<T>(operation: () => Promise<T>): Promise<T> {
-        if (this.turnActive && this.waiting++ === 0) {
+        if (this.disposed) throw new Error("Session is closed");
+        // An old request may resolve after idle and after a new turn has started.
+        const generation = this.turnActive ? this.turnGeneration : null;
+        if (generation !== null && this.waiting++ === 0) {
             await this.state({sessionUpdate: "state_update", state: "requires_action"});
         }
         try {
             return await operation();
         } finally {
-            if (this.turnActive && --this.waiting === 0) {
+            if (this.turnActive && generation === this.turnGeneration && --this.waiting === 0) {
                 await this.state({sessionUpdate: "state_update", state: "running"});
             }
-            if (this.waiting < 0) this.waiting = 0;
         }
     }
 
@@ -94,5 +110,11 @@ export class ClientSession {
         } catch (error) {
             logger.error("Failed to publish session state", error, {sessionId: this.sessionId});
         }
+    }
+
+    dispose(): void {
+        this.disposed = true;
+        this.turnActive = false;
+        this.waiting = 0;
     }
 }

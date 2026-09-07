@@ -31,6 +31,7 @@ import {CodexElicitationHandler} from "../permissions/ElicitationHandler";
 import {TurnContext} from "../permissions/turnContext";
 import {errorMessage, logger} from "../util/logger";
 import {toAcpUsage} from "../util/tokens";
+import {abortable} from "../util/abort";
 import {authMethods, authRequired, login, logout} from "./auth";
 import {ClientSession, type ClientCapabilitySet, type ClientLink} from "./clientSession";
 import {availableCommands, mcpMessage, parseCommand, resolveCommand, skillsMessage, statusMessage} from "./commands";
@@ -58,6 +59,7 @@ interface SessionRuntime {
     bridge: EventBridge;
     turnContext: TurnContext;
     elicitation: CodexElicitationHandler;
+    lifetime: AbortController;
     /** Serializes notification handling so frames reach the client in Codex order. */
     queue: Promise<void>;
 }
@@ -88,6 +90,7 @@ export class CodexAgent {
     private readonly sessions = new Map<string, SessionRuntime>();
     private capabilities: ClientCapabilitySet | null = null;
     private codexInitialized = false;
+    private initializing: Promise<void> | null = null;
     private skillRoots: string[] = [];
 
     constructor(private readonly link: ClientLink, options: CodexAgentOptions) {
@@ -110,18 +113,22 @@ export class CodexAgent {
                 `Unsupported protocol version ${params.protocolVersion}; this agent speaks ACP v${acp.PROTOCOL_VERSION}`,
             );
         }
-        this.capabilities = {
+        const capabilities = {
             formElicitation: params.capabilities?.elicitation?.form != null,
             urlElicitation: params.capabilities?.elicitation?.url != null,
         };
         // Clients re-send initialize when they re-attach; Codex accepts it only once per process.
         if (!this.codexInitialized) {
-            await this.withCodex(() => this.codex.initialize({
-                clientInfo: {name: params.info.name, title: params.info.title ?? null, version: params.info.version},
-                capabilities: {experimentalApi: true, requestAttestation: false},
-            }));
-            this.codexInitialized = true;
+            this.initializing ??= this.withCodex(async () => {
+                await this.codex.initialize({
+                    clientInfo: {name: params.info.name, title: params.info.title ?? null, version: params.info.version},
+                    capabilities: {experimentalApi: true, requestAttestation: false},
+                });
+                this.codexInitialized = true;
+            }).finally(() => { this.initializing = null; });
+            await this.initializing;
         }
+        this.capabilities = capabilities;
         return {
             protocolVersion: acp.PROTOCOL_VERSION,
             info: this.info,
@@ -255,11 +262,15 @@ export class CodexAgent {
         if (typeof request.cwd !== "string" || !path.isAbsolute(request.cwd)) {
             throw acp.RequestError.invalidParams({cwd: request.cwd}, "cwd must be an absolute path");
         }
-        if (open.kind !== "new" && this.sessions.has(open.request.sessionId)) {
+        if (open.kind === "resume" && open.request.replayFrom != null && open.request.replayFrom.type !== "start") {
+            throw acp.RequestError.invalidParams({replayFrom: open.request.replayFrom}, "Only replayFrom {type: \"start\"} is supported");
+        }
+        const seed = open.kind === "new" ? seedHistoryOf(open.request._meta) : [];
+        const additionalDirectories = readAdditionalDirectories(request.cwd, request.additionalDirectories);
+        if (open.kind === "resume" && this.sessions.has(open.request.sessionId)) {
             // A second open for a live session replaces it; close the old runtime first.
             await this.closeRuntime(open.request.sessionId);
         }
-        const additionalDirectories = readAdditionalDirectories(request.cwd, request.additionalDirectories);
         const mcpServers = request.mcpServers ?? [];
 
         // A client-configured gateway carries its own credentials; only native OpenAI routing needs a login.
@@ -296,7 +307,7 @@ export class CodexAgent {
                 id: sessionId,
                 cwd: request.cwd,
                 additionalDirectories,
-                mcpServerNames: mcpServerNames(mcpServers),
+                mcpServerNames: mcpServerNames(mcpServers).filter(name => !existingMcp.has(name)),
                 catalog,
                 model,
                 mode: initialAgentMode(this.env),
@@ -312,13 +323,9 @@ export class CodexAgent {
             };
             const runtime = this.installRuntime(session, capabilities);
             const replay = open.kind === "fork" || (open.kind === "resume" && open.request.replayFrom?.type === "start");
-            if (open.kind === "resume" && open.request.replayFrom != null && open.request.replayFrom.type !== "start") {
-                throw acp.RequestError.invalidParams({replayFrom: open.request.replayFrom}, "Only replayFrom {type: \"start\"} is supported");
-            }
             if (open.kind !== "new") {
                 await this.replayHistory(runtime, replay, thread.thread);
             } else {
-                const seed = seedHistoryOf(open.request._meta);
                 if (seed.length > 0) {
                     await this.withCodex(() => this.codex.threadInjectItems({threadId: sessionId, items: seed.map(seedItem)}));
                 }
@@ -328,6 +335,13 @@ export class CodexAgent {
             return runtime;
         } catch (error) {
             // The thread is loaded and subscribed on the Codex side; do not leak it.
+            const runtime = this.sessions.get(sessionId);
+            if (runtime) {
+                runtime.session.closed = true;
+                runtime.lifetime.abort();
+                runtime.bridge.dispose();
+                runtime.client.dispose();
+            }
             this.sessions.delete(sessionId);
             this.codex.detachThread(sessionId);
             await this.codex.threadUnsubscribe({threadId: sessionId}).catch(() => {});
@@ -339,10 +353,13 @@ export class CodexAgent {
         const client = new ClientSession(session.id, this.link, capabilities);
         const bridge = new EventBridge(client, session);
         const turnContext = new TurnContext(session.id);
-        const signal = () => session.activeTurn?.abort.signal;
+        const signal = () => {
+            const turn = session.activeTurn;
+            return turn ? AbortSignal.any([turn.abort.signal, turn.stop.signal]) : undefined;
+        };
         const approval = new CodexApprovalHandler(client, turnContext, signal);
         const elicitation = new CodexElicitationHandler(client, turnContext, signal);
-        const runtime: SessionRuntime = {session, client, bridge, turnContext, elicitation, queue: Promise.resolve()};
+        const runtime: SessionRuntime = {session, client, bridge, turnContext, elicitation, lifetime: new AbortController(), queue: Promise.resolve()};
         // Frames already queued (e.g. the tool call under review) must reach the client before its prompt.
         const drained = <P, T>(operation: (params: P) => Promise<T>) => async (params: P): Promise<T> => {
             await this.drain(runtime);
@@ -424,7 +441,7 @@ export class CodexAgent {
 
     private async reportMcpStartup(runtime: SessionRuntime, afterGeneration: number): Promise<void> {
         try {
-            const result = await this.codex.awaitMcpStartup(runtime.session.mcpServerNames, afterGeneration);
+            const result = await this.codex.awaitMcpStartup(runtime.session.mcpServerNames, afterGeneration, runtime.lifetime.signal, runtime.session.id);
             if (runtime.session.closed) return;
             for (const failure of result.failed) {
                 await runtime.client.update(mcpStartupFailed(failure.server, `MCP server "${failure.server}" failed to start: ${failure.error}`));
@@ -433,6 +450,7 @@ export class CodexAgent {
                 await runtime.client.update(mcpStartupFailed(server, `MCP server "${server}" startup was cancelled.`));
             }
         } catch (error) {
+            if (runtime.lifetime.signal.aborted) return;
             logger.error("MCP startup reporting failed", error, {sessionId: runtime.session.id});
         }
     }
@@ -501,18 +519,26 @@ export class CodexAgent {
         const runtime = this.sessions.get(sessionId);
         if (!runtime) return;
         runtime.session.closed = true;
+        runtime.lifetime.abort();
         const turn = runtime.session.activeTurn;
         if (turn) {
-            await this.interruptTurn(runtime, turn);
-            const timeout = new Promise<"timeout">(resolve => setTimeout(() => resolve("timeout"), this.closeGraceMs).unref());
-            if (await Promise.race([turn.finished.then(() => "finished" as const), timeout]) === "timeout" && turn.turnId) {
-                this.codex.resolveTurnInterrupted(turn.threadId, turn.turnId);
-                await turn.finished;
+            // Start the deadline before interrupting: even turn/start or turn/interrupt can stall.
+            void this.interruptTurn(runtime, turn);
+            let timer: ReturnType<typeof setTimeout> | undefined;
+            const timeout = new Promise<"timeout">(resolve => { timer = setTimeout(() => resolve("timeout"), this.closeGraceMs); });
+            try {
+                if (await Promise.race([turn.finished.then(() => "finished" as const), timeout]) === "timeout") {
+                    turn.stop.abort();
+                    await turn.finished;
+                }
+            } finally {
+                clearTimeout(timer);
             }
         }
         this.sessions.delete(sessionId);
         this.codex.detachThread(sessionId);
         runtime.bridge.dispose();
+        runtime.client.dispose();
         await this.codex.threadUnsubscribe({threadId: sessionId}).catch(error => {
             logger.error("thread/unsubscribe failed", error, {sessionId});
         });
@@ -529,7 +555,7 @@ export class CodexAgent {
     private runtime(sessionId: string, method: string): SessionRuntime {
         this.requireInitialized(method);
         const runtime = this.sessions.get(sessionId);
-        if (!runtime) throw acp.RequestError.invalidParams({sessionId}, `Unknown session "${sessionId}"`);
+        if (!runtime || runtime.session.closed) throw acp.RequestError.invalidParams({sessionId}, `Unknown session "${sessionId}" (missing or closed); create or resume it first`);
         return runtime;
     }
 
@@ -541,12 +567,12 @@ export class CodexAgent {
         if (!Array.isArray(params.prompt) || params.prompt.length === 0) {
             throw acp.RequestError.invalidParams(undefined, "prompt must contain at least one content block");
         }
-        if (session.activeTurn) {
-            return await this.steerActiveTurn(runtime, session.activeTurn, params);
-        }
         const model = findModel(session.catalog, session.model.model);
         if (!modelSupportsImages(model) && params.prompt.some(block => block.type === "image")) {
             throw acp.RequestError.invalidParams({model: session.model.model}, "The current model does not support image input");
+        }
+        if (session.activeTurn) {
+            return await this.steerActiveTurn(runtime, session.activeTurn, params);
         }
         const turn = createActiveTurn(session.id);
         session.activeTurn = turn;
@@ -570,68 +596,42 @@ export class CodexAgent {
     }
 
     private async runPrompt(runtime: SessionRuntime, turn: ActiveTurn, params: acp.PromptRequest): Promise<void> {
-        const {session, client, bridge} = runtime;
+        const {session, bridge} = runtime;
         bridge.beginTurn();
         try {
             const command = parseCommand(params.prompt);
             const outcome = command ? resolveCommand(command, session) : {kind: "prompt" as const};
-            let completed: TurnCompletedNotification | null = null;
-            switch (outcome.kind) {
-                case "prompt":
-                    completed = await this.runCodexTurn(runtime, turn, params.prompt);
-                    break;
-                case "message":
-                    await client.update(agentMessage(`command:${command?.name}:${Date.now()}`, await this.commandText(runtime, command?.name ?? "", outcome.text)));
-                    break;
-                case "config":
-                    await this.setSessionConfigOption({sessionId: session.id, configId: outcome.configId, type: "id", value: outcome.value});
-                    break;
-                case "compact":
-                    await this.runCompaction(runtime, turn);
-                    break;
-                case "review":
-                    completed = await this.withCodex(() => this.codex.runReview({threadId: session.id, target: outcome.target, delivery: "inline"}, (turnId, threadId) => {
-                        turn.turnId = turnId;
-                        turn.threadId = threadId;
-                        turn.resolveStarted(turnId);
-                    }));
-                    break;
-                case "logout":
-                    await this.withCodex(() => logout(this.codex));
-                    await this.refreshAccounts();
-                    await client.update(agentMessage(`command:logout:${Date.now()}`, "Logged out of the Codex account."));
-                    break;
-            }
+            let completed = await abortable(this.executePrompt(runtime, turn, command, outcome, params), turn.stop.signal);
             await this.drain(runtime);
             await bridge.flush();
 
             if (completed?.turn.status === "completed" && !turn.abort.signal.aborted) {
-                completed = await this.maybeImplementPlan(runtime, turn, completed);
+                completed = await abortable(this.maybeImplementPlan(runtime, turn, completed), turn.stop.signal);
             }
             if (completed?.turn.status === "interrupted" || turn.abort.signal.aborted) {
                 await bridge.cancelOpenToolCalls();
-                await client.reportIdle("cancelled", {usage: usageOf(session)});
+                await this.reportIdle(runtime, turn, "cancelled", {usage: usageOf(session)});
                 return;
             }
             if (completed?.turn.status === "failed") {
-                await this.reportTurnFailure(runtime, completed.turn.error ?? bridge.takeError() ?? {message: "Turn failed", codexErrorInfo: null, additionalDetails: null, misalignment: null});
+                await this.reportTurnFailure(runtime, turn, completed.turn.error ?? bridge.takeError() ?? {message: "Turn failed", codexErrorInfo: null, additionalDetails: null, misalignment: null});
                 return;
             }
             const pendingError = bridge.takeError();
             if (pendingError) {
-                await this.reportTurnFailure(runtime, pendingError);
+                await this.reportTurnFailure(runtime, turn, pendingError);
                 return;
             }
             await this.publishFallbackTitle(runtime, promptTitle(params.prompt));
-            await client.reportIdle("end_turn", {usage: usageOf(session)});
+            await this.reportIdle(runtime, turn, "end_turn", {usage: usageOf(session)});
         } catch (error) {
             if (turn.abort.signal.aborted || session.closed) {
                 await bridge.cancelOpenToolCalls().catch(() => {});
-                await client.reportIdle("cancelled", {usage: usageOf(session)}).catch(() => {});
+                await this.reportIdle(runtime, turn, "cancelled", {usage: usageOf(session)}).catch(() => {});
                 return;
             }
             logger.error("prompt failed", error, {sessionId: session.id});
-            await this.reportTurnFailure(runtime, {message: this.describeFailure(error), codexErrorInfo: null, additionalDetails: null, misalignment: null}).catch(() => {});
+            await this.reportTurnFailure(runtime, turn, this.failureOf(error)).catch(() => {});
         } finally {
             turn.resolveStarted(null);
             if (session.activeTurn === turn) session.activeTurn = null;
@@ -639,11 +639,41 @@ export class CodexAgent {
         }
     }
 
+    private async executePrompt(runtime: SessionRuntime, turn: ActiveTurn, command: ReturnType<typeof parseCommand>, outcome: ReturnType<typeof resolveCommand>, params: acp.PromptRequest): Promise<TurnCompletedNotification | null> {
+        const {session, client} = runtime;
+        let completed: TurnCompletedNotification | null = null;
+        switch (outcome.kind) {
+            case "prompt":
+                completed = await this.runCodexTurn(runtime, turn, params.prompt);
+                break;
+            case "message":
+                await client.update(agentMessage(`command:${command?.name}:${Date.now()}`, await this.commandText(runtime, command?.name ?? "", outcome.text)));
+                break;
+            case "config":
+                await this.setSessionConfigOption({sessionId: session.id, configId: outcome.configId, type: "id", value: outcome.value});
+                break;
+            case "compact":
+                await this.runCompaction(runtime, turn);
+                break;
+            case "review":
+                completed = await this.withCodex(() => this.codex.runReview({threadId: session.id, target: outcome.target, delivery: "inline"}, (turnId, threadId) => {
+                    this.turnStarted(runtime, turn, turnId, threadId);
+                }, turn.stop.signal));
+                break;
+            case "logout":
+                await this.withCodex(() => logout(this.codex));
+                await this.refreshAccounts();
+                await client.update(agentMessage(`command:logout:${Date.now()}`, "Logged out of the Codex account."));
+                break;
+        }
+        return completed;
+    }
+
     private async runCodexTurn(runtime: SessionRuntime, turn: ActiveTurn, prompt: readonly acp.ContentBlock[]): Promise<TurnCompletedNotification> {
         const {session} = runtime;
         const model = findModel(session.catalog, session.model.model);
         const disableSummary = session.account?.type === "apiKey" || modelLacksReasoning(model);
-        await this.withCodex(() => this.refreshSkills(session.cwd, session.additionalDirectories));
+        await abortable(this.withCodex(() => this.refreshSkills(session.cwd, session.additionalDirectories)), turn.abort.signal);
         if (turn.abort.signal.aborted) {
             return interruptedTurn(session.id);
         }
@@ -659,31 +689,40 @@ export class CodexAgent {
             serviceTier: session.fastMode ? FAST_SERVICE_TIER : null,
         }, (turnId) => {
             // A cancel that raced turn/start is parked on `started` and interrupts from there.
-            turn.turnId = turnId;
-            turn.resolveStarted(turnId);
-        }));
+            this.turnStarted(runtime, turn, turnId, session.id);
+        }, turn.stop.signal));
     }
 
     private async runCompaction(runtime: SessionRuntime, turn: ActiveTurn): Promise<void> {
         const threadId = runtime.session.id;
-        const completed = Promise.race([
-            this.codex.awaitNotification("item/completed", params => params.threadId === threadId && params.item.type === "contextCompaction"),
-            this.codex.awaitNotification("thread/compacted", params => params.threadId === threadId),
-        ]);
-        await this.withCodex(() => this.codex.threadCompactStart({threadId}));
         turn.resolveStarted(null);
-        await completed;
+        const pending = new AbortController();
+        const signal = AbortSignal.any([pending.signal, turn.abort.signal]);
+        const completed = Promise.race([
+            this.codex.awaitNotification("item/completed", params => params.threadId === threadId && params.item.type === "contextCompaction", signal),
+            this.codex.awaitNotification("thread/compacted", params => params.threadId === threadId, signal),
+        ]);
+        void completed.catch(() => {});
+        try {
+            signal.throwIfAborted();
+            await abortable(this.withCodex(() => this.codex.threadCompactStart({threadId})), signal);
+            await completed;
+        } finally {
+            // Codex versions report either event; dispose the losing waiter as well.
+            pending.abort();
+        }
     }
 
     /** In plan collaboration mode a finished plan asks the user whether to implement it now. */
     private async maybeImplementPlan(runtime: SessionRuntime, turn: ActiveTurn, completed: TurnCompletedNotification): Promise<TurnCompletedNotification> {
         const plan = runtime.bridge.takeCompletedPlan();
         if (!plan || runtime.session.collaborationMode !== PLAN_COLLABORATION_MODE) return completed;
-        const approved = await this.requestPlanApproval(runtime, plan, turn.abort.signal);
-        if (!approved || turn.abort.signal.aborted) return completed;
+        const signal = AbortSignal.any([turn.abort.signal, turn.stop.signal]);
+        const approved = await this.requestPlanApproval(runtime, plan, signal);
+        if (!approved || signal.aborted) return completed;
         await this.setSessionConfigOption({sessionId: runtime.session.id, configId: "collaboration_mode", type: "id", value: DEFAULT_COLLABORATION_MODE});
         runtime.bridge.beginTurn();
-        turn.turnId = null;
+        turn.resetStarted();
         const implementation = await this.runCodexTurn(runtime, turn, [{type: "text", text: "Implement the approved plan."}]);
         await this.drain(runtime);
         await runtime.bridge.flush();
@@ -692,13 +731,12 @@ export class CodexAgent {
 
     private async requestPlanApproval(runtime: SessionRuntime, plan: CompletedPlan, signal: AbortSignal): Promise<boolean> {
         const toolCallId = `plan-review:${plan.itemId}`;
+        const toolCall = {toolCallId, name: ToolName.PlanReview, title: "Implement this plan?", kind: "switch_mode" as const, status: "pending" as const, rawInput: {plan: plan.text}};
         try {
+            await runtime.client.update({sessionUpdate: "tool_call_update", ...toolCall});
             const response = await runtime.client.requestPermission({
                 title: "Implement this plan?",
-                subject: {
-                    type: "tool_call",
-                    toolCall: {toolCallId, name: ToolName.PlanReview, title: "Implement this plan?", kind: "switch_mode", status: "pending", rawInput: {plan: plan.text}},
-                },
+                subject: {type: "tool_call", toolCall},
                 options: [
                     {optionId: IMPLEMENT_PLAN_OPTION, name: "Yes, implement this plan", kind: "allow_once"},
                     {optionId: REVISE_PLAN_OPTION, name: "No, and tell Codex what to do differently", kind: "reject_once"},
@@ -715,6 +753,7 @@ export class CodexAgent {
             return approved;
         } catch (error) {
             logger.error("plan approval failed", error, {sessionId: runtime.session.id});
+            await runtime.client.update({sessionUpdate: "tool_call_update", toolCallId, status: signal.aborted ? "cancelled" : "failed"}).catch(() => {});
             return false;
         }
     }
@@ -734,7 +773,13 @@ export class CodexAgent {
         }
     }
 
-    private async reportTurnFailure(runtime: SessionRuntime, error: TurnError): Promise<void> {
+    private async reportIdle(runtime: SessionRuntime, turn: ActiveTurn, reason: acp.StopReason, extra?: Parameters<ClientSession["reportIdle"]>[1]): Promise<void> {
+        // The client may send its next prompt as soon as it receives idle.
+        if (runtime.session.activeTurn === turn) runtime.session.activeTurn = null;
+        await runtime.client.reportIdle(reason, extra);
+    }
+
+    private async reportTurnFailure(runtime: SessionRuntime, turn: ActiveTurn, error: TurnError): Promise<void> {
         const message = error.additionalDetails ? `${error.message}\n\n${error.additionalDetails}` : error.message;
         await runtime.client.update({
             sessionUpdate: "agent_message_chunk",
@@ -742,7 +787,7 @@ export class CodexAgent {
             content: {type: "text", text: message},
             _meta: {codex: {error: {message: error.message, codexErrorInfo: error.codexErrorInfo, additionalDetails: error.additionalDetails}}},
         });
-        await runtime.client.reportIdle(ERROR_STOP_REASON, {
+        await this.reportIdle(runtime, turn, ERROR_STOP_REASON, {
             usage: usageOf(runtime.session),
             _meta: {codex: {error: {message: error.message, codexErrorInfo: error.codexErrorInfo}}},
         });
@@ -766,11 +811,27 @@ export class CodexAgent {
         turn.abort.abort();
         const turnId = turn.turnId ?? await turn.started;
         if (turnId === null) return;
-        try {
-            await this.codex.turnInterrupt({threadId: turn.threadId, turnId});
-        } catch (error) {
-            logger.error("turn/interrupt failed", error, {sessionId: runtime.session.id, turnId});
+        await this.sendInterrupt(runtime, turn, turnId);
+    }
+
+    private sendInterrupt(runtime: SessionRuntime, turn: ActiveTurn, turnId: string): Promise<void> {
+        const key = `${turn.threadId}:${turnId}`;
+        let pending = turn.interrupts.get(key);
+        if (!pending) {
+            pending = this.codex.turnInterrupt({threadId: turn.threadId, turnId}).then(() => {}, error => {
+                logger.error("turn/interrupt failed", error, {sessionId: runtime.session.id, turnId});
+            });
+            turn.interrupts.set(key, pending);
         }
+        return pending;
+    }
+
+    private turnStarted(runtime: SessionRuntime, turn: ActiveTurn, turnId: string, threadId: string): void {
+        turn.turnId = turnId;
+        turn.threadId = threadId;
+        turn.resolveStarted(turnId);
+        // A close may have already ended local waiting before turn/start finally returns.
+        if (turn.abort.signal.aborted) void this.sendInterrupt(runtime, turn, turnId);
     }
 
     // ---- helpers ------------------------------------------------------------------
@@ -822,6 +883,17 @@ export class CodexAgent {
         }
     }
 
+    /** A thrown error as a Codex-shaped turn error; a lost connection carries the process's stderr tail. */
+    private failureOf(error: unknown): TurnError {
+        const details = error instanceof Error ? (error as {additionalDetails?: unknown}).additionalDetails : undefined;
+        return {
+            message: this.describeFailure(error),
+            codexErrorInfo: null,
+            additionalDetails: typeof details === "string" && details.length > 0 ? details : null,
+            misalignment: null,
+        };
+    }
+
     private describeFailure(error: unknown): string {
         if (error instanceof acp.RequestError) {
             const details = (error.data as {details?: unknown} | undefined)?.details;
@@ -838,12 +910,16 @@ export class CodexAgent {
         for (const runtime of this.sessions.values()) {
             const turn = runtime.session.activeTurn;
             if (!turn) continue;
+            const stderr = this.process?.recentStderr() || null;
+            // The stop abort wins the race against the synthesized completion below, so the
+            // stderr tail rides on the abort reason too; it is the only diagnostic left.
+            turn.stop.abort(Object.assign(new Error("Connection to Codex was lost"), {additionalDetails: stderr}));
             turn.resolveStarted(null);
             if (turn.turnId) {
                 this.codex.failTurn(turn.threadId, turn.turnId, {
                     message: "Connection to Codex was lost",
                     codexErrorInfo: null,
-                    additionalDetails: this.process?.recentStderr() || null,
+                    additionalDetails: stderr,
                     misalignment: null,
                 });
             }

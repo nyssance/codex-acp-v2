@@ -28,6 +28,8 @@
 `chat-gpt` is omitted when `NO_BROWSER` is set; `chat-gpt-device-code` is offered only
 to clients that declare `capabilities.elicitation.url`. Every other method returns
 `-32600` until `initialize` has succeeded.
+Concurrent initialization requests share one Codex handshake. A failed handshake
+does not unlock session methods and can be retried.
 
 `auth/login` with `api-key` reads `_meta["api-key"].apiKey`, then `CODEX_API_KEY`,
 then `OPENAI_API_KEY`. `session/new` returns `-32000` (auth required) while Codex has
@@ -55,11 +57,25 @@ chat completions. With a gateway active `session/new` does not require an OpenAI
 | --- | --- |
 | `session/new` | `cwd` must be absolute. `additionalDirectories` become trusted projects and sandbox write roots. `mcpServers` (stdio, http) are added to the thread config; names that collide with the user's Codex config are skipped. |
 | `session/resume` | `replayFrom: {type: "start"}` replays the transcript as `session/update` frames before the response, paged through Codex `thread/turns/list` in pages of 50 turns; `null` or omitted restores context only. Other cursors are rejected. |
-| `session/fork` | Forks the Codex thread and replays the copied transcript under the new session id. |
+| `session/fork` | Forks the Codex thread and replays the copied transcript under the new session id. The source session remains open, including any running turn. |
 | `session/list` | `cwd` filters by exact Codex thread cwd; `cursor` pages. |
-| `session/close` | Interrupts a running turn, waits for it, unsubscribes. |
-| `session/delete` | Close plus `thread/archive`. |
+| `session/close` | Interrupts a running turn, waits up to 5 seconds for its local prompt flow to finish, then unsubscribes. The grace period includes waiting for `turn/start` and `turn/interrupt`; a late start is interrupted when its id becomes known. |
+| `session/delete` | Close plus `thread/delete` (permanent deletion). |
+| `_codex/session_archive` | `{sessionId}` closes and archives the thread (reversible hiding). Advertised as `capabilities._meta.codex.archive: true`. |
+| `_codex/session_unarchive` | `{sessionId}` restores an archived thread's visibility. |
 | `session/set_config_option` | Returns and broadcasts the full option list. |
+
+`session/list` with `_meta: {codex: {archived: true}}` lists archived threads.
+The default is the non-archived list; each returned session includes
+`_meta.codex.archived`.
+
+`session/new` accepts `_meta.codex.seedHistory: [{role, text}]`, with `role` equal
+to `"user"` or `"assistant"`. These entries are injected into the new thread as
+model-visible history before the first prompt. This extension is advertised as
+`capabilities._meta.codex.seedHistory: true`.
+
+Invalid replay cursors, additional directories, and seed history are rejected
+before an existing session is closed or a new thread is created.
 
 ### Config options
 
@@ -80,6 +96,8 @@ not support it.
 on a text-only model, or an unknown session). While a turn runs, another prompt on
 the same session is injected into it with `turn/steer` and returns
 `{_meta: {codex: {steered: "<turnId>"}}}`.
+Image capability validation also applies to steering. Once `idle` is published,
+the next prompt starts a new turn rather than steering the completed one.
 
 State frames:
 
@@ -95,6 +113,15 @@ A failed turn emits an `agent_message_chunk` with the error text and
 generically) and the same `_meta.codex.error`.
 
 `session/cancel` calls `turn/interrupt`; the turn ends with `idle` / `cancelled`.
+Repeated cancel/close requests send at most one interrupt per Codex turn.
+Cancellation before `turn/start` prevents that turn from being sent, even if
+the preceding skills refresh is still pending. For `/compact`, cancellation
+ends the adapter's wait and reports `idle` / `cancelled`; Codex exposes no
+compaction-specific interrupt, so background compaction may still finish.
+
+Blocking requests are counted per turn: a late response from a previous turn
+cannot clear the current turn's `requires_action` state. A lost Codex connection
+also ends waits for compaction and plan approval with `_error`.
 
 ## Session updates
 

@@ -6,6 +6,7 @@ import type {Model, Thread, ThreadItem, Turn} from "../app-server/v2";
 import {CodexAgent} from "../agent/CodexAgent";
 import type {ClientLink} from "../agent/clientSession";
 import {AppServerClient} from "../codex/AppServerClient";
+import type {CodexProcess} from "../codex/process";
 
 export type RecordedRequest = {method: string; params: unknown};
 export type ScriptedResponse = (params: any) => unknown | Promise<unknown>;
@@ -81,6 +82,10 @@ export class FakeCodexConnection {
                 return {dispose() {}};
             },
             onClose: (handler: () => void) => {
+                this.closeHandlers.push(handler);
+                return {dispose() {}};
+            },
+            onDispose: (handler: () => void) => {
                 this.closeHandlers.push(handler);
                 return {dispose() {}};
             },
@@ -265,7 +270,7 @@ export interface TestAgent {
     openSession(request?: Partial<acp.NewSessionRequest>): Promise<acp.NewSessionResponse>;
 }
 
-export function createTestAgent(options: {env?: NodeJS.ProcessEnv; catalog?: Model[]; closeGraceMs?: number} = {}): TestAgent {
+export function createTestAgent(options: {env?: NodeJS.ProcessEnv; catalog?: Model[]; closeGraceMs?: number; codexStderr?: string} = {}): TestAgent {
     const codex = new FakeCodexConnection();
     const client = new FakeClient();
     const catalog = options.catalog ?? [model()];
@@ -302,6 +307,7 @@ export function createTestAgent(options: {env?: NodeJS.ProcessEnv; catalog?: Mod
         info: {name: "codex-acp-v2-test", version: "0.0.0"},
         env: options.env ?? {},
         ...(options.closeGraceMs === undefined ? {} : {closeGraceMs: options.closeGraceMs}),
+        ...(options.codexStderr === undefined ? {} : {process: fakeProcess(options.codexStderr)}),
     });
     const settle = async () => {
         for (let index = 0; index < 8; index += 1) {
@@ -339,4 +345,13 @@ export async function expectRejects(promise: Promise<unknown>, code: number, mes
     expect(error.code).toBe(code);
     if (messagePart) expect(error.message).toContain(messagePart);
     return error;
+}
+
+/** Stands in for a spawned Codex whose stderr tail is known; never exits on its own. */
+function fakeProcess(stderr: string): CodexProcess {
+    return {
+        exited: new Promise<number | null>(() => {}),
+        recentStderr: () => stderr,
+        exitCode: () => null,
+    } as unknown as CodexProcess;
 }

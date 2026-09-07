@@ -10,8 +10,12 @@ export interface ActiveTurn {
     /** Thread that owns the turn. Review turns run on a separate review thread. */
     threadId: string;
     readonly abort: AbortController;
+    /** Ends local waiting when a closing session exceeds its grace period. */
+    readonly stop: AbortController;
+    readonly interrupts: Map<string, Promise<void>>;
     /** Resolves with the turn id once known, or null when the turn never started. */
     readonly started: Promise<string | null>;
+    resetStarted(): void;
     resolveStarted(turnId: string | null): void;
     /** Resolves once the prompt flow has emitted its terminal state update. */
     readonly finished: Promise<void>;
@@ -42,7 +46,7 @@ export interface Session {
 export function createActiveTurn(threadId: string): ActiveTurn {
     let resolveStarted: (turnId: string | null) => void = () => {};
     let resolveFinished: () => void = () => {};
-    const started = new Promise<string | null>(resolve => {
+    let started = new Promise<string | null>(resolve => {
         resolveStarted = resolve;
     });
     const finished = new Promise<void>(resolve => {
@@ -54,7 +58,14 @@ export function createActiveTurn(threadId: string): ActiveTurn {
         turnId: null,
         threadId,
         abort: new AbortController(),
-        started,
+        stop: new AbortController(),
+        interrupts: new Map(),
+        get started() { return started; },
+        resetStarted() {
+            this.turnId = null;
+            startedSettled = false;
+            started = new Promise(resolve => { resolveStarted = resolve; });
+        },
         resolveStarted(turnId) {
             if (startedSettled) return;
             startedSettled = true;

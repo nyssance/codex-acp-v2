@@ -26,7 +26,7 @@ class StdioClient {
     private nextId = 1;
     readonly updates: Update[] = [];
     readonly permissionRequests: any[] = [];
-    private readonly waiters: Array<(update: Update) => void> = [];
+    private readonly waiters = new Set<(update: Update) => void>();
     permissionResponder: (request: any) => {outcome: "selected"; optionId: string} | {outcome: "cancelled"} = (request) => {
         const allow = request.options.find((option: any) => option.kind === "allow_once") ?? request.options[0];
         return {outcome: "selected", optionId: allow.optionId};
@@ -61,19 +61,26 @@ class StdioClient {
         return this.updates.slice(mark).filter(update => sessionId === undefined || update.sessionId === sessionId);
     }
 
-    nextUpdate(predicate: (update: Update) => boolean, timeoutMs = TURN_TIMEOUT_MS): Promise<Update> {
+    nextUpdate(predicate: (update: Update) => boolean, timeoutMs = TURN_TIMEOUT_MS, from = this.mark()): Promise<Update> {
+        const existing = this.since(from).find(predicate);
+        if (existing) return Promise.resolve(existing);
         return new Promise((resolve, reject) => {
-            const timer = setTimeout(() => reject(new Error("timed out waiting for session update")), timeoutMs);
-            this.waiters.push(update => {
+            const timer = setTimeout(() => {
+                this.waiters.delete(waiter);
+                reject(new Error("timed out waiting for session update"));
+            }, timeoutMs);
+            const waiter = (update: Update) => {
                 if (!predicate(update)) return;
                 clearTimeout(timer);
+                this.waiters.delete(waiter);
                 resolve(update);
-            });
+            };
+            this.waiters.add(waiter);
         });
     }
 
-    idle(sessionId: string, timeoutMs = TURN_TIMEOUT_MS): Promise<Update> {
-        return this.nextUpdate(update => update.sessionId === sessionId && update.sessionUpdate === "state_update" && update.state === "idle", timeoutMs);
+    idle(sessionId: string, timeoutMs = TURN_TIMEOUT_MS, from = this.mark()): Promise<Update> {
+        return this.nextUpdate(update => update.sessionId === sessionId && update.sessionUpdate === "state_update" && update.state === "idle", timeoutMs, from);
     }
 
     text(mark: number, sessionId: string): string {
@@ -138,7 +145,7 @@ describe.skipIf(!RUN)("live codex", {timeout: 240_000}, () => {
         expect(created.configOptions.map((option: any) => option.configId)).toEqual(expect.arrayContaining(["mode", "model", "effort"]));
         const mark = client.mark();
         expect(await client.call("session/prompt", {sessionId: firstSessionId, prompt: [{type: "text", text: "Reply with exactly the single word: pong"}]})).toEqual({});
-        const idle = await client.idle(firstSessionId);
+        const idle = await client.idle(firstSessionId, TURN_TIMEOUT_MS, mark);
         expect(idle.stopReason).toBe("end_turn");
         expect(idle.usage.totalTokens).toBeGreaterThan(0);
         const frames = client.since(mark, firstSessionId);
@@ -153,17 +160,18 @@ describe.skipIf(!RUN)("live codex", {timeout: 240_000}, () => {
         expect(response.configOptions.find((option: any) => option.configId === "effort").currentValue).toBe("low");
         const mark = client.mark();
         await client.call("session/prompt", {sessionId: firstSessionId, prompt: [{type: "text", text: "/status"}]});
-        await client.idle(firstSessionId, 10_000);
+        await client.idle(firstSessionId, 10_000, mark);
         expect(client.text(mark, firstSessionId)).toContain("(low)");
     });
 
     it("cancels a running turn with stopReason cancelled", async () => {
         const created = await client.call("session/new", {cwd, mcpServers: []});
         const sessionId = created.sessionId as string;
+        const mark = client.mark();
         await client.call("session/prompt", {sessionId, prompt: [{type: "text", text: "Write a 2000-word essay about the history of computing, one paragraph per decade."}]});
-        await client.nextUpdate(update => update.sessionId === sessionId && update.sessionUpdate === "agent_message_chunk", 60_000).catch(() => undefined);
+        await client.nextUpdate(update => update.sessionId === sessionId && update.sessionUpdate === "agent_message_chunk", 60_000, mark).catch(() => undefined);
         client.notify("session/cancel", {sessionId});
-        const idle = await client.idle(sessionId, 30_000);
+        const idle = await client.idle(sessionId, 30_000, mark);
         expect(idle.stopReason).toBe("cancelled");
         await client.call("session/close", {sessionId});
     });
@@ -175,7 +183,7 @@ describe.skipIf(!RUN)("live codex", {timeout: 240_000}, () => {
         const mark = client.mark();
         const requestsBefore = client.permissionRequests.length;
         await client.call("session/prompt", {sessionId, prompt: [{type: "text", text: "Run this exact shell command and show me its output: curl -sS https://example.com | head -c 60"}]});
-        const idle = await client.idle(sessionId);
+        const idle = await client.idle(sessionId, TURN_TIMEOUT_MS, mark);
         expect(idle.stopReason).toBe("end_turn");
         const requests = client.permissionRequests.slice(requestsBefore);
         expect(requests.length).toBeGreaterThan(0);
@@ -224,7 +232,7 @@ describe.skipIf(!RUN)("live codex", {timeout: 240_000}, () => {
             expect(created.configOptions.find((option: any) => option.configId === "model").currentValue).toBe("fake-model");
             const mark = client.mark();
             await client.call("session/prompt", {sessionId, prompt: [{type: "text", text: "ping"}]});
-            const idle = await client.idle(sessionId, 60_000);
+            const idle = await client.idle(sessionId, 60_000, mark);
             expect(idle.stopReason).toBe("end_turn");
             expect(client.text(mark, sessionId)).toBe("pong from the fake gateway");
             expect(gateway.requests.map(request => [request.path, request.authorization, request.body["model"]])).toEqual([["/v1/responses", "Bearer e2e-token", "fake-model"]]);

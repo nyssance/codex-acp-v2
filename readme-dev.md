@@ -12,7 +12,8 @@ ACP v2 client ──stdio──▶ src/index.ts ──▶ agent/createAgent.ts (
                                                   │     └─ bridge/terminal.ts   command output → terminal frames
                                                   ├─▶ permissions/*             approvals and elicitations
                                                   └─▶ codex/AppServerClient.ts  typed JSON-RPC client for codex app-server
-                                                        └─ codex/process.ts     spawn + newline JSON-RPC transport
+                                                        ├─ codex/process.ts     process spawning
+                                                        └─ codex/transport.ts   UTF-8 newline JSON-RPC transport
 ```
 
 - `src/app-server/` holds the generated Codex app-server types (`bun run generate-types`).
@@ -33,9 +34,13 @@ ACP v2 client ──stdio──▶ src/index.ts ──▶ agent/createAgent.ts (
    tool call under review is always rendered before its permission request.
 4. `turn/completed` status decides the terminal frame: `completed` → `idle end_turn`
    with usage; `interrupted` → `idle cancelled`; `failed` → an error
-   `agent_message_chunk` (`_meta.codex.error`) followed by `idle end_turn`.
+   `agent_message_chunk` (`_meta.codex.error`) followed by `idle _error`.
 5. `session/cancel` aborts the turn and calls `turn/interrupt` once the turn id is
    known; a cancel that arrives before `turn/start` is sent never starts the turn.
+   Repeated interrupts are coalesced. Closing a session bounds the wait even when
+   the start/interrupt RPC itself stalls, and interrupts a late start by its id.
+6. The active turn is released before publishing `idle`, so an immediate next
+   prompt starts a new turn. Client-request counters are scoped to each turn.
 
 ## Testing
 
@@ -43,8 +48,16 @@ ACP v2 client ──stdio──▶ src/index.ts ──▶ agent/createAgent.ts (
   and `FakeClient` (records `session/update`, answers permissions and elicitations).
 - Unit suites: `agent.test.ts` (lifecycle), `bridge.test.ts` (event mapping),
   `permissions.test.ts` (approvals, elicitation, state transitions), `units.test.ts`.
+- `reliability.test.ts` covers initialization failures, validation side effects,
+  interleaved sessions, cancellation races, close deadlines, and late approvals.
+- `transport.test.ts` checks every byte split of multilingual UTF-8 frames,
+  write completion/errors, EOF, listener disposal, and wire-log credential redaction.
+- `appServer.test.ts` checks notification/MCP waiter cancellation and thread-scoped
+  MCP startup state. Notification scopes are released when their triggering RPC fails.
 - `e2e.test.ts` drives the real agent over stdio; run with `bun run test:e2e`
   (needs a ChatGPT login or `CODEX_API_KEY`).
+  Every prompt records an update cursor before it is sent; waits include frames
+  already received since that cursor, including fast local-command completions.
 
 ## Updating the supported Codex version
 
