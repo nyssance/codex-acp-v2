@@ -27,6 +27,24 @@ import type {
     ReviewStartParams,
     ReviewStartResponse,
     SkillsExtraRootsSetParams,
+    MarketplaceAddParams,
+    MarketplaceAddResponse,
+    MarketplaceRemoveParams,
+    MarketplaceRemoveResponse,
+    MarketplaceUpgradeParams,
+    MarketplaceUpgradeResponse,
+    PluginInstallParams,
+    PluginInstallResponse,
+    PluginInstalledParams,
+    PluginInstalledResponse,
+    PluginListParams,
+    PluginListResponse,
+    PluginReadParams,
+    PluginReadResponse,
+    PluginUninstallParams,
+    PluginUninstallResponse,
+    SkillsConfigWriteParams,
+    SkillsConfigWriteResponse,
     SkillsListParams,
     SkillsListResponse,
     ThreadArchiveParams,
@@ -529,6 +547,42 @@ export class AppServerClient {
 
     skillsExtraRootsSet(params: SkillsExtraRootsSetParams): Promise<void> {
         return this.send({method: "skills/extraRoots/set", params});
+    }
+
+    skillsConfigWrite(params: SkillsConfigWriteParams): Promise<SkillsConfigWriteResponse> {
+        return this.send({method: "skills/config/write", params});
+    }
+
+    pluginList(params: PluginListParams): Promise<PluginListResponse> {
+        return this.send({method: "plugin/list", params});
+    }
+
+    pluginInstalled(params: PluginInstalledParams): Promise<PluginInstalledResponse> {
+        return this.send({method: "plugin/installed", params});
+    }
+
+    pluginInstall(params: PluginInstallParams): Promise<PluginInstallResponse> {
+        return this.send({method: "plugin/install", params});
+    }
+
+    pluginUninstall(params: PluginUninstallParams): Promise<PluginUninstallResponse> {
+        return this.send({method: "plugin/uninstall", params});
+    }
+
+    pluginRead(params: PluginReadParams): Promise<PluginReadResponse> {
+        return this.send({method: "plugin/read", params});
+    }
+
+    marketplaceAdd(params: MarketplaceAddParams): Promise<MarketplaceAddResponse> {
+        return this.send({method: "marketplace/add", params});
+    }
+
+    marketplaceRemove(params: MarketplaceRemoveParams): Promise<MarketplaceRemoveResponse> {
+        return this.send({method: "marketplace/remove", params});
+    }
+
+    marketplaceUpgrade(params: MarketplaceUpgradeParams): Promise<MarketplaceUpgradeResponse> {
+        return this.send({method: "marketplace/upgrade", params});
     }
 
     accountRead(params: GetAccountParams): Promise<GetAccountResponse> {

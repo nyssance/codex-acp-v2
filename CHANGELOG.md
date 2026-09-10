@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.4.0 — 2026-09-10
+
+### Added
+
+- Skills and plugins extension surface: `_codex/skills_list`, `_codex/skills_config_write`,
+  `_codex/plugin_list`, `_codex/plugin_installed`, `_codex/plugin_install`,
+  `_codex/plugin_uninstall`, `_codex/plugin_read`, `_codex/marketplace_add`,
+  `_codex/marketplace_remove`, `_codex/marketplace_upgrade` pass the Codex v2 shapes
+  through verbatim; advertised as `capabilities._meta.codex.skills` / `.plugins`.
+- `_codex/skills_changed` notification: forwarded from Codex `skills/changed` and sent
+  after every catalog mutation made through the adapter.
+
 ## 0.3.5 — 2026-09-07
 
 ### Fixed

@@ -21,6 +21,12 @@ compatibility layer: everything is written against `@agentclientprotocol/sdk/exp
   hiding is the `_codex/session_archive` / `_codex/session_unarchive` extension pair
   (declared as `capabilities._meta.codex.archive`), and `session/list` pages the archive
   when called with `_meta: {codex: {archived: true}}`.
+- **Skills and plugins**: `_codex/skills_list`, `_codex/skills_config_write`,
+  `_codex/plugin_list` / `_codex/plugin_installed` / `_codex/plugin_install` /
+  `_codex/plugin_uninstall` / `_codex/plugin_read` and `_codex/marketplace_add` /
+  `_codex/marketplace_remove` / `_codex/marketplace_upgrade` pass Codex's own request
+  and response shapes through (declared as `capabilities._meta.codex.skills` / `.plugins`);
+  `_codex/skills_changed` tells the client to refetch either catalog.
 - **Asynchronous prompts**: `session/prompt` returns immediately; the turn is
   reported through `state_update` frames (`running`, `requires_action` while a
   permission or form is open, `idle` with `stopReason` and token `usage`).

@@ -467,6 +467,75 @@ describe("resume, fork, list, close, delete", () => {
     });
 });
 
+describe("skills and plugins", () => {
+    it("declares the extension and passes skills requests through to Codex", async () => {
+        const t = createTestAgent();
+        const init = await t.initialize();
+        const meta = init.capabilities?._meta as {codex?: {skills?: boolean; plugins?: boolean}};
+        expect(meta.codex?.skills).toBe(true);
+        expect(meta.codex?.plugins).toBe(true);
+        const listed = {data: [{cwd: CWD, skills: [{name: "review", description: "Review code", path: "/skills/review", scope: "user", enabled: true}], errors: []}]};
+        t.codex.respond("skills/list", () => listed);
+        t.codex.respond("skills/config/write", () => ({effectiveEnabled: false}));
+        expect(await t.agent.skillsList({cwds: [CWD], forceReload: true})).toEqual(listed);
+        expect(t.codex.lastParams("skills/list")).toEqual({cwds: [CWD], forceReload: true});
+        expect(await t.agent.skillsConfigWrite({name: "review", enabled: false})).toEqual({effectiveEnabled: false});
+        expect(t.codex.lastParams("skills/config/write")).toEqual({name: "review", enabled: false});
+        await t.settle();
+        expect(t.client.notifications.filter(entry => entry.method === "_codex/skills_changed")).toHaveLength(1);
+    });
+
+    it("passes plugin catalog and install requests through and signals a skills change after mutations", async () => {
+        const t = createTestAgent();
+        await t.initialize();
+        const catalog = {marketplaces: [], marketplaceLoadErrors: [], featuredPluginIds: ["p1"]};
+        const installed = {marketplaces: [], marketplaceLoadErrors: []};
+        t.codex.respond("plugin/list", () => catalog);
+        t.codex.respond("plugin/installed", () => installed);
+        t.codex.respond("plugin/install", () => ({authPolicy: "none", appsNeedingAuth: []}));
+        t.codex.respond("plugin/uninstall", () => ({}));
+        t.codex.respond("plugin/read", () => ({plugin: {id: "p1", name: "One"}}));
+        expect(await t.agent.pluginList({forceRefetch: true})).toEqual(catalog);
+        expect(t.codex.lastParams("plugin/list")).toEqual({forceRefetch: true});
+        expect(await t.agent.pluginInstalled({cwds: [CWD]})).toEqual(installed);
+        expect(await t.agent.pluginInstall({pluginName: "one", remoteMarketplaceName: "official"})).toEqual({authPolicy: "none", appsNeedingAuth: []});
+        expect(t.codex.lastParams("plugin/install")).toEqual({pluginName: "one", remoteMarketplaceName: "official"});
+        expect(await t.agent.pluginUninstall({pluginId: "p1"})).toEqual({});
+        expect(t.codex.lastParams("plugin/uninstall")).toEqual({pluginId: "p1"});
+        expect(await t.agent.pluginRead({pluginName: "one"})).toEqual({plugin: {id: "p1", name: "One"}});
+        await t.settle();
+        expect(t.client.notifications.filter(entry => entry.method === "_codex/skills_changed")).toHaveLength(2);
+    });
+
+    it("passes marketplace requests through and forwards Codex skills/changed", async () => {
+        const t = createTestAgent();
+        await t.initialize();
+        t.codex.respond("marketplace/add", () => ({marketplaceName: "acme", installedRoot: "/plugins/acme", alreadyAdded: false}));
+        t.codex.respond("marketplace/remove", () => ({}));
+        t.codex.respond("marketplace/upgrade", () => ({selectedMarketplaces: ["acme"], upgradedRoots: [], errors: []}));
+        expect(await t.agent.marketplaceAdd({source: "github:acme/plugins"})).toMatchObject({marketplaceName: "acme"});
+        expect(t.codex.lastParams("marketplace/add")).toEqual({source: "github:acme/plugins"});
+        expect(await t.agent.marketplaceUpgrade({marketplaceName: "acme"})).toMatchObject({selectedMarketplaces: ["acme"]});
+        expect(await t.agent.marketplaceRemove({marketplaceName: "acme"})).toEqual({});
+        await t.settle();
+        const changes = () => t.client.notifications.filter(entry => entry.method === "_codex/skills_changed").length;
+        expect(changes()).toBe(3);
+        t.codex.emit({method: "skills/changed", params: {}});
+        await t.settle();
+        expect(changes()).toBe(4);
+    });
+
+    it("rejects skills and plugin requests before initialize and propagates Codex errors", async () => {
+        const t = createTestAgent();
+        await expectRejects(t.agent.pluginList({}), -32600);
+        await t.initialize();
+        t.codex.respond("plugin/install", () => { throw new Error("marketplace unreachable"); });
+        await expect(t.agent.pluginInstall({pluginName: "one"})).rejects.toThrow("marketplace unreachable");
+        await t.settle();
+        expect(t.client.notifications.filter(entry => entry.method === "_codex/skills_changed")).toHaveLength(0);
+    });
+});
+
 describe("auth", () => {
     it("logs in with an API key from the environment", async () => {
         const t = createTestAgent({env: {CODEX_API_KEY: "sk-test"}});

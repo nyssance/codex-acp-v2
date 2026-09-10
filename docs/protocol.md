@@ -90,6 +90,33 @@ before an existing session is closed or a new thread is created.
 Changing `model` re-validates `effort` and clears `fast_mode` if the new model does
 not support it.
 
+## Skills and plugins
+
+Codex's skill and plugin catalogs are exposed as `_codex/*` requests whose params and
+results are the Codex app-server v2 shapes, passed through verbatim (see
+`src/app-server/v2/`). Codex validates the fields; the adapter only checks that params
+are an object and requires a successful `initialize`. Codex errors propagate unchanged.
+Advertised as `capabilities._meta.codex.skills: true` and `capabilities._meta.codex.plugins: true`.
+
+| Method | Codex request | Params → result |
+| --- | --- | --- |
+| `_codex/skills_list` | `skills/list` | `SkillsListParams` → `SkillsListResponse` |
+| `_codex/skills_config_write` | `skills/config/write` | `SkillsConfigWriteParams` → `SkillsConfigWriteResponse` |
+| `_codex/plugin_list` | `plugin/list` | `PluginListParams` → `PluginListResponse` |
+| `_codex/plugin_installed` | `plugin/installed` | `PluginInstalledParams` → `PluginInstalledResponse` |
+| `_codex/plugin_install` | `plugin/install` | `PluginInstallParams` → `PluginInstallResponse` |
+| `_codex/plugin_uninstall` | `plugin/uninstall` | `PluginUninstallParams` → `{}` |
+| `_codex/plugin_read` | `plugin/read` | `PluginReadParams` → `PluginReadResponse` |
+| `_codex/marketplace_add` | `marketplace/add` | `MarketplaceAddParams` → `MarketplaceAddResponse` |
+| `_codex/marketplace_remove` | `marketplace/remove` | `MarketplaceRemoveParams` → `{}` |
+| `_codex/marketplace_upgrade` | `marketplace/upgrade` | `MarketplaceUpgradeParams` → `MarketplaceUpgradeResponse` |
+
+The agent sends the `_codex/skills_changed` notification (params `{}`) whenever Codex
+emits `skills/changed`, and after each successful `_codex/skills_config_write`,
+`_codex/plugin_install`, `_codex/plugin_uninstall` and `_codex/marketplace_*` request.
+Plugins ship skills, so one signal covers both catalogs; a host refetches on it.
+The adapter's own skill snapshot and `available_commands_update` handling is unchanged.
+
 ## Prompts and state
 
 `session/prompt` returns `{}` immediately (or `-32602` for an empty prompt, an image

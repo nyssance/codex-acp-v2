@@ -4,7 +4,30 @@ import * as acp from "@agentclientprotocol/sdk/experimental/v2";
 import type {JsonValue} from "../app-server/serde_json/JsonValue";
 import path from "node:path";
 import type {ServerNotification} from "../app-server";
-import type {Thread, Turn, TurnCompletedNotification, TurnError} from "../app-server/v2";
+import type {
+    MarketplaceAddParams,
+    MarketplaceAddResponse,
+    MarketplaceRemoveParams,
+    MarketplaceUpgradeParams,
+    MarketplaceUpgradeResponse,
+    PluginInstallParams,
+    PluginInstallResponse,
+    PluginInstalledParams,
+    PluginInstalledResponse,
+    PluginListParams,
+    PluginListResponse,
+    PluginReadParams,
+    PluginReadResponse,
+    PluginUninstallParams,
+    SkillsConfigWriteParams,
+    SkillsConfigWriteResponse,
+    SkillsListParams,
+    SkillsListResponse,
+    Thread,
+    Turn,
+    TurnCompletedNotification,
+    TurnError,
+} from "../app-server/v2";
 import {EventBridge, type CompletedPlan} from "../bridge/EventBridge";
 import {mcpStartupFailed, ToolName} from "../bridge/toolCalls";
 import type {AppServerClient} from "../codex/AppServerClient";
@@ -126,6 +149,8 @@ export class CodexAgent {
                 // Codex emits skills/changed for our own extraRoots/set. Republish here would
                 // alternate session roots forever; the current operation already reloads them.
                 if (!this.changingSkillRoots) for (const runtime of this.sessions.values()) void this.refreshAvailableCommands(runtime);
+                // Hosts with a skills / plugins UI refetch on this one signal.
+                this.notifySkillsChanged();
             }
             if (notification.method === "account/updated") void this.refreshAccounts().catch(error => logger.error("refreshing account failed", error));
         });
@@ -175,7 +200,9 @@ export class CodexAgent {
                 // seedHistory: a host that keeps its own transcript can continue it on a fresh thread —
                 // `session/new` with `_meta.codex.seedHistory: [{role, text}]` injects it as model-visible
                 // history (thread/inject_items) before the first turn.
-                _meta: {codex: {archive: true, seedHistory: true}},
+                // skills / plugins: the `_codex/skills_*`, `_codex/plugin_*` and `_codex/marketplace_*`
+                // pass-through surface for a host that manages Codex's catalogs itself.
+                _meta: {codex: {archive: true, seedHistory: true, skills: true, plugins: true}},
             },
             authMethods: authMethods(this.capabilities, this.env),
         };
@@ -251,8 +278,9 @@ export class CodexAgent {
         if (sessionId && this.sessionMutations.has(sessionId)) throw acp.RequestError.invalidRequest({sessionId}, "Session lifecycle or configuration work is in progress; retry when it finishes");
         if (sessionId) this.sessionMutations.add(sessionId);
         this.admissions += 1;
-        try { return await operation(); }
-        finally {
+        try {
+            return await operation();
+        } finally {
             this.admissions -= 1;
             if (sessionId) this.sessionMutations.delete(sessionId);
         }
@@ -714,6 +742,78 @@ export class CodexAgent {
         return {};
     }
 
+    // ---- skills and plugins ---------------------------------------------------------
+
+    async skillsList(params: SkillsListParams): Promise<SkillsListResponse> {
+        this.requireInitialized("_codex/skills_list");
+        return await this.withCodex(() => this.codex.skillsList(params));
+    }
+
+    async skillsConfigWrite(params: SkillsConfigWriteParams): Promise<SkillsConfigWriteResponse> {
+        this.requireInitialized("_codex/skills_config_write");
+        const response = await this.withCodex(() => this.codex.skillsConfigWrite(params));
+        this.notifySkillsChanged();
+        return response;
+    }
+
+    async pluginList(params: PluginListParams): Promise<PluginListResponse> {
+        this.requireInitialized("_codex/plugin_list");
+        return await this.withCodex(() => this.codex.pluginList(params));
+    }
+
+    async pluginInstalled(params: PluginInstalledParams): Promise<PluginInstalledResponse> {
+        this.requireInitialized("_codex/plugin_installed");
+        return await this.withCodex(() => this.codex.pluginInstalled(params));
+    }
+
+    async pluginInstall(params: PluginInstallParams): Promise<PluginInstallResponse> {
+        this.requireInitialized("_codex/plugin_install");
+        const response = await this.withCodex(() => this.codex.pluginInstall(params));
+        this.notifySkillsChanged();
+        return response;
+    }
+
+    async pluginUninstall(params: PluginUninstallParams): Promise<Record<string, never>> {
+        this.requireInitialized("_codex/plugin_uninstall");
+        await this.withCodex(() => this.codex.pluginUninstall(params));
+        this.notifySkillsChanged();
+        return {};
+    }
+
+    async pluginRead(params: PluginReadParams): Promise<PluginReadResponse> {
+        this.requireInitialized("_codex/plugin_read");
+        return await this.withCodex(() => this.codex.pluginRead(params));
+    }
+
+    async marketplaceAdd(params: MarketplaceAddParams): Promise<MarketplaceAddResponse> {
+        this.requireInitialized("_codex/marketplace_add");
+        const response = await this.withCodex(() => this.codex.marketplaceAdd(params));
+        this.notifySkillsChanged();
+        return response;
+    }
+
+    async marketplaceRemove(params: MarketplaceRemoveParams): Promise<Record<string, never>> {
+        this.requireInitialized("_codex/marketplace_remove");
+        await this.withCodex(() => this.codex.marketplaceRemove(params));
+        this.notifySkillsChanged();
+        return {};
+    }
+
+    async marketplaceUpgrade(params: MarketplaceUpgradeParams): Promise<MarketplaceUpgradeResponse> {
+        this.requireInitialized("_codex/marketplace_upgrade");
+        const response = await this.withCodex(() => this.codex.marketplaceUpgrade(params));
+        this.notifySkillsChanged();
+        return response;
+    }
+
+    /**
+     * One signal for both catalogs: Codex's `skills/changed` and every catalog mutation made
+     * through this adapter. Plugins ship skills, so a plugin change is a skills change too.
+     */
+    private notifySkillsChanged(): void {
+        void this.link.notify("_codex/skills_changed", {}).catch(error => logger.error("skills change notification failed", error));
+    }
+
     private async closeRuntime(sessionId: string): Promise<acp.CloseSessionResponse> {
         const deadline = performance.now() + this.closeGraceMs;
         const runtime = this.sessions.get(sessionId);
@@ -786,14 +886,18 @@ export class CodexAgent {
     // ---- prompts ------------------------------------------------------------------
 
     async prompt(params: acp.PromptRequest): Promise<acp.PromptResponse> {
+        return await this.promptInternal(params);
+    }
+
+    private async promptInternal(params: acp.PromptRequest, allowReentry = false): Promise<acp.PromptResponse> {
         this.assertRoutingAvailable();
-        if (this.sessionMutations.has(params.sessionId)) throw acp.RequestError.invalidRequest({sessionId: params.sessionId}, "Session lifecycle or configuration work is in progress; retry when it finishes");
+        if (!allowReentry && this.sessionMutations.has(params.sessionId)) throw acp.RequestError.invalidRequest({sessionId: params.sessionId}, "Session lifecycle or configuration work is in progress; retry when it finishes");
         const runtime = this.runtime(params.sessionId, "session/prompt");
         if (runtime.stale) throw acp.RequestError.invalidRequest({sessionId: params.sessionId, _meta: {codex: {routing: {stale: true}}}}, "Session routing is stale; resume the session or successfully change providers before prompting");
-        const {session} = runtime;
         if (!Array.isArray(params.prompt) || params.prompt.length === 0) {
             throw acp.RequestError.invalidParams(undefined, "prompt must contain at least one content block");
         }
+        const {session} = runtime;
         const model = findModel(session.catalog, session.model.model);
         if (!modelSupportsImages(model) && params.prompt.some(block => block.type === "image")) {
             throw acp.RequestError.invalidParams({model: session.model.model}, "The current model does not support image input");
@@ -821,7 +925,7 @@ export class CodexAgent {
             // Retry as a new prompt only after a matching completion proves the steer lost the race.
             if (this.completedTurns.get(turn) === turnId || runtime.session.activeTurn !== turn) {
                 await turn.finished;
-                return await this.prompt(params);
+                return await this.promptInternal(params, true);
             }
             throw acp.RequestError.invalidRequest({sessionId: params.sessionId, turnId}, `Could not steer the running turn: ${errorMessage(error)}`);
         }
@@ -1247,6 +1351,20 @@ function interruptedTurn(threadId: string): TurnCompletedNotification {
 
 export interface SessionIdParams {
     sessionId: string;
+}
+
+/**
+ * `_codex/skills_*`, `_codex/plugin_*`, `_codex/marketplace_*` params are Codex v2 shapes
+ * passed through verbatim; only the envelope is checked here, Codex validates the fields.
+ */
+export function objectParams<T extends object>(): (raw: unknown) => T {
+    return raw => {
+        if (raw === undefined || raw === null) return {} as T;
+        if (typeof raw !== "object" || Array.isArray(raw)) {
+            throw acp.RequestError.invalidParams({params: raw}, "expected a params object");
+        }
+        return raw as T;
+    };
 }
 
 /** `_codex/session_archive` / `_codex/session_unarchive` params: `{sessionId}`. */

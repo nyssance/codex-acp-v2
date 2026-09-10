@@ -1,5 +1,17 @@
 import * as acp from "@agentclientprotocol/sdk/experimental/v2";
-import {CodexAgent, type CodexAgentOptions, parseSessionIdParams} from "./CodexAgent";
+import type {
+    MarketplaceAddParams,
+    MarketplaceRemoveParams,
+    MarketplaceUpgradeParams,
+    PluginInstallParams,
+    PluginInstalledParams,
+    PluginListParams,
+    PluginReadParams,
+    PluginUninstallParams,
+    SkillsConfigWriteParams,
+    SkillsListParams,
+} from "../app-server/v2";
+import {CodexAgent, type CodexAgentOptions, objectParams, parseSessionIdParams} from "./CodexAgent";
 
 /**
  * Registers every ACP v2 method on the SDK's agent builder. Each handler
@@ -29,6 +41,16 @@ export function createAgentApp(options: CodexAgentOptions): acp.AgentApp {
         .onRequest(acp.methods.agent.session.delete, ctx => current().deleteSession(ctx.params))
         .onRequest("_codex/session_archive", {parse: parseSessionIdParams}, ctx => current().archiveSession(ctx.params))
         .onRequest("_codex/session_unarchive", {parse: parseSessionIdParams}, ctx => current().unarchiveSession(ctx.params))
+        .onRequest("_codex/skills_list", {parse: objectParams<SkillsListParams>()}, ctx => current().skillsList(ctx.params))
+        .onRequest("_codex/skills_config_write", {parse: objectParams<SkillsConfigWriteParams>()}, ctx => current().skillsConfigWrite(ctx.params))
+        .onRequest("_codex/plugin_list", {parse: objectParams<PluginListParams>()}, ctx => current().pluginList(ctx.params))
+        .onRequest("_codex/plugin_installed", {parse: objectParams<PluginInstalledParams>()}, ctx => current().pluginInstalled(ctx.params))
+        .onRequest("_codex/plugin_install", {parse: objectParams<PluginInstallParams>()}, ctx => current().pluginInstall(ctx.params))
+        .onRequest("_codex/plugin_uninstall", {parse: objectParams<PluginUninstallParams>()}, ctx => current().pluginUninstall(ctx.params))
+        .onRequest("_codex/plugin_read", {parse: objectParams<PluginReadParams>()}, ctx => current().pluginRead(ctx.params))
+        .onRequest("_codex/marketplace_add", {parse: objectParams<MarketplaceAddParams>()}, ctx => current().marketplaceAdd(ctx.params))
+        .onRequest("_codex/marketplace_remove", {parse: objectParams<MarketplaceRemoveParams>()}, ctx => current().marketplaceRemove(ctx.params))
+        .onRequest("_codex/marketplace_upgrade", {parse: objectParams<MarketplaceUpgradeParams>()}, ctx => current().marketplaceUpgrade(ctx.params))
         .onRequest(acp.methods.agent.session.setConfigOption, ctx => current().setSessionConfigOption(ctx.params))
         .onRequest(acp.methods.agent.session.prompt, ctx => current().prompt(ctx.params))
         .onNotification(acp.methods.agent.session.cancel, ctx => current().cancel(ctx.params));
