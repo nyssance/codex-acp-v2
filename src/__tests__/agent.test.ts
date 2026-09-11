@@ -1140,3 +1140,179 @@ describe("history inputs", () => {
         expect(t.client.updatesOf("tool_call_update").at(-1)).toMatchObject({name: "web_search", title: "Web search: acp", status: "completed"});
     });
 });
+
+describe("gateways", () => {
+    function catalogFile(slug: string, efforts: string[]): string {
+        const file = path.join(os.tmpdir(), `codex-acp-catalog-${slug.replace(/[^a-z0-9]/gi, "_")}-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.json`);
+        fs.writeFileSync(file, JSON.stringify({models: [{
+            slug, display_name: slug, description: slug, default_reasoning_level: efforts[0],
+            supported_reasoning_levels: efforts.map(effort => ({effort, description: effort})),
+            input_modalities: ["text"],
+        }]}));
+        return file;
+    }
+
+    function gateway(id: string, name: string, baseUrl: string, modelId: string, efforts: string[]) {
+        return {
+            providerId: "openai", apiType: "openai" as const, baseUrl,
+            _meta: {
+                codex: {id, name, mode: "catalog", bearerToken: `sk-${id}`, config: {model_catalog_json: catalogFile(modelId, efforts)}},
+                alwith: {models: [{id: modelId}]},
+            },
+        };
+    }
+
+    const deepseek = () => gateway("deepseek", "DeepSeek", "https://api.deepseek.com/", "deepseek-flash", ["low", "high", "max"]);
+    const openrouter = () => gateway("openrouter", "OpenRouter", "https://openrouter.ai/api/v1", "qwen/qwen3.8-max", ["low", "medium"]);
+    type Resume = {threadId: string; modelProvider: string; model: string; config?: Record<string, unknown>};
+    const providers = (config: Record<string, unknown> | undefined) => config?.["model_providers"] as Record<string, Record<string, unknown>> | undefined;
+    const groupsOf = (options: acp.SessionConfigOption[] | undefined) => {
+        const option = options?.find(entry => entry.configId === "model") as {options: Array<{groupId: string; name: string; options: Array<{value: string}>}>};
+        return option.options.map(group => [group.groupId, group.name, group.options.map(entry => entry.value)]);
+    };
+
+    it("registers several gateways, each as its own select group, and lists them", async () => {
+        const t = createTestAgent();
+        await t.initialize();
+        await t.agent.setProvider(deepseek());
+        await t.agent.setProvider(openrouter());
+        const response = await t.agent.newSession({cwd: CWD});
+        expect(groupsOf(response.configOptions)).toEqual([
+            ["codex", "Codex", ["gpt-5"]],
+            ["deepseek", "DeepSeek", ["deepseek-flash"]],
+            ["openrouter", "OpenRouter", ["qwen/qwen3.8-max"]],
+        ]);
+        const listed = t.agent.listProviders({}).providers[0] as unknown as {current?: {baseUrl: string}; _meta?: {codex: {gateway: {id: string}; gateways: Array<{id: string; name: string; baseUrl: string; models: string[]}>}}};
+        expect(listed.current?.baseUrl).toBe("https://api.openai.com/v1");
+        expect(listed._meta?.codex.gateway.id).toBe("deepseek");
+        expect(listed._meta?.codex.gateways).toEqual([
+            {id: "deepseek", name: "DeepSeek", baseUrl: "https://api.deepseek.com/", models: ["deepseek-flash"]},
+            {id: "openrouter", name: "OpenRouter", baseUrl: "https://openrouter.ai/api/v1", models: ["qwen/qwen3.8-max"]},
+        ]);
+    });
+
+    it("moves a session to gateway B, then A, then back to native, writing each gateway's own entry", async () => {
+        const t = createTestAgent();
+        await t.initialize();
+        await t.agent.setProvider(deepseek());
+        await t.agent.setProvider(openrouter());
+        await t.openSession();
+        const toB = await t.agent.setSessionConfigOption({sessionId: THREAD_ID, configId: "model", type: "id", value: "qwen/qwen3.8-max"});
+        const resumeB = t.codex.lastParams<Resume>("thread/resume");
+        expect(resumeB).toMatchObject({threadId: THREAD_ID, modelProvider: "openrouter", model: "qwen/qwen3.8-max"});
+        expect(Object.keys(providers(resumeB.config) ?? {})).toEqual(["openrouter"]);
+        expect(providers(resumeB.config)?.["openrouter"]).toMatchObject({base_url: "https://openrouter.ai/api/v1", experimental_bearer_token: "sk-openrouter"});
+        const effortB = toB.configOptions?.find(option => option.configId === "effort") as {options: Array<{value: string}>};
+        expect(effortB.options.map(option => option.value)).toEqual(["low", "medium"]);
+        await t.agent.setSessionConfigOption({sessionId: THREAD_ID, configId: "model", type: "id", value: "deepseek-flash"});
+        const resumeA = t.codex.lastParams<Resume>("thread/resume");
+        expect(resumeA).toMatchObject({modelProvider: "deepseek", model: "deepseek-flash"});
+        expect(Object.keys(providers(resumeA.config) ?? {})).toEqual(["deepseek"]);
+        await t.agent.setSessionConfigOption({sessionId: THREAD_ID, configId: "model", type: "id", value: "gpt-5"});
+        const native = t.codex.lastParams<Resume>("thread/resume");
+        expect(native).toMatchObject({modelProvider: "openai", model: "gpt-5"});
+        expect(native.config?.["model_providers"]).toBeUndefined();
+    });
+
+    it("disabling one gateway by id moves only its sessions back and keeps the other group", async () => {
+        const t = createTestAgent();
+        await t.initialize();
+        await t.agent.setProvider(deepseek());
+        await t.agent.setProvider(openrouter());
+        let starts = 0;
+        t.codex.respond("thread/start", () => threadResponse({id: starts++ === 0 ? THREAD_ID : "thread-2"}));
+        await t.openSession();
+        await t.agent.newSession({cwd: CWD});
+        await t.agent.setSessionConfigOption({sessionId: THREAD_ID, configId: "model", type: "id", value: "qwen/qwen3.8-max"});
+        await t.agent.setSessionConfigOption({sessionId: "thread-2", configId: "model", type: "id", value: "deepseek-flash"});
+        const before = t.codex.calls("thread/resume").length;
+        await t.agent.disableProvider({providerId: "openai", _meta: {codex: {id: "openrouter"}}} as acp.DisableProviderRequest);
+        const resumes = t.codex.calls("thread/resume").slice(before).map(call => call.params as Resume);
+        expect(resumes.map(resume => [resume.threadId, resume.modelProvider])).toEqual([[THREAD_ID, "openai"]]);
+        const options = t.client.updatesOf("config_option_update").at(-1) as {configOptions: acp.SessionConfigOption[]};
+        expect(groupsOf(options.configOptions)).toEqual([
+            ["codex", "Codex", ["gpt-5"]],
+            ["deepseek", "DeepSeek", ["deepseek-flash"]],
+        ]);
+        const listed = t.agent.listProviders({}).providers[0] as unknown as {_meta?: {codex: {gateways: Array<{id: string}>}}};
+        expect(listed._meta?.codex.gateways.map(gateway => gateway.id)).toEqual(["deepseek"]);
+        await t.agent.disableProvider({providerId: "openai"});
+        expect((t.agent.listProviders({}).providers[0] as unknown as {_meta?: unknown})._meta).toBeUndefined();
+        expect(t.codex.lastParams<Resume>("thread/resume")).toMatchObject({threadId: "thread-2", modelProvider: "openai"});
+    });
+
+    it("refuses duplicate model ids across gateways and invalid gateway ids", async () => {
+        const t = createTestAgent();
+        await t.initialize();
+        await t.agent.setProvider(deepseek());
+        const clash = gateway("other", "Other", "https://other.example.com/v1", "deepseek-flash", ["low"]);
+        await expectRejects(t.agent.setProvider(clash), -32602, "already served by gateway \"deepseek\"");
+        const bad = deepseek();
+        bad._meta.codex.id = "Not Valid";
+        await expectRejects(t.agent.setProvider(bad), -32602, "_meta.codex.id");
+        const reserved = deepseek();
+        reserved._meta.codex.id = "openai";
+        await expectRejects(t.agent.setProvider(reserved), -32602, "Codex's own provider");
+        // Re-registering the same id (a rotated key) is not a clash.
+        await t.agent.setProvider(deepseek());
+        expect(groupsOf((await t.agent.newSession({cwd: CWD})).configOptions)).toHaveLength(2);
+    });
+
+    it("session/new with _meta.alwith.model starts on the gateway that serves the model", async () => {
+        const t = createTestAgent();
+        await t.initialize();
+        await t.agent.setProvider(deepseek());
+        await t.agent.setProvider(openrouter());
+        await t.agent.newSession({cwd: CWD, _meta: {alwith: {model: "qwen/qwen3.8-max"}}});
+        const start = t.codex.lastParams<ThreadStartParams>("thread/start");
+        expect(start).toMatchObject({modelProvider: "openrouter", model: "qwen/qwen3.8-max"});
+        expect(Object.keys(providers(start.config as Record<string, unknown>) ?? {})).toEqual(["openrouter"]);
+    });
+});
+
+describe("thread name, account and file search pass-throughs", () => {
+    it("advertises the extensions and passes each request through", async () => {
+        const t = createTestAgent();
+        const init = await t.initialize();
+        const meta = init.capabilities?._meta as {codex?: {rename?: boolean; account?: boolean; fuzzyFileSearch?: boolean}};
+        expect(meta.codex).toMatchObject({rename: true, account: true, fuzzyFileSearch: true});
+        t.codex.respond("thread/name/set", () => ({}));
+        t.codex.respond("account/rateLimits/read", () => ({rateLimits: {limitId: "codex"}, rateLimitsByLimitId: null, rateLimitResetCredits: null, accountId: null}));
+        t.codex.respond("fuzzyFileSearch", () => ({files: [{root: CWD, path: "src/a.ts", match_type: "fuzzy", file_name: "a.ts", score: 1, indices: null}]}));
+        expect(await t.agent.sessionRename({sessionId: THREAD_ID, name: "Renamed"})).toEqual({});
+        expect(t.codex.lastParams("thread/name/set")).toEqual({threadId: THREAD_ID, name: "Renamed"});
+        expect(await t.agent.accountRead()).toMatchObject({requiresOpenaiAuth: true});
+        expect(t.codex.lastParams("account/read")).toEqual({refreshToken: false});
+        expect(await t.agent.rateLimits()).toMatchObject({rateLimits: {limitId: "codex"}});
+        expect(t.codex.calls("account/rateLimits/read")).toHaveLength(1);
+        expect(await t.agent.fuzzyFileSearch({query: "a", roots: [CWD], cancellationToken: null})).toMatchObject({files: [{path: "src/a.ts"}]});
+        expect(t.codex.lastParams("fuzzyFileSearch")).toEqual({query: "a", roots: [CWD], cancellationToken: null});
+    });
+
+    it("forwards rate-limit and file-search notifications verbatim", async () => {
+        const t = createTestAgent();
+        await t.initialize();
+        const limits = {rateLimits: {limitId: "codex", limitName: "Codex", primary: {usedPercent: 12, windowDurationMins: 300, resetsAt: null}, secondary: null, credits: null, planType: null}};
+        t.codex.emit({method: "account/rateLimits/updated", params: limits} as never);
+        t.codex.emit({method: "fuzzyFileSearch/sessionUpdated", params: {sessionId: "s1", query: "a", files: []}} as never);
+        t.codex.emit({method: "fuzzyFileSearch/sessionCompleted", params: {sessionId: "s1"}} as never);
+        await t.settle();
+        const forwarded = t.client.notifications.filter(entry => entry.method.startsWith("_codex/"));
+        expect(forwarded).toEqual([
+            {method: "_codex/rate_limits_updated", params: limits},
+            {method: "_codex/fuzzy_file_search_updated", params: {sessionId: "s1", query: "a", files: []}},
+            {method: "_codex/fuzzy_file_search_completed", params: {sessionId: "s1"}},
+        ]);
+    });
+
+    it("validates params and refuses the requests before initialize", async () => {
+        const t = createTestAgent();
+        await expectRejects(t.agent.accountRead(), -32600);
+        await t.initialize();
+        const {parseSessionRenameParams, parseFuzzyFileSearchParams} = await import("../agent/CodexAgent");
+        expect(() => parseSessionRenameParams({sessionId: "", name: "x"})).toThrow("sessionId");
+        expect(() => parseSessionRenameParams({sessionId: THREAD_ID})).toThrow("name");
+        expect(() => parseFuzzyFileSearchParams({query: "a", roots: "nope"})).toThrow("roots");
+        expect(parseFuzzyFileSearchParams({query: "a", roots: [CWD]})).toEqual({query: "a", roots: [CWD], cancellationToken: null});
+    });
+});

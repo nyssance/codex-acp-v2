@@ -9,12 +9,11 @@ import {isRecord} from "../permissions/json";
 
 /** The one provider slot Codex exposes: where its OpenAI-protocol traffic goes. */
 export const OPENAI_PROVIDER_ID = "openai";
-/** Name of the Codex `model_providers` entry the gateway is written to. */
+/** Default id of a gateway: the Codex `model_providers` entry it is written to and its select group. */
 export const GATEWAY_MODEL_PROVIDER = "custom-gateway";
 export const DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1";
-/** Group id of the gateway's models in a catalog-mode `model` option. */
-export const GATEWAY_GROUP_ID = "custom-gateway";
 export const NATIVE_GROUP_ID = "codex";
+const GATEWAY_ID_PATTERN = /^[a-z0-9-]+$/;
 
 /**
  * `route`: the gateway takes over Codex's OpenAI slot for every session (the original
@@ -40,11 +39,15 @@ export interface CatalogEntry {
 }
 
 export interface GatewayGroup {
+    /** The gateway id; doubles as the select group id. */
+    id: string;
     name: string;
     modelIds: string[];
 }
 
 export interface Gateway {
+    /** `_meta.codex.id`: the `model_providers` entry, `modelProvider` value and select group of this gateway. */
+    id: string;
     baseUrl: string;
     headers: Record<string, string>;
     name: string;
@@ -66,9 +69,10 @@ export interface Gateway {
  *
  * A gateway is applied per thread through Codex's `model_providers` config
  * override plus `modelProvider`, so switching never restarts the app-server.
+ * Route mode holds one gateway; catalog mode holds any number, each under its own id.
  */
 export class ProviderRouting {
-    private gateway: Gateway | null = null;
+    private gateways = new Map<string, Gateway>();
 
     constructor(
         private readonly baseConfig: JsonObject,
@@ -77,28 +81,39 @@ export class ProviderRouting {
 
     copy(): ProviderRouting {
         const copy = new ProviderRouting(this.baseConfig, this.configuredProvider);
-        copy.gateway = this.gateway;
+        copy.gateways = new Map(this.gateways);
         return copy;
     }
 
+    /** The first registered gateway (the only one in route mode), or null. */
     get active(): Gateway | null {
-        return this.gateway;
+        return this.gateways.values().next().value ?? null;
+    }
+
+    gateway(id: string | null): Gateway | null {
+        return id === null ? null : this.gateways.get(id) ?? null;
+    }
+
+    hasGateway(id: string | null): boolean {
+        return id !== null && this.gateways.has(id);
     }
 
     list(): acp.ListProvidersResponse {
         // Catalog mode re-routes nothing by itself, so `current` stays native; the registered
-        // gateway is reported under `_meta.codex` for clients that want to show it.
-        const routed = this.gateway !== null && this.gateway.mode === "route";
+        // gateways are reported under `_meta.codex` for clients that want to show them.
+        const first = this.active;
+        const routed = first !== null && first.mode === "route";
+        const summary = (gateway: Gateway) => ({id: gateway.id, name: gateway.name, baseUrl: gateway.baseUrl, models: gateway.models.map(model => model.id)});
         return {
             providers: [{
                 providerId: OPENAI_PROVIDER_ID,
                 supported: ["openai"],
                 required: false,
-                current: routed && this.gateway
-                    ? {apiType: "openai", baseUrl: this.gateway.baseUrl}
+                current: routed && first
+                    ? {apiType: "openai", baseUrl: first.baseUrl}
                     : {apiType: "openai", baseUrl: this.nativeBaseUrl()},
-                ...(this.gateway && !routed
-                    ? {_meta: {codex: {mode: "catalog", gateway: {name: this.gateway.name, baseUrl: this.gateway.baseUrl, models: this.gateway.models.map(model => model.id)}}}}
+                ...(first && !routed
+                    ? {_meta: {codex: {mode: "catalog", gateway: summary(first), gateways: [...this.gateways.values()].map(summary)}}}
                     : {}),
             }],
         };
@@ -116,7 +131,20 @@ export class ProviderRouting {
             throw acp.RequestError.invalidParams({baseUrl: request.baseUrl}, "baseUrl must be an http(s) URL");
         }
         const hints = readHints(request._meta);
-        this.gateway = {
+        if (hints.id === OPENAI_PROVIDER_ID || hints.id === this.configuredProvider) {
+            throw acp.RequestError.invalidParams({id: hints.id}, `_meta.codex.id "${hints.id}" is Codex's own provider; pick another gateway id`);
+        }
+        // Route mode owns the slot outright; a mode change replaces whatever was registered.
+        if (hints.mode === "route" || this.mode !== hints.mode) this.gateways.clear();
+        for (const other of this.gateways.values()) {
+            if (other.id === hints.id) continue;
+            const duplicate = hints.models.find(model => other.models.some(candidate => candidate.id === model.id));
+            if (duplicate) {
+                throw acp.RequestError.invalidParams({id: hints.id, model: duplicate.id}, `Model "${duplicate.id}" is already served by gateway "${other.id}"; model ids must be unique across gateways`);
+            }
+        }
+        this.gateways.set(hints.id, {
+            id: hints.id,
             baseUrl,
             headers: {...(request.headers ?? {})},
             name: hints.name ?? "Client-configured gateway",
@@ -126,51 +154,78 @@ export class ProviderRouting {
             config: hints.config,
             mode: hints.mode,
             catalogEntries: hints.catalogEntries,
-        };
+        });
     }
 
     get mode(): RoutingMode {
-        return this.gateway?.mode ?? "route";
+        return this.active?.mode ?? "route";
     }
 
-    /** True when `modelId` is one of the gateway's models (catalog mode). */
+    /** The gateway serving `modelId`, when one does (catalog mode). */
+    gatewayFor(modelId: string): Gateway | null {
+        for (const gateway of this.gateways.values()) {
+            if (gateway.models.some(model => model.id === modelId)) return gateway;
+        }
+        return null;
+    }
+
+    gatewayIdFor(modelId: string): string | null {
+        return this.gatewayFor(modelId)?.id ?? null;
+    }
+
+    /** True when `modelId` is served by one of the gateways (catalog mode). */
     isGatewayModel(modelId: string): boolean {
-        return this.gateway !== null && this.gateway.models.some(model => model.id === modelId);
+        return this.gatewayFor(modelId) !== null;
     }
 
-    /** The select group the gateway's models sit in, when they share a catalog with Codex's. */
-    gatewayGroup(): GatewayGroup | null {
-        if (!this.gateway || this.gateway.mode !== "catalog" || this.gateway.models.length === 0) return null;
-        return {name: this.gateway.name, modelIds: this.gateway.models.map(model => model.id)};
+    /** The select groups the gateways' models sit in, when they share a catalog with Codex's. */
+    gatewayGroups(): GatewayGroup[] {
+        if (this.mode !== "catalog") return [];
+        return [...this.gateways.values()]
+            .filter(gateway => gateway.models.length > 0)
+            .map(gateway => ({id: gateway.id, name: gateway.name, modelIds: gateway.models.map(model => model.id)}));
     }
 
-    /** Disabling an unknown provider is a no-op, per the ACP providers RFD. */
+    /**
+     * Disabling an unknown provider is a no-op, per the ACP providers RFD. `_meta.codex.id`
+     * removes that gateway only; without it every gateway goes.
+     */
     disable(request: acp.DisableProviderRequest): void {
-        if (request.providerId === OPENAI_PROVIDER_ID) this.gateway = null;
+        if (request.providerId !== OPENAI_PROVIDER_ID) return;
+        const id = readGatewayId((request as {_meta?: unknown})._meta);
+        if (id === null) this.gateways.clear();
+        else this.gateways.delete(id);
     }
 
-    /** Codex `modelProvider` for new and resumed threads that are not explicitly on the gateway. */
+    /** Codex `modelProvider` for new and resumed threads that are not explicitly on a gateway. */
     modelProvider(): string | null {
-        return this.gateway && this.gateway.mode === "route" ? GATEWAY_MODEL_PROVIDER : this.configuredProvider;
+        return this.defaultGatewayId() ?? this.configuredProvider;
     }
 
     /** Whether a thread opened now, with no model asked for, runs on the gateway. */
     routesByDefault(): boolean {
-        return this.gateway !== null && this.gateway.mode === "route";
+        return this.defaultGatewayId() !== null;
     }
 
-    /** Base thread config; with the gateway's overrides and `model_providers` entry when the thread runs on it. */
-    threadConfig(onGateway: boolean = this.routesByDefault()): JsonObject {
-        if (!this.gateway || !onGateway) return this.baseConfig;
-        return this.applyGateway(this.baseConfig, this.gateway);
+    /** The gateway every thread runs on in route mode; null in catalog mode or with none registered. */
+    defaultGatewayId(): string | null {
+        const first = this.active;
+        return first !== null && first.mode === "route" ? first.id : null;
+    }
+
+    /** Base thread config; with a gateway's overrides and `model_providers` entry when the thread runs on it. */
+    threadConfig(gatewayId: string | null = this.defaultGatewayId()): JsonObject {
+        const gateway = this.gateway(gatewayId);
+        if (!gateway) return this.baseConfig;
+        return this.applyGateway(this.baseConfig, gateway);
     }
 
     /**
      * Moves a live thread's config (which also carries per-session keys such as
-     * `projects`) onto or off the gateway.
+     * `projects`) onto a gateway or back to native.
      */
-    routeConfig(config: JsonObject, onGateway: boolean): JsonObject {
-        return this.rebind(config, this, onGateway);
+    routeConfig(config: JsonObject, gatewayId: string | null): JsonObject {
+        return this.rebind(config, this, gatewayId);
     }
 
     /**
@@ -178,26 +233,28 @@ export class ProviderRouting {
      * change restores or removes them from a live thread's config (`rebind`).
      */
     overrideKeys(): string[] {
-        return this.gateway ? Object.keys(this.gateway.config) : [];
+        const keys = new Set<string>();
+        for (const gateway of this.gateways.values()) for (const key of Object.keys(gateway.config)) keys.add(key);
+        return [...keys];
     }
 
     /**
      * Re-targets a live thread's config (which also carries per-session keys such as
-     * `projects`) from `previous` routing to this one: the previous gateway's override
-     * keys fall back to the base config, then this gateway is applied.
+     * `projects`) from `previous` routing to this one: every previous gateway's override
+     * keys fall back to the base config, then the target gateway is applied.
      */
-    rebind(config: JsonObject, previous: ProviderRouting, onGateway: boolean = this.routesByDefault()): JsonObject {
+    rebind(config: JsonObject, previous: ProviderRouting, gatewayId: string | null = this.defaultGatewayId()): JsonObject {
         const next: JsonObject = {...config};
         for (const key of previous.overrideKeys()) {
             if (key in this.baseConfig) next[key] = this.baseConfig[key]!;
             else delete next[key];
         }
-        if (!this.gateway || !onGateway) {
-            delete next["model_providers"];
-            if (isRecord(this.baseConfig["model_providers"])) next["model_providers"] = this.baseConfig["model_providers"];
-            return next;
-        }
-        return this.applyGateway(next, this.gateway);
+        // Only the target gateway's entry may remain: a thread moved between gateways must not
+        // keep the previous one's `model_providers` entry (and its bearer token) in its config.
+        delete next["model_providers"];
+        if (isRecord(this.baseConfig["model_providers"])) next["model_providers"] = this.baseConfig["model_providers"];
+        const gateway = this.gateway(gatewayId);
+        return gateway ? this.applyGateway(next, gateway) : next;
     }
 
     private applyGateway(config: JsonObject, gateway: Gateway): JsonObject {
@@ -214,19 +271,26 @@ export class ProviderRouting {
         return {
             ...config,
             ...gateway.config,
-            model_providers: {...existing, [GATEWAY_MODEL_PROVIDER]: entry},
+            model_providers: {...existing, [gateway.id]: entry},
         };
     }
 
     /**
      * The catalog a session should show. Route mode: the gateway's models when known, else
-     * Codex's. Catalog mode: Codex's models followed by the gateway's.
+     * Codex's. Catalog mode: Codex's models followed by every gateway's, in registration order.
      */
     catalog(codexCatalog: Model[]): Model[] {
-        if (!this.gateway || this.gateway.models.length === 0) return codexCatalog;
-        const gateway = this.gateway;
-        const own = gateway.models.map((model, index) => gatewayModel(model, gateway.mode === "route" && index === 0, codexCatalog[0], gateway.catalogEntries.get(model.id)));
-        return gateway.mode === "catalog" ? [...codexCatalog, ...own] : own;
+        const first = this.active;
+        if (first === null) return codexCatalog;
+        if (first.mode === "route") {
+            if (first.models.length === 0) return codexCatalog;
+            return first.models.map((model, index) => gatewayModel(model, index === 0, codexCatalog[0], first.catalogEntries.get(model.id)));
+        }
+        const own: Model[] = [];
+        for (const gateway of this.gateways.values()) {
+            for (const model of gateway.models) own.push(gatewayModel(model, false, codexCatalog[0], gateway.catalogEntries.get(model.id)));
+        }
+        return [...codexCatalog, ...own];
     }
 
     private nativeBaseUrl(): string {
@@ -247,10 +311,11 @@ export class ProviderRouting {
  * extra top-level thread config (`model_catalog_json`, `web_search`, …) that only
  * applies while this gateway is active.
  */
-function readHints(meta: unknown): {models: GatewayModel[]; model: string | null; name: string | null; bearerToken: string | null; config: JsonObject; mode: RoutingMode; catalogEntries: Map<string, CatalogEntry>} {
+function readHints(meta: unknown): {id: string; models: GatewayModel[]; model: string | null; name: string | null; bearerToken: string | null; config: JsonObject; mode: RoutingMode; catalogEntries: Map<string, CatalogEntry>} {
     const root = isRecord(meta) ? meta : {};
     const alwith = isRecord(root["alwith"]) ? root["alwith"] : {};
     const codex = isRecord(root["codex"]) ? root["codex"] : {};
+    const id = readGatewayId(meta) ?? GATEWAY_MODEL_PROVIDER;
     const models: GatewayModel[] = [];
     if (Array.isArray(alwith["models"])) {
         for (const entry of alwith["models"]) {
@@ -286,7 +351,19 @@ function readHints(meta: unknown): {models: GatewayModel[]; model: string | null
     }
     const catalogPath = config["model_catalog_json"];
     const catalogEntries = typeof catalogPath === "string" ? readCatalogFile(catalogPath) : new Map<string, CatalogEntry>();
-    return {models, model, name, bearerToken, config, mode, catalogEntries};
+    return {id, models, model, name, bearerToken, config, mode, catalogEntries};
+}
+
+/** `_meta.codex.id`: which gateway a `providers/set` or `providers/disable` addresses. */
+function readGatewayId(meta: unknown): string | null {
+    const root = isRecord(meta) ? meta : {};
+    const codex = isRecord(root["codex"]) ? root["codex"] : {};
+    const raw = codex["id"];
+    if (raw === undefined) return null;
+    if (typeof raw !== "string" || !GATEWAY_ID_PATTERN.test(raw)) {
+        throw acp.RequestError.invalidParams({id: raw}, "_meta.codex.id must match [a-z0-9-]+");
+    }
+    return raw;
 }
 
 /**

@@ -30,8 +30,8 @@ export interface Session {
     /** Sanitized names of MCP servers the client asked for on this session. */
     mcpServerNames: string[];
     catalog: Model[];
-    /** Set when the catalog mixes Codex's models with a gateway's: the gateway's get their own select group. */
-    gatewayGroup: GatewayGroup | null;
+    /** Non-empty when the catalog mixes Codex's models with gateways': each gateway's get their own select group. */
+    gatewayGroups: GatewayGroup[];
     model: ModelSelection;
     mode: AgentMode;
     collaborationMode: ModeKind;

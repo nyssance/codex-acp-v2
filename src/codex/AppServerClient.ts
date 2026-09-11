@@ -1,5 +1,5 @@
 import {RequestType, type MessageConnection} from "vscode-jsonrpc/node";
-import type {ClientRequest, InitializeParams, InitializeResponse, ServerNotification} from "../app-server";
+import type {ClientRequest, FuzzyFileSearchParams, FuzzyFileSearchResponse, InitializeParams, InitializeResponse, ServerNotification} from "../app-server";
 import type {
     CancelLoginAccountParams,
     CancelLoginAccountResponse,
@@ -10,6 +10,7 @@ import type {
     FileChangeRequestApprovalParams,
     FileChangeRequestApprovalResponse,
     GetAccountParams,
+    GetAccountRateLimitsResponse,
     GetAccountResponse,
     ListMcpServerStatusParams,
     ListMcpServerStatusResponse,
@@ -60,6 +61,8 @@ import type {
     ThreadListParams,
     ThreadListResponse,
     ThreadReadParams,
+    ThreadSetNameParams,
+    ThreadSetNameResponse,
     ThreadReadResponse,
     ThreadResumeParams,
     ThreadResumeResponse,
@@ -587,6 +590,18 @@ export class AppServerClient {
 
     accountRead(params: GetAccountParams): Promise<GetAccountResponse> {
         return this.send({method: "account/read", params});
+    }
+
+    accountRateLimitsRead(): Promise<GetAccountRateLimitsResponse> {
+        return this.send({method: "account/rateLimits/read", params: undefined});
+    }
+
+    threadSetName(params: ThreadSetNameParams): Promise<ThreadSetNameResponse> {
+        return this.send({method: "thread/name/set", params});
+    }
+
+    fuzzyFileSearch(params: FuzzyFileSearchParams): Promise<FuzzyFileSearchResponse> {
+        return this.send({method: "fuzzyFileSearch", params});
     }
 
     accountLogin(params: LoginAccountParams): Promise<LoginAccountResponse> {

@@ -3,8 +3,10 @@ import {classifyTurnError} from "./turnErrors";
 import * as acp from "@agentclientprotocol/sdk/experimental/v2";
 import type {JsonValue} from "../app-server/serde_json/JsonValue";
 import path from "node:path";
-import type {ServerNotification} from "../app-server";
+import type {FuzzyFileSearchParams, FuzzyFileSearchResponse, ServerNotification} from "../app-server";
 import type {
+    GetAccountRateLimitsResponse,
+    GetAccountResponse,
     MarketplaceAddParams,
     MarketplaceAddResponse,
     MarketplaceRemoveParams,
@@ -64,7 +66,7 @@ import {ClientSession, type ClientCapabilitySet, type ClientLink} from "./client
 import {availableCommands, mcpMessage, parseCommand, resolveCommand, skillsMessage, statusMessage} from "./commands";
 import {applyConfigOption, sessionConfigOptions} from "./configOptions";
 import {historyTitle, historyUpdates} from "./history";
-import {GATEWAY_MODEL_PROVIDER, OPENAI_PROVIDER_ID, ProviderRouting} from "./providers";
+import {OPENAI_PROVIDER_ID, ProviderRouting} from "./providers";
 import {createActiveTurn, type ActiveTurn, type Session} from "./session";
 
 export interface CodexAgentOptions {
@@ -157,6 +159,10 @@ export class CodexAgent {
                 this.notifySkillsChanged();
             }
             if (notification.method === "account/updated") void this.refreshAccounts().catch(error => logger.error("refreshing account failed", error));
+            // Hosts that show usage or drive a file picker get Codex's payloads verbatim.
+            if (notification.method === "account/rateLimits/updated") this.forward("_codex/rate_limits_updated", notification.params);
+            if (notification.method === "fuzzyFileSearch/sessionUpdated") this.forward("_codex/fuzzy_file_search_updated", notification.params);
+            if (notification.method === "fuzzyFileSearch/sessionCompleted") this.forward("_codex/fuzzy_file_search_completed", notification.params);
         });
         this.codex.disconnectSignal.addEventListener("abort", stopObserving, {once: true});
     }
@@ -206,7 +212,9 @@ export class CodexAgent {
                 // history (thread/inject_items) before the first turn.
                 // skills / plugins: the `_codex/skills_*`, `_codex/plugin_*` and `_codex/marketplace_*`
                 // pass-through surface for a host that manages Codex's catalogs itself.
-                _meta: {codex: {archive: true, seedHistory: true, skills: true, plugins: true, providerCatalog: true}},
+                // rename / account / fuzzyFileSearch: `_codex/session_rename`, `_codex/account_read`,
+                // `_codex/rate_limits` (+ `_codex/rate_limits_updated`) and `_codex/fuzzy_file_search`.
+                _meta: {codex: {archive: true, seedHistory: true, skills: true, plugins: true, providerCatalog: true, rename: true, account: true, fuzzyFileSearch: true}},
             },
             authMethods: authMethods(this.capabilities, this.env),
         };
@@ -302,11 +310,18 @@ export class CodexAgent {
                 change(candidate);
                 const catalog = await this.withCodex(() => this.codex.allModels(true));
                 const nativeProvider = await this.resolveModelProvider(candidate);
-                // Route mode moves every session; catalog mode only touches sessions that are
-                // on the gateway (the others just learn the new catalog).
+                // Route mode moves every session; catalog mode only touches sessions whose gateway
+                // was removed or re-registered (a rotated key, say) — `copy()` shares untouched
+                // gateway objects, so identity tells the two apart. The others just learn the
+                // new catalog. A session stays on its gateway when the candidate still has it.
                 const wholesale = (this.providers.active !== null && this.providers.mode === "route") || (candidate.active !== null && candidate.mode === "route");
-                const moving = [...this.sessions.values()].filter(runtime => wholesale || runtime.modelProvider === GATEWAY_MODEL_PROVIDER);
-                const targets = new Map(moving.map(runtime => [runtime, candidate.active !== null && (candidate.mode === "route" || runtime.modelProvider === GATEWAY_MODEL_PROVIDER)]));
+                const moving = [...this.sessions.values()].filter(runtime => wholesale
+                    || (this.providers.hasGateway(runtime.modelProvider) && candidate.gateway(runtime.modelProvider) !== this.providers.gateway(runtime.modelProvider)));
+                const targets = new Map<SessionRuntime, string | null>(moving.map(runtime => {
+                    if (candidate.active === null) return [runtime, null];
+                    if (candidate.mode === "route") return [runtime, candidate.defaultGatewayId()];
+                    return [runtime, candidate.hasGateway(runtime.modelProvider) ? runtime.modelProvider : null];
+                }));
                 // Codex cannot cold-resume a thread before its history storage exists.
                 // Validate every session before detaching any subscription. Catalog mode
                 // materializes an empty gateway session instead (see rerouteSession).
@@ -323,10 +338,10 @@ export class CodexAgent {
                 }
                 const nextCatalog = candidate.catalog(catalog);
                 for (const runtime of moving) {
-                    const onGateway = targets.get(runtime) === true;
-                    const config = candidate.rebind(runtime.config, this.providers, onGateway);
-                    const modelProvider = onGateway ? GATEWAY_MODEL_PROVIDER : nativeProvider;
-                    const keep = findModel(nextCatalog, runtime.session.model.model) && candidate.isGatewayModel(runtime.session.model.model) === onGateway;
+                    const target = targets.get(runtime) ?? null;
+                    const config = candidate.rebind(runtime.config, this.providers, target);
+                    const modelProvider = target ?? nativeProvider;
+                    const keep = findModel(nextCatalog, runtime.session.model.model) && candidate.gatewayIdFor(runtime.session.model.model) === target;
                     const requestedModel = candidate.mode === "route" ? candidate.active?.model ?? (keep ? runtime.session.model.model : null) : keep ? runtime.session.model.model : null;
                     const selection = resolveModelSelection(nextCatalog, requestedModel, requestedModel === runtime.session.model.model ? runtime.session.model.effort : null);
                     attempted.push(runtime);
@@ -343,12 +358,12 @@ export class CodexAgent {
                     const next = staged.get(runtime);
                     if (next) {
                         runtime.config = next.config;
-                        runtime.modelProvider = targets.get(runtime) === true ? GATEWAY_MODEL_PROVIDER : nativeProvider;
+                        runtime.modelProvider = targets.get(runtime) ?? nativeProvider;
                         runtime.session.model = next.model;
                         runtime.stale = false;
                     }
                     runtime.session.catalog = nextCatalog;
-                    runtime.session.gatewayGroup = candidate.gatewayGroup();
+                    runtime.session.gatewayGroups = candidate.gatewayGroups();
                     if (!next) runtime.session.model = resolveModelSelection(nextCatalog, findModel(nextCatalog, runtime.session.model.model) ? runtime.session.model.model : null, runtime.session.model.effort);
                     // Notification delivery cannot roll back an already committed routing transaction.
                     void runtime.client.update({sessionUpdate: "config_option_update", configOptions: sessionConfigOptions(runtime.session), _meta: {codex: {routing: {stale: false}}}}).catch(error => logger.error("Provider config notification failed", error));
@@ -439,17 +454,18 @@ export class CodexAgent {
         const mcpServers = request.mcpServers ?? [];
 
         // Which provider this thread runs on. Route mode: the gateway, always. Catalog mode:
-        // the gateway only when the client asks for one of its models, or (resume) when
-        // Codex says the thread last ran there.
+        // the gateway serving the model the client asks for, or (resume) the one Codex says
+        // the thread last ran on.
         const requestedModel = requestedModelOf(request._meta);
-        let onGateway = this.providers.routesByDefault();
+        let gatewayId = this.providers.defaultGatewayId();
         if (this.providers.active !== null && this.providers.mode === "catalog") {
-            if (requestedModel !== null) onGateway = this.providers.isGatewayModel(requestedModel);
+            if (requestedModel !== null) gatewayId = this.providers.gatewayIdFor(requestedModel);
             else if (open.kind === "resume") {
                 const known = await this.withCodex(() => this.codex.threadRead({threadId: open.request.sessionId, includeTurns: false}));
-                onGateway = known.thread.modelProvider === GATEWAY_MODEL_PROVIDER;
+                gatewayId = this.providers.hasGateway(known.thread.modelProvider) ? known.thread.modelProvider : null;
             }
         }
+        const onGateway = gatewayId !== null;
         // A client-configured gateway carries its own credentials; only native OpenAI routing needs a login.
         let accountVersion = this.accountGeneration;
         const account = await this.withCodex(() => this.codex.accountRead({refreshToken: false}));
@@ -457,10 +473,10 @@ export class CodexAgent {
             throw acp.RequestError.authRequired(undefined, "Log in to Codex first (auth/login)");
         }
         const existingMcp = mcpServers.length > 0 ? await this.withCodex(() => this.configuredMcpServerNames(request.cwd)) : new Set<string>();
-        const config = buildThreadConfig(this.providers.threadConfig(onGateway), request.cwd, additionalDirectories, mcpServers, existingMcp);
+        const config = buildThreadConfig(this.providers.threadConfig(gatewayId), request.cwd, additionalDirectories, mcpServers, existingMcp);
         const mcpStartupGeneration = this.codex.mcpStartupGeneration;
-        const modelProvider = onGateway ? GATEWAY_MODEL_PROVIDER : await this.withCodex(() => this.resolveModelProvider());
-        const startModel = onGateway ? requestedModel ?? this.providers.active?.model ?? null : requestedModel;
+        const modelProvider = gatewayId ?? await this.withCodex(() => this.resolveModelProvider());
+        const startModel = onGateway ? requestedModel ?? this.providers.gateway(gatewayId)?.model ?? null : requestedModel;
 
         let readOnly = false;
         const {thread, skills} = await this.withSkillsContext(request.cwd, additionalDirectories, async skills => ({skills, thread: await this.withCodex(async () => {
@@ -515,7 +531,7 @@ export class CodexAgent {
                 additionalDirectories,
                 mcpServerNames: mcpServerNames(mcpServers).filter(name => !existingMcp.has(name)),
                 catalog,
-                gatewayGroup: this.providers.gatewayGroup(),
+                gatewayGroups: this.providers.gatewayGroups(),
                 model,
                 mode: initialAgentMode(this.env),
                 collaborationMode: DEFAULT_COLLABORATION_MODE,
@@ -528,7 +544,7 @@ export class CodexAgent {
                 contextWindow: null,
                 closed: false,
             };
-            const runtime = this.installRuntime(session, capabilities, config, onGateway ? GATEWAY_MODEL_PROVIDER : thread.modelProvider, readOnly);
+            const runtime = this.installRuntime(session, capabilities, config, gatewayId ?? thread.modelProvider, readOnly);
             const cancelOpening = () => {
                 runtime.session.closed = true;
                 runtime.lifetime.abort();
@@ -856,6 +872,41 @@ export class CodexAgent {
         void this.link.notify("_codex/skills_changed", {}).catch(error => logger.error("skills change notification failed", error));
     }
 
+    /** Relays a Codex notification to the client under a `_codex/*` name, payload verbatim. */
+    private forward(method: string, params: unknown): void {
+        void this.link.notify(method, params).catch(error => logger.error(`${method} notification failed`, error));
+    }
+
+    // ---- thread name, account, file search --------------------------------------------
+
+    /**
+     * `_codex/session_rename`: Codex names the thread (`thread/name/set`) and, for a loaded
+     * thread, reports it back as `thread/name/updated`, which the bridge already turns into
+     * `session_info_update`. A thread that is not loaded gets no notification, so the client
+     * updates its own list from the request it made.
+     */
+    async sessionRename(params: SessionRenameParams): Promise<Record<string, never>> {
+        this.requireInitialized("_codex/session_rename");
+        await this.withCodex(() => this.codex.threadSetName({threadId: params.sessionId, name: params.name}));
+        return {};
+    }
+
+    async accountRead(): Promise<GetAccountResponse> {
+        this.requireInitialized("_codex/account_read");
+        return await this.withCodex(() => this.codex.accountRead({refreshToken: false}));
+    }
+
+    async rateLimits(): Promise<GetAccountRateLimitsResponse> {
+        this.requireInitialized("_codex/rate_limits");
+        return await this.withCodex(() => this.codex.accountRateLimitsRead());
+    }
+
+    async fuzzyFileSearch(params: FuzzyFileSearchRequest): Promise<FuzzyFileSearchResponse> {
+        this.requireInitialized("_codex/fuzzy_file_search");
+        const request: FuzzyFileSearchParams = {query: params.query, roots: params.roots, cancellationToken: params.cancellationToken};
+        return await this.withCodex(() => this.codex.fuzzyFileSearch(request));
+    }
+
     private async closeRuntime(sessionId: string): Promise<acp.CloseSessionResponse> {
         const deadline = performance.now() + this.closeGraceMs;
         const runtime = this.sessions.get(sessionId);
@@ -914,8 +965,9 @@ export class CodexAgent {
         const runtime = this.runtime(params.sessionId, "session/set_config_option");
         assertWritable(runtime);
         if (params.configId === MODEL_CONFIG_ID && this.providers.mode === "catalog" && typeof params.value === "string") {
-            const toGateway = this.providers.isGatewayModel(params.value);
-            if (toGateway !== (runtime.modelProvider === GATEWAY_MODEL_PROVIDER)) await this.rerouteSession(runtime, toGateway, params.value);
+            const target = this.providers.gatewayIdFor(params.value);
+            const current = this.providers.hasGateway(runtime.modelProvider) ? runtime.modelProvider : null;
+            if (target !== current) await this.rerouteSession(runtime, target, params.value);
         }
         await this.withCodex(() => applyConfigOption(runtime.session, this.codex, params));
         const configOptions = sessionConfigOptions(runtime.session);
@@ -924,13 +976,13 @@ export class CodexAgent {
     }
 
     /**
-     * Catalog mode: moves one live thread between Codex's native provider and the gateway.
+     * Catalog mode: moves one live thread between Codex's native provider and a gateway.
      * Codex has no per-turn provider (`turn/start` overrides the model only), so this is the
      * same unsubscribe + cold resume as an agent-wide provider change. A thread Codex has not
      * materialized yet (no user message) cannot be resumed; it is materialized first with a
      * developer note, the way `seedHistory` injects items.
      */
-    private async rerouteSession(runtime: SessionRuntime, toGateway: boolean, modelId: string): Promise<void> {
+    private async rerouteSession(runtime: SessionRuntime, gatewayId: string | null, modelId: string): Promise<void> {
         const {session} = runtime;
         this.assertRoutingAvailable();
         if (session.activeTurn !== null) {
@@ -941,8 +993,8 @@ export class CodexAgent {
         } catch {
             await this.withCodex(() => this.codex.threadInjectItems({threadId: session.id, items: [providerChangeNote()]}));
         }
-        const config = this.providers.routeConfig(runtime.config, toGateway);
-        const modelProvider = toGateway ? GATEWAY_MODEL_PROVIDER : await this.withCodex(() => this.resolveModelProvider());
+        const config = this.providers.routeConfig(runtime.config, gatewayId);
+        const modelProvider = gatewayId ?? await this.withCodex(() => this.resolveModelProvider());
         await this.codex.threadUnsubscribe({threadId: session.id});
         try {
             await this.withCodex(() => this.codex.threadResume({threadId: session.id, cwd: session.cwd, config, modelProvider, model: modelId, excludeTurns: true}));
@@ -953,7 +1005,7 @@ export class CodexAgent {
                 runtime.stale = true;
                 logger.error("Provider rollback failed", rollbackError, {sessionId: session.id});
             }
-            throw acp.RequestError.internalError({sessionId: session.id, stale: runtime.stale}, `Could not move the session to ${toGateway ? "the gateway" : "Codex's provider"}: ${errorMessage(error)}`);
+            throw acp.RequestError.internalError({sessionId: session.id, stale: runtime.stale}, `Could not move the session to ${gatewayId !== null ? `gateway "${gatewayId}"` : "Codex's provider"}: ${errorMessage(error)}`);
         }
         runtime.config = config;
         runtime.modelProvider = modelProvider;
@@ -1442,6 +1494,40 @@ export interface SessionIdParams {
  * `_codex/skills_*`, `_codex/plugin_*`, `_codex/marketplace_*` params are Codex v2 shapes
  * passed through verbatim; only the envelope is checked here, Codex validates the fields.
  */
+export interface SessionRenameParams {
+    sessionId: string;
+    name: string;
+}
+
+/** `_codex/fuzzy_file_search` params: Codex's `fuzzyFileSearch` with an optional cancellation token. */
+export interface FuzzyFileSearchRequest {
+    query: string;
+    roots: string[];
+    cancellationToken: string | null;
+}
+
+export function parseSessionRenameParams(raw: unknown): SessionRenameParams {
+    const params = objectParams<{sessionId?: unknown; name?: unknown}>()(raw);
+    if (typeof params.sessionId !== "string" || params.sessionId.length === 0) {
+        throw acp.RequestError.invalidParams({sessionId: params.sessionId}, "sessionId must be a non-empty string");
+    }
+    if (typeof params.name !== "string") throw acp.RequestError.invalidParams({name: params.name}, "name must be a string");
+    return {sessionId: params.sessionId, name: params.name};
+}
+
+export function parseFuzzyFileSearchParams(raw: unknown): FuzzyFileSearchRequest {
+    const params = objectParams<{query?: unknown; roots?: unknown; cancellationToken?: unknown}>()(raw);
+    if (typeof params.query !== "string") throw acp.RequestError.invalidParams({query: params.query}, "query must be a string");
+    if (!Array.isArray(params.roots) || !params.roots.every(root => typeof root === "string")) {
+        throw acp.RequestError.invalidParams({roots: params.roots}, "roots must be an array of directory paths");
+    }
+    const token = params.cancellationToken;
+    if (token !== undefined && token !== null && typeof token !== "string") {
+        throw acp.RequestError.invalidParams({cancellationToken: token}, "cancellationToken must be a string when given");
+    }
+    return {query: params.query, roots: params.roots as string[], cancellationToken: typeof token === "string" ? token : null};
+}
+
 export function objectParams<T extends object>(): (raw: unknown) => T {
     return raw => {
         if (raw === undefined || raw === null) return {} as T;

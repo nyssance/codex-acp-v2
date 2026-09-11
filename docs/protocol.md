@@ -43,14 +43,15 @@ which is where Codex's OpenAI-protocol traffic goes.
 | Method | Behaviour |
 | --- | --- |
 | `providers/list` | Reports the committed routing for new sessions with `supported: ["openai"]` and its `baseUrl`. |
-| `providers/set` | `{providerId: "openai", apiType: "openai", baseUrl, headers?}` routes Codex through that gateway: new and open sessions get a `model_providers.custom-gateway` config entry and `modelProvider: "custom-gateway"`. Open sessions with persisted history are unsubscribed and resumed with the new routing; a running turn makes the request fail with `-32600`. |
-| `providers/disable` | `{providerId: "openai"}` restores native routing; other ids are a no-op. |
+| `providers/set` | `{providerId: "openai", apiType: "openai", baseUrl, headers?}` routes Codex through that gateway: new and open sessions get a `model_providers.<id>` config entry and `modelProvider: "<id>"`, where `<id>` is `_meta.codex.id` (default `custom-gateway`). Open sessions with persisted history are unsubscribed and resumed with the new routing; a running turn makes the request fail with `-32600`. |
+| `providers/disable` | `{providerId: "openai"}` restores native routing for every gateway; with `_meta.codex.id` only that gateway is removed (catalog mode). Other provider ids are a no-op. |
 
 Accepted hints on `providers/set._meta`:
 
 | Hint | Meaning |
 | --- | --- |
-| `alwith.models` | `[{id, label?, description?}]`: the models the gateway serves; Codex cannot list them. |
+| `codex.id` | Gateway id, `[a-z0-9-]+`, default `custom-gateway`: the `model_providers` entry, the `modelProvider` value and (catalog mode) the select group. Codex's own provider ids (`openai`, the configured `model_provider`) are refused. |
+| `alwith.models` | `[{id, label?, description?}]`: the models the gateway serves; Codex cannot list them. Model ids must be unique across gateways; a clash is refused with `-32602` naming the other gateway. |
 | `alwith.model` | The model to select on the gateway. |
 | `codex.name` | Label of the `model_providers` entry (and of the gateway's select group in catalog mode). |
 | `codex.bearerToken` | Written as `experimental_bearer_token` on the entry, the key DeepSeek's official Codex integration uses; Codex adds the `Authorization` header itself. |
@@ -62,14 +63,19 @@ chat completions. A session on the gateway does not require an OpenAI login.
 
 ### Catalog mode
 
-`providers/set` with `_meta.codex.mode: "catalog"` registers the gateway without re-routing
-anything: `providers/list` keeps reporting native routing (the gateway sits under
-`providers[].‌_meta.codex.gateway`), and every session's `model` option becomes two groups,
-`codex` (Codex's models) and `custom-gateway` (named after `codex.name`, listing
-`alwith.models`). Advertised as `capabilities._meta.codex.providerCatalog: true`.
+`providers/set` with `_meta.codex.mode: "catalog"` registers a gateway without re-routing
+anything. Any number of gateways can be registered this way, each under its own
+`codex.id`; a route-mode `providers/set` replaces them all. `providers/list` keeps
+reporting native routing, with every gateway under `providers[]._meta.codex.gateways`
+(`[{id, name, baseUrl, models}]`; `_meta.codex.gateway` is the first one, kept for older
+clients), and every session's `model` option becomes one group per source: `codex`
+(Codex's models) followed by one group per gateway (groupId = its id, named after
+`codex.name`, listing its `alwith.models`). Advertised as
+`capabilities._meta.codex.providerCatalog: true`.
 
 - `session/set_config_option {configId: "model"}` with a gateway model moves **only that
-  session** to the gateway; a native model moves it back. Codex has no per-turn provider
+  session** to the gateway that serves the model (a thread's config carries only that
+  gateway's `model_providers` entry); a native model moves it back. Codex has no per-turn provider
   (`turn/start` overrides the model only), so the move is the same unsubscribe + cold
   `thread/resume` an agent-wide change uses, with the gateway's `model_providers` entry and
   `codex.config` overrides in that thread's config. A thread Codex has not materialized yet
@@ -81,8 +87,11 @@ anything: `providers/list` keeps reporting native routing (the gateway sits unde
   the provider Codex recorded for it (`thread/read`). Codex records the provider a thread
   was **created** with, not one it was moved to later, so a client that moved a thread
   should pass `_meta.alwith.model` when it resumes it.
-- `providers/disable` returns gateway sessions to native routing and drops the gateway group
-  (an empty gateway session is materialized the same way first).
+- `providers/disable` returns gateway sessions to native routing and drops the gateway
+  groups (an empty gateway session is materialized the same way first); with
+  `_meta.codex.id` only that gateway's sessions move and only its group goes.
+  Re-registering a gateway under the same id (a rotated key) re-resumes the sessions on it
+  with the new entry and leaves sessions on other gateways alone.
 - Catalog mode does not affect ALwith Desktop's agent-wide `providers/set` (no `mode` hint).
 
 
@@ -99,6 +108,7 @@ anything: `providers/list` keeps reporting native routing (the gateway sits unde
 | `session/delete` | Close plus `thread/delete` (permanent deletion). |
 | `_codex/session_archive` | `{sessionId}` closes and archives the thread (reversible hiding). Advertised as `capabilities._meta.codex.archive: true`. |
 | `_codex/session_unarchive` | `{sessionId}` restores an archived thread's visibility. |
+| `_codex/session_rename` | `{sessionId, name}` → `thread/name/set`. A loaded thread then reports `thread/name/updated`, delivered as `session_info_update` with the new `title`; a thread that is not loaded gets no notification. Advertised as `capabilities._meta.codex.rename: true`. |
 | `session/set_config_option` | Returns and broadcasts the full option list. |
 
 `session/list` with `_meta: {codex: {archived: true}}` lists archived threads.
@@ -152,6 +162,24 @@ emits `skills/changed`, and after each successful `_codex/skills_config_write`,
 `_codex/plugin_install`, `_codex/plugin_uninstall` and `_codex/marketplace_*` request.
 Plugins ship skills, so one signal covers both catalogs; a host refetches on it.
 The adapter's own skill snapshot and `available_commands_update` handling is unchanged.
+
+## Account and file search
+
+Pass-throughs in the same style as the skills surface (params and results are the Codex
+shapes, `initialize` required, Codex errors propagate unchanged). Advertised as
+`capabilities._meta.codex.account: true` and `capabilities._meta.codex.fuzzyFileSearch: true`.
+
+| Method | Codex request | Params → result |
+| --- | --- | --- |
+| `_codex/account_read` | `account/read {refreshToken: false}` | `{}` → `GetAccountResponse` |
+| `_codex/rate_limits` | `account/rateLimits/read` | `{}` → `GetAccountRateLimitsResponse` |
+| `_codex/fuzzy_file_search` | `fuzzyFileSearch` | `{query, roots, cancellationToken?}` → `FuzzyFileSearchResponse` (`cancellationToken` defaults to `null`) |
+
+Notifications the agent forwards with Codex's payload verbatim: `account/rateLimits/updated`
+→ `_codex/rate_limits_updated`, `fuzzyFileSearch/sessionUpdated` →
+`_codex/fuzzy_file_search_updated`, `fuzzyFileSearch/sessionCompleted` →
+`_codex/fuzzy_file_search_completed`. (Inside a session, fuzzy search frames are also
+mapped to `tool_call_update`s as before.)
 
 ## Prompts and state
 

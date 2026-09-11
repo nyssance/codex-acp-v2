@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.6.0 — 2026-09-11
+
+### Added
+
+- Several gateways at once in catalog mode: `providers/set` takes `_meta.codex.id`
+  (default `custom-gateway`); each gateway keeps its own base URL, key, config and models,
+  writes its own `model_providers.<id>` entry, and gets its own select group in every
+  session's `model` option. Model ids must be unique across gateways (`-32602` otherwise).
+  `providers/disable` with `_meta.codex.id` removes one gateway; `providers/list` reports
+  `_meta.codex.gateways`. Route mode is unchanged (one gateway).
+- Pass-throughs: `_codex/session_rename` (`thread/name/set`), `_codex/account_read`
+  (`account/read`), `_codex/rate_limits` (`account/rateLimits/read`) and
+  `_codex/fuzzy_file_search` (`fuzzyFileSearch`); notifications
+  `_codex/rate_limits_updated`, `_codex/fuzzy_file_search_updated` and
+  `_codex/fuzzy_file_search_completed` carry Codex's payloads verbatim. Advertised as
+  `capabilities._meta.codex.rename` / `.account` / `.fuzzyFileSearch`.
+
+### Fixed
+
+- A thread moved from one gateway to another no longer keeps the previous gateway's
+  `model_providers` entry (and bearer token) in its config.
+- Re-registering one gateway no longer re-resumes sessions that sit on other gateways.
+
 ## 0.5.0 — 2026-09-11
 
 ### Added

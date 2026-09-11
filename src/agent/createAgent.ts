@@ -11,7 +11,7 @@ import type {
     SkillsConfigWriteParams,
     SkillsListParams,
 } from "../app-server/v2";
-import {CodexAgent, type CodexAgentOptions, objectParams, parseSessionIdParams} from "./CodexAgent";
+import {CodexAgent, type CodexAgentOptions, objectParams, parseFuzzyFileSearchParams, parseSessionIdParams, parseSessionRenameParams} from "./CodexAgent";
 
 /**
  * Registers every ACP v2 method on the SDK's agent builder. Each handler
@@ -51,6 +51,10 @@ export function createAgentApp(options: CodexAgentOptions): acp.AgentApp {
         .onRequest("_codex/marketplace_add", {parse: objectParams<MarketplaceAddParams>()}, ctx => current().marketplaceAdd(ctx.params))
         .onRequest("_codex/marketplace_remove", {parse: objectParams<MarketplaceRemoveParams>()}, ctx => current().marketplaceRemove(ctx.params))
         .onRequest("_codex/marketplace_upgrade", {parse: objectParams<MarketplaceUpgradeParams>()}, ctx => current().marketplaceUpgrade(ctx.params))
+        .onRequest("_codex/session_rename", {parse: parseSessionRenameParams}, ctx => current().sessionRename(ctx.params))
+        .onRequest("_codex/account_read", {parse: objectParams<Record<string, never>>()}, () => current().accountRead())
+        .onRequest("_codex/rate_limits", {parse: objectParams<Record<string, never>>()}, () => current().rateLimits())
+        .onRequest("_codex/fuzzy_file_search", {parse: parseFuzzyFileSearchParams}, ctx => current().fuzzyFileSearch(ctx.params))
         .onRequest(acp.methods.agent.session.setConfigOption, ctx => current().setSessionConfigOption(ctx.params))
         .onRequest(acp.methods.agent.session.prompt, ctx => current().prompt(ctx.params))
         .onNotification(acp.methods.agent.session.cancel, ctx => current().cancel(ctx.params));
