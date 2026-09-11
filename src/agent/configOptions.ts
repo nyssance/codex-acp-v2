@@ -22,7 +22,7 @@ export function sessionConfigOptions(session: Session): acp.SessionConfigOption[
     const model = findModel(session.catalog, session.model.model);
     const options = [
         modeConfigOption(session.mode),
-        modelConfigOption(session.catalog, session.model.model),
+        modelConfigOption(session.catalog, session.model.model, session.gatewayGroup),
         effortConfigOption(supportedEfforts(model), session.model.effort),
         collaborationModeConfigOption(session.collaborationMode),
     ];

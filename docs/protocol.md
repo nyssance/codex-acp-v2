@@ -46,17 +46,53 @@ which is where Codex's OpenAI-protocol traffic goes.
 | `providers/set` | `{providerId: "openai", apiType: "openai", baseUrl, headers?}` routes Codex through that gateway: new and open sessions get a `model_providers.custom-gateway` config entry and `modelProvider: "custom-gateway"`. Open sessions with persisted history are unsubscribed and resumed with the new routing; a running turn makes the request fail with `-32600`. |
 | `providers/disable` | `{providerId: "openai"}` restores native routing; other ids are a no-op. |
 
-Accepted hints on `providers/set._meta`: `alwith.models` (`[{id, label?, description?}]`)
-becomes the session model catalog, `alwith.model` selects the model, `codex.name` labels the
-provider. The gateway must implement the OpenAI Responses API; Codex 0.153 no longer speaks
-chat completions. With a gateway active `session/new` does not require an OpenAI login.
+Accepted hints on `providers/set._meta`:
+
+| Hint | Meaning |
+| --- | --- |
+| `alwith.models` | `[{id, label?, description?}]`: the models the gateway serves; Codex cannot list them. |
+| `alwith.model` | The model to select on the gateway. |
+| `codex.name` | Label of the `model_providers` entry (and of the gateway's select group in catalog mode). |
+| `codex.bearerToken` | Written as `experimental_bearer_token` on the entry, the key DeepSeek's official Codex integration uses; Codex adds the `Authorization` header itself. |
+| `codex.config` | Extra top-level Codex thread-config keys that apply only to threads on the gateway (`model_catalog_json`, `web_search`, `model_reasoning_effort`, …). Must be an object; `model_providers` is refused. When it names a `model_catalog_json` file, the adapter reads it so the gateway's models carry their real reasoning levels, modalities and display names (`model/list` never reflects a per-thread catalog). |
+| `codex.mode` | `"route"` (default): the gateway takes over every session. `"catalog"`: see below. |
+
+The gateway must implement the OpenAI Responses API; Codex 0.153 no longer speaks
+chat completions. A session on the gateway does not require an OpenAI login.
+
+### Catalog mode
+
+`providers/set` with `_meta.codex.mode: "catalog"` registers the gateway without re-routing
+anything: `providers/list` keeps reporting native routing (the gateway sits under
+`providers[].‌_meta.codex.gateway`), and every session's `model` option becomes two groups,
+`codex` (Codex's models) and `custom-gateway` (named after `codex.name`, listing
+`alwith.models`). Advertised as `capabilities._meta.codex.providerCatalog: true`.
+
+- `session/set_config_option {configId: "model"}` with a gateway model moves **only that
+  session** to the gateway; a native model moves it back. Codex has no per-turn provider
+  (`turn/start` overrides the model only), so the move is the same unsubscribe + cold
+  `thread/resume` an agent-wide change uses, with the gateway's `model_providers` entry and
+  `codex.config` overrides in that thread's config. A thread Codex has not materialized yet
+  (no user message) is materialized first by injecting a one-line developer note, because
+  Codex refuses to cold-resume it otherwise. `effort` then lists the gateway model's levels.
+  A running turn on that session → `-32600`.
+- `session/new` and `session/fork` stay native unless `_meta.alwith.model` names a gateway
+  model. `session/resume` opens the thread on what `_meta.alwith.model` asks for, else on
+  the provider Codex recorded for it (`thread/read`). Codex records the provider a thread
+  was **created** with, not one it was moved to later, so a client that moved a thread
+  should pass `_meta.alwith.model` when it resumes it.
+- `providers/disable` returns gateway sessions to native routing and drops the gateway group
+  (an empty gateway session is materialized the same way first).
+- Catalog mode does not affect ALwith Desktop's agent-wide `providers/set` (no `mode` hint).
+
+
 
 ## Sessions
 
 | Method | Notes |
 | --- | --- |
 | `session/new` | `cwd` must be absolute. `additionalDirectories` become trusted projects and sandbox write roots. `mcpServers` (stdio, http) are added to the thread config; names that collide with the user's Codex config are skipped. |
-| `session/resume` | `replayFrom: {type: "start"}` replays the transcript as `session/update` frames before the response, paged through Codex `thread/turns/list` in pages of 50 turns; `null` or omitted restores context only. Other cursors are rejected. |
+| `session/resume` | `replayFrom: {type: "start"}` replays the transcript as `session/update` frames before the response, paged through Codex `thread/turns/list` in pages of 50 turns; `null` or omitted restores context only. Other cursors are rejected. When Codex answers "already has an active writer" (its writer lock is a file lock across the Codex home: the thread is open in another Codex client — ChatGPT app, CLI, another app-server — and nothing here can release it) the session opens for viewing instead, the way Codex's TUI does: `thread/read` in place of `thread/resume`, history through the same `thread/turns/list` path, the response carries `_meta: {codex: {readOnly: true, reason: "active_writer"}}`. On such a session `session/prompt` and `session/set_config_option` fail with `-32600` "Thread is open in another Codex client" and `data: {codex: {readOnly: true}}`; `session/cancel` is a notification and is ignored. Resuming the same id again retries the real resume and, when the other client has let go, replaces the viewing session. |
 | `session/fork` | Forks the Codex thread and replays the copied transcript under the new session id. The source session remains open, including any running turn. |
 | `session/list` | `cwd` filters by exact Codex thread cwd; `cursor` pages. |
 | `session/close` | Detaches locally within a single 5-second budget, subject to event-loop scheduling. At most half is spent waiting for an interrupted turn; the remainder is reserved for unsubscribe. Stalled client writes do not prevent cleanup. A late start is interrupted when its id becomes known. |

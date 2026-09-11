@@ -62,7 +62,11 @@ export function modelLacksReasoning(model: Model | undefined): boolean {
     return options.length > 0 && options.every(option => option.reasoningEffort === "none");
 }
 
-export function modelConfigOption(catalog: readonly Model[], current: string): acp.SessionConfigOption {
+export function modelConfigOption(
+    catalog: readonly Model[],
+    current: string,
+    gatewayGroup: {name: string; modelIds: readonly string[]} | null = null,
+): acp.SessionConfigOption {
     const visible = catalog.filter(model => !model.hidden || model.id === current);
     const options = visible.map(model => ({
         value: model.id,
@@ -72,14 +76,25 @@ export function modelConfigOption(catalog: readonly Model[], current: string): a
     if (!options.some(option => option.value === current)) {
         options.unshift({value: current, name: current, description: null});
     }
-    return {
+    const base = {
         configId: MODEL_CONFIG_ID,
         name: "Model",
         description: "Model Codex uses for this session",
-        category: "model",
-        type: "select",
+        category: "model" as const,
+        type: "select" as const,
         currentValue: current,
-        options,
+    };
+    if (gatewayGroup === null) return {...base, options};
+    // A shared catalog: Codex's models keep their flat list as one group, the gateway's form another.
+    const gatewayIds = new Set(gatewayGroup.modelIds);
+    const native = options.filter(option => !gatewayIds.has(option.value));
+    const gateway = options.filter(option => gatewayIds.has(option.value));
+    return {
+        ...base,
+        options: [
+            {groupId: "codex", name: "Codex", options: native},
+            {groupId: "custom-gateway", name: gatewayGroup.name, options: gateway},
+        ],
     };
 }
 

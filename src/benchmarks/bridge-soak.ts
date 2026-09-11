@@ -12,7 +12,7 @@ const gc = (globalThis as {gc?: () => void}).gc;
 if (!gc) throw new Error("Run with bun --expose-gc src/benchmarks/bridge-soak.ts");
 const catalog = [model()];
 const session: Session = {
-    id: "soak", cwd: process.cwd(), additionalDirectories: [], mcpServerNames: [], catalog,
+    id: "soak", cwd: process.cwd(), additionalDirectories: [], mcpServerNames: [], catalog, gatewayGroup: null,
     model: resolveModelSelection(catalog, null, null), mode: initialAgentMode({}),
     collaborationMode: "default", fastMode: false, account: null, title: null,
     titleIsExplicit: false, activeTurn: null, lastUsage: null, contextWindow: null, closed: false,

@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.5.0 — 2026-09-11
+
+### Added
+
+- `providers/set` hints `_meta.codex.bearerToken` (written as `experimental_bearer_token`)
+  and `_meta.codex.config` (top-level Codex thread-config overrides that ride with the
+  gateway; a `model_catalog_json` file is read so gateway models carry their real reasoning
+  levels and modalities). `providers/disable` removes both from live threads.
+- Catalog mode (`_meta.codex.mode: "catalog"`): the gateway's models are offered next to
+  Codex's in every session's `model` option as their own select group; selecting one moves
+  only that session to the gateway (unsubscribe + resume, materializing an empty thread
+  first), selecting a Codex model moves it back. `session/new` / `session/fork` honour
+  `_meta.alwith.model`; `session/resume` follows the provider Codex recorded for the thread.
+  Advertised as `capabilities._meta.codex.providerCatalog`.
+
+### Fixed
+
+- A thread another Codex client is writing ("already has an active writer", a file lock
+  across the Codex home) opens as a read-only session through `thread/read`, like Codex's
+  TUI: history replays, the response carries `_meta.codex.readOnly`, prompts and config
+  changes are refused with `-32600`, and a later resume retries the real thing.
+
 ## 0.4.0 — 2026-09-10
 
 ### Added

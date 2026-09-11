@@ -2,6 +2,7 @@ import type {Account, Model} from "../app-server/v2";
 import type {ModeKind} from "../app-server/ModeKind";
 import type {AgentMode} from "../codex/modes";
 import type {ModelSelection} from "../codex/models";
+import type {GatewayGroup} from "./providers";
 import type {TokenCount} from "../util/tokens";
 
 export interface ActiveTurn {
@@ -29,6 +30,8 @@ export interface Session {
     /** Sanitized names of MCP servers the client asked for on this session. */
     mcpServerNames: string[];
     catalog: Model[];
+    /** Set when the catalog mixes Codex's models with a gateway's: the gateway's get their own select group. */
+    gatewayGroup: GatewayGroup | null;
     model: ModelSelection;
     mode: AgentMode;
     collaborationMode: ModeKind;

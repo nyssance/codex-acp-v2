@@ -24,6 +24,7 @@ import type {
     SkillsListParams,
     SkillsListResponse,
     Thread,
+    ThreadResumeResponse,
     Turn,
     TurnCompletedNotification,
     TurnError,
@@ -37,6 +38,7 @@ import {
     DEFAULT_COLLABORATION_MODE,
     FAST_SERVICE_TIER,
     findModel,
+    MODEL_CONFIG_ID,
     modelLacksReasoning,
     modelSupportsImages,
     PLAN_COLLABORATION_MODE,
@@ -62,7 +64,7 @@ import {ClientSession, type ClientCapabilitySet, type ClientLink} from "./client
 import {availableCommands, mcpMessage, parseCommand, resolveCommand, skillsMessage, statusMessage} from "./commands";
 import {applyConfigOption, sessionConfigOptions} from "./configOptions";
 import {historyTitle, historyUpdates} from "./history";
-import {OPENAI_PROVIDER_ID, ProviderRouting} from "./providers";
+import {GATEWAY_MODEL_PROVIDER, OPENAI_PROVIDER_ID, ProviderRouting} from "./providers";
 import {createActiveTurn, type ActiveTurn, type Session} from "./session";
 
 export interface CodexAgentOptions {
@@ -82,6 +84,8 @@ interface SessionRuntime {
     config: JsonObject;
     modelProvider: string | null;
     stale: boolean;
+    /** Opened through Codex's read path because another Codex client holds the thread's writer. */
+    readOnly: boolean;
     session: Session;
     client: ClientSession;
     bridge: EventBridge;
@@ -202,7 +206,7 @@ export class CodexAgent {
                 // history (thread/inject_items) before the first turn.
                 // skills / plugins: the `_codex/skills_*`, `_codex/plugin_*` and `_codex/marketplace_*`
                 // pass-through surface for a host that manages Codex's catalogs itself.
-                _meta: {codex: {archive: true, seedHistory: true, skills: true, plugins: true}},
+                _meta: {codex: {archive: true, seedHistory: true, skills: true, plugins: true, providerCatalog: true}},
             },
             authMethods: authMethods(this.capabilities, this.env),
         };
@@ -297,25 +301,33 @@ export class CodexAgent {
             try {
                 change(candidate);
                 const catalog = await this.withCodex(() => this.codex.allModels(true));
-                const modelProvider = await this.resolveModelProvider(candidate);
+                const nativeProvider = await this.resolveModelProvider(candidate);
+                // Route mode moves every session; catalog mode only touches sessions that are
+                // on the gateway (the others just learn the new catalog).
+                const wholesale = (this.providers.active !== null && this.providers.mode === "route") || (candidate.active !== null && candidate.mode === "route");
+                const moving = [...this.sessions.values()].filter(runtime => wholesale || runtime.modelProvider === GATEWAY_MODEL_PROVIDER);
+                const targets = new Map(moving.map(runtime => [runtime, candidate.active !== null && (candidate.mode === "route" || runtime.modelProvider === GATEWAY_MODEL_PROVIDER)]));
                 // Codex cannot cold-resume a thread before its history storage exists.
-                // Validate every session before detaching any subscription.
-                for (const runtime of this.sessions.values()) {
+                // Validate every session before detaching any subscription. Catalog mode
+                // materializes an empty gateway session instead (see rerouteSession).
+                for (const runtime of moving) {
                     try {
                         await this.codex.threadTurnsList({threadId: runtime.session.id, limit: 1, itemsView: "notLoaded"});
                     } catch (error) {
-                        throw acp.RequestError.invalidRequest({sessionId: runtime.session.id, details: errorMessage(error)},
-                            "Cannot reload this session's history for a provider change; close empty sessions and configure the provider before creating them, or retry after history is available");
+                        if (wholesale) {
+                            throw acp.RequestError.invalidRequest({sessionId: runtime.session.id, details: errorMessage(error)},
+                                "Cannot reload this session's history for a provider change; close empty sessions and configure the provider before creating them, or retry after history is available");
+                        }
+                        await this.withCodex(() => this.codex.threadInjectItems({threadId: runtime.session.id, items: [providerChangeNote()]}));
                     }
                 }
-                for (const runtime of this.sessions.values()) {
-                    const config = {...runtime.config};
-                    const providers = candidate.threadConfig()["model_providers"];
-                    if (providers === undefined) delete config["model_providers"];
-                    else config["model_providers"] = providers;
-                    const nextCatalog = candidate.catalog(catalog);
-                    const requestedModel = candidate.active?.model
-                        ?? (findModel(nextCatalog, runtime.session.model.model) ? runtime.session.model.model : null);
+                const nextCatalog = candidate.catalog(catalog);
+                for (const runtime of moving) {
+                    const onGateway = targets.get(runtime) === true;
+                    const config = candidate.rebind(runtime.config, this.providers, onGateway);
+                    const modelProvider = onGateway ? GATEWAY_MODEL_PROVIDER : nativeProvider;
+                    const keep = findModel(nextCatalog, runtime.session.model.model) && candidate.isGatewayModel(runtime.session.model.model) === onGateway;
+                    const requestedModel = candidate.mode === "route" ? candidate.active?.model ?? (keep ? runtime.session.model.model : null) : keep ? runtime.session.model.model : null;
                     const selection = resolveModelSelection(nextCatalog, requestedModel, requestedModel === runtime.session.model.model ? runtime.session.model.effort : null);
                     attempted.push(runtime);
                     // A subscribed live thread treats resume as rejoin and ignores routing overrides.
@@ -324,15 +336,20 @@ export class CodexAgent {
                         threadId: runtime.session.id, cwd: runtime.session.cwd, config,
                         modelProvider, model: selection.model, excludeTurns: true,
                     }));
-                    staged.set(runtime, {config, catalog: nextCatalog, model: resolveModelSelection(nextCatalog, candidate.active?.model ?? thread.model, thread.reasoningEffort)});
+                    staged.set(runtime, {config, catalog: nextCatalog, model: resolveModelSelection(nextCatalog, requestedModel ?? thread.model, thread.reasoningEffort)});
                 }
                 this.providers = candidate;
-                for (const [runtime, next] of staged) {
-                    runtime.config = next.config;
-                    runtime.modelProvider = modelProvider;
-                    runtime.session.catalog = next.catalog;
-                    runtime.session.model = next.model;
-                    runtime.stale = false;
+                for (const runtime of this.sessions.values()) {
+                    const next = staged.get(runtime);
+                    if (next) {
+                        runtime.config = next.config;
+                        runtime.modelProvider = targets.get(runtime) === true ? GATEWAY_MODEL_PROVIDER : nativeProvider;
+                        runtime.session.model = next.model;
+                        runtime.stale = false;
+                    }
+                    runtime.session.catalog = nextCatalog;
+                    runtime.session.gatewayGroup = candidate.gatewayGroup();
+                    if (!next) runtime.session.model = resolveModelSelection(nextCatalog, findModel(nextCatalog, runtime.session.model.model) ? runtime.session.model.model : null, runtime.session.model.effort);
                     // Notification delivery cannot roll back an already committed routing transaction.
                     void runtime.client.update({sessionUpdate: "config_option_update", configOptions: sessionConfigOptions(runtime.session), _meta: {codex: {routing: {stale: false}}}}).catch(error => logger.error("Provider config notification failed", error));
                 }
@@ -368,7 +385,8 @@ export class CodexAgent {
 
     async resumeSession(params: acp.ResumeSessionRequest, signal?: AbortSignal): Promise<acp.ResumeSessionResponse> {
         const runtime = await this.openSession({kind: "resume", request: params}, signal);
-        return {configOptions: sessionConfigOptions(runtime.session)};
+        const configOptions = sessionConfigOptions(runtime.session);
+        return runtime.readOnly ? {configOptions, _meta: {codex: {readOnly: true, reason: "active_writer"}}} : {configOptions};
     }
 
     async forkSession(params: acp.ForkSessionRequest, signal?: AbortSignal): Promise<acp.ForkSessionResponse> {
@@ -420,27 +438,51 @@ export class CodexAgent {
         }
         const mcpServers = request.mcpServers ?? [];
 
+        // Which provider this thread runs on. Route mode: the gateway, always. Catalog mode:
+        // the gateway only when the client asks for one of its models, or (resume) when
+        // Codex says the thread last ran there.
+        const requestedModel = requestedModelOf(request._meta);
+        let onGateway = this.providers.routesByDefault();
+        if (this.providers.active !== null && this.providers.mode === "catalog") {
+            if (requestedModel !== null) onGateway = this.providers.isGatewayModel(requestedModel);
+            else if (open.kind === "resume") {
+                const known = await this.withCodex(() => this.codex.threadRead({threadId: open.request.sessionId, includeTurns: false}));
+                onGateway = known.thread.modelProvider === GATEWAY_MODEL_PROVIDER;
+            }
+        }
         // A client-configured gateway carries its own credentials; only native OpenAI routing needs a login.
         let accountVersion = this.accountGeneration;
         const account = await this.withCodex(() => this.codex.accountRead({refreshToken: false}));
-        if (this.providers.active === null && account.requiresOpenaiAuth && account.account === null) {
+        if (!onGateway && account.requiresOpenaiAuth && account.account === null) {
             throw acp.RequestError.authRequired(undefined, "Log in to Codex first (auth/login)");
         }
         const existingMcp = mcpServers.length > 0 ? await this.withCodex(() => this.configuredMcpServerNames(request.cwd)) : new Set<string>();
-        const config = buildThreadConfig(this.providers.threadConfig(), request.cwd, additionalDirectories, mcpServers, existingMcp);
+        const config = buildThreadConfig(this.providers.threadConfig(onGateway), request.cwd, additionalDirectories, mcpServers, existingMcp);
         const mcpStartupGeneration = this.codex.mcpStartupGeneration;
-        const modelProvider = await this.withCodex(() => this.resolveModelProvider());
+        const modelProvider = onGateway ? GATEWAY_MODEL_PROVIDER : await this.withCodex(() => this.resolveModelProvider());
+        const startModel = onGateway ? requestedModel ?? this.providers.active?.model ?? null : requestedModel;
 
+        let readOnly = false;
         const {thread, skills} = await this.withSkillsContext(request.cwd, additionalDirectories, async skills => ({skills, thread: await this.withCodex(async () => {
             if (signal?.aborted) throw acp.RequestError.requestCancelled(undefined, "Session opening was cancelled");
             switch (open.kind) {
                 case "new":
-                    return await this.codex.threadStart({config, cwd: request.cwd, modelProvider});
+                    return await this.codex.threadStart({config, cwd: request.cwd, modelProvider, model: startModel});
                 case "resume":
-                    // History is paged through thread/turns/list during replay; full hydration here is deprecated.
-                    return await this.codex.threadResume({threadId: open.request.sessionId, config, cwd: request.cwd, modelProvider, excludeTurns: true});
+                    try {
+                        // History is paged through thread/turns/list during replay; full hydration here is deprecated.
+                        return await this.codex.threadResume({threadId: open.request.sessionId, config, cwd: request.cwd, modelProvider, model: startModel, excludeTurns: true});
+                    } catch (error) {
+                        // Codex's writer lock is a file lock across the Codex home: another Codex
+                        // client (ChatGPT app, CLI, app-server) has this thread open, and nothing in
+                        // this process can release it. Codex's TUI opens such threads for viewing
+                        // through thread/read; so does this session.
+                        if (!errorMessage(error).includes("already has an active writer")) throw error;
+                        readOnly = true;
+                        return readOnlyThread((await this.codex.threadRead({threadId: open.request.sessionId, includeTurns: false})).thread, request.cwd);
+                    }
                 case "fork":
-                    return await this.codex.threadFork({threadId: open.request.sessionId, config, cwd: request.cwd, modelProvider, excludeTurns: true});
+                    return await this.codex.threadFork({threadId: open.request.sessionId, config, cwd: request.cwd, modelProvider, model: startModel, excludeTurns: true});
             }
         })}));
         const sessionId = thread.thread.id;
@@ -465,15 +507,15 @@ export class CodexAgent {
                 accountVersion = this.accountGeneration;
                 openedAccount = (await this.withCodex(() => this.codex.accountRead({refreshToken: false}))).account;
             }
-            const gateway = this.providers.active;
             const catalog = this.providers.catalog(codexCatalog);
-            const model = resolveModelSelection(catalog, gateway?.model ?? thread.model, thread.reasoningEffort);
+            const model = resolveModelSelection(catalog, startModel ?? thread.model, thread.reasoningEffort);
             const session: Session = {
                 id: sessionId,
                 cwd: request.cwd,
                 additionalDirectories,
                 mcpServerNames: mcpServerNames(mcpServers).filter(name => !existingMcp.has(name)),
                 catalog,
+                gatewayGroup: this.providers.gatewayGroup(),
                 model,
                 mode: initialAgentMode(this.env),
                 collaborationMode: DEFAULT_COLLABORATION_MODE,
@@ -486,7 +528,7 @@ export class CodexAgent {
                 contextWindow: null,
                 closed: false,
             };
-            const runtime = this.installRuntime(session, capabilities, config, thread.modelProvider);
+            const runtime = this.installRuntime(session, capabilities, config, onGateway ? GATEWAY_MODEL_PROVIDER : thread.modelProvider, readOnly);
             const cancelOpening = () => {
                 runtime.session.closed = true;
                 runtime.lifetime.abort();
@@ -533,7 +575,7 @@ export class CodexAgent {
         }
     }
 
-    private installRuntime(session: Session, capabilities: ClientCapabilitySet, config: JsonObject, modelProvider: string | null): SessionRuntime {
+    private installRuntime(session: Session, capabilities: ClientCapabilitySet, config: JsonObject, modelProvider: string | null, readOnly = false): SessionRuntime {
         const client = new ClientSession(session.id, this.link, capabilities);
         const bridge = new EventBridge(client, session);
         const turnContext = new TurnContext(session.id);
@@ -543,7 +585,7 @@ export class CodexAgent {
         };
         const approval = new CodexApprovalHandler(client, turnContext, signal);
         const elicitation = new CodexElicitationHandler(client, turnContext, signal);
-        const runtime: SessionRuntime = {config, modelProvider, stale: false, session, client, bridge, turnContext, elicitation, lifetime: new AbortController(), queue: Promise.resolve()};
+        const runtime: SessionRuntime = {config, modelProvider, stale: false, readOnly, session, client, bridge, turnContext, elicitation, lifetime: new AbortController(), queue: Promise.resolve()};
         // Frames already queued (e.g. the tool call under review) must reach the client before its prompt.
         const drained = <P, T>(operation: (params: P) => Promise<T>) => async (params: P): Promise<T> => {
             await abortable(this.drain(runtime), this.codex.disconnectSignal);
@@ -840,7 +882,7 @@ export class CodexAgent {
             runtime.session.activeTurn = null;
             turn.resolveFinished();
         }
-        const unsubscribe = this.unsubscribeThread(sessionId);
+        const unsubscribe = runtime.readOnly ? Promise.resolve() : this.unsubscribeThread(sessionId);
         let remoteUnsubscribe: "confirmed" | "timed_out" | "failed" = "confirmed";
         try {
             if (!await within(unsubscribe, Math.max(0, deadline - performance.now()))) {
@@ -870,10 +912,52 @@ export class CodexAgent {
 
     private async setSessionConfigOptionInternal(params: acp.SetSessionConfigOptionRequest): Promise<acp.SetSessionConfigOptionResponse> {
         const runtime = this.runtime(params.sessionId, "session/set_config_option");
+        assertWritable(runtime);
+        if (params.configId === MODEL_CONFIG_ID && this.providers.mode === "catalog" && typeof params.value === "string") {
+            const toGateway = this.providers.isGatewayModel(params.value);
+            if (toGateway !== (runtime.modelProvider === GATEWAY_MODEL_PROVIDER)) await this.rerouteSession(runtime, toGateway, params.value);
+        }
         await this.withCodex(() => applyConfigOption(runtime.session, this.codex, params));
         const configOptions = sessionConfigOptions(runtime.session);
         await runtime.client.update({sessionUpdate: "config_option_update", configOptions});
         return {configOptions};
+    }
+
+    /**
+     * Catalog mode: moves one live thread between Codex's native provider and the gateway.
+     * Codex has no per-turn provider (`turn/start` overrides the model only), so this is the
+     * same unsubscribe + cold resume as an agent-wide provider change. A thread Codex has not
+     * materialized yet (no user message) cannot be resumed; it is materialized first with a
+     * developer note, the way `seedHistory` injects items.
+     */
+    private async rerouteSession(runtime: SessionRuntime, toGateway: boolean, modelId: string): Promise<void> {
+        const {session} = runtime;
+        this.assertRoutingAvailable();
+        if (session.activeTurn !== null) {
+            throw acp.RequestError.invalidRequest({sessionId: session.id}, "The model provider cannot change while a turn is running; cancel it or wait for idle");
+        }
+        try {
+            await this.codex.threadTurnsList({threadId: session.id, limit: 1, itemsView: "notLoaded"});
+        } catch {
+            await this.withCodex(() => this.codex.threadInjectItems({threadId: session.id, items: [providerChangeNote()]}));
+        }
+        const config = this.providers.routeConfig(runtime.config, toGateway);
+        const modelProvider = toGateway ? GATEWAY_MODEL_PROVIDER : await this.withCodex(() => this.resolveModelProvider());
+        await this.codex.threadUnsubscribe({threadId: session.id});
+        try {
+            await this.withCodex(() => this.codex.threadResume({threadId: session.id, cwd: session.cwd, config, modelProvider, model: modelId, excludeTurns: true}));
+        } catch (error) {
+            try {
+                await this.codex.threadResume({threadId: session.id, cwd: session.cwd, config: runtime.config, modelProvider: runtime.modelProvider, model: session.model.model, excludeTurns: true});
+            } catch (rollbackError) {
+                runtime.stale = true;
+                logger.error("Provider rollback failed", rollbackError, {sessionId: session.id});
+            }
+            throw acp.RequestError.internalError({sessionId: session.id, stale: runtime.stale}, `Could not move the session to ${toGateway ? "the gateway" : "Codex's provider"}: ${errorMessage(error)}`);
+        }
+        runtime.config = config;
+        runtime.modelProvider = modelProvider;
+        runtime.stale = false;
     }
 
     private runtime(sessionId: string, method: string): SessionRuntime {
@@ -893,6 +977,7 @@ export class CodexAgent {
         this.assertRoutingAvailable();
         if (!allowReentry && this.sessionMutations.has(params.sessionId)) throw acp.RequestError.invalidRequest({sessionId: params.sessionId}, "Session lifecycle or configuration work is in progress; retry when it finishes");
         const runtime = this.runtime(params.sessionId, "session/prompt");
+        assertWritable(runtime);
         if (runtime.stale) throw acp.RequestError.invalidRequest({sessionId: params.sessionId, _meta: {codex: {routing: {stale: true}}}}, "Session routing is stale; resume the session or successfully change providers before prompting");
         if (!Array.isArray(params.prompt) || params.prompt.length === 0) {
             throw acp.RequestError.invalidParams(undefined, "prompt must contain at least one content block");
@@ -1385,6 +1470,44 @@ function archivedFilter(meta: acp.ListSessionsRequest["_meta"]): boolean {
 export interface SeedMessage {
     role: "user" | "assistant";
     text: string;
+}
+
+/**
+ * The one item that materializes an empty thread so Codex can cold-resume it on another
+ * provider (a thread with no user message has no rollout to resume).
+ */
+function providerChangeNote(): JsonValue {
+    return {type: "message", role: "developer", content: [{type: "input_text", text: "The user changed this conversation's model before sending a message."}]};
+}
+
+/** A session opened for viewing only: another Codex client holds the thread's writer. */
+function assertWritable(runtime: SessionRuntime): void {
+    if (!runtime.readOnly) return;
+    throw acp.RequestError.invalidRequest({codex: {readOnly: true}}, "Thread is open in another Codex client");
+}
+
+/** What `thread/read` gives a viewing-only session in place of a `thread/resume` response. */
+function readOnlyThread(thread: Thread, cwd: string): ThreadResumeResponse {
+    return {
+        thread,
+        model: thread.model ?? "",
+        modelProvider: thread.modelProvider,
+        serviceTier: null,
+        cwd,
+        instructionSources: [],
+        approvalPolicy: "on-request",
+        approvalsReviewer: "user",
+        sandbox: {type: "readOnly", networkAccess: false},
+        reasoningEffort: thread.reasoningEffort,
+        turnsBackwardsCursor: null,
+        itemsBackwardsCursor: null,
+    } as ThreadResumeResponse;
+}
+
+/** `_meta.alwith.model` on `session/new` / `session/resume` / `session/fork`: the model to open the session with. */
+function requestedModelOf(meta: acp.NewSessionRequest["_meta"]): string | null {
+    const raw = (meta as {alwith?: {model?: unknown}} | null | undefined)?.alwith?.model;
+    return typeof raw === "string" && raw.length > 0 ? raw : null;
 }
 
 /** `session/new` `_meta.codex.seedHistory`: prior conversation to inject as model-visible history. */
