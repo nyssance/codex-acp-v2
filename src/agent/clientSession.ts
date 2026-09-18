@@ -56,6 +56,11 @@ export class ClientSession {
         }, signal);
     }
 
+    /** Machine work remains running; only permission/elicitation uses waitingOnClient. */
+    async requestTool(params: Record<string, unknown>, signal: AbortSignal): Promise<unknown> {
+        return await this.link.request("_alwith/tool/call", params, {cancellationSignal: signal});
+    }
+
     async createElicitation(request: acp.CreateElicitationRequest, signal?: AbortSignal): Promise<acp.CreateElicitationResponse> {
         signal = signal ? AbortSignal.any([signal, this.output.signal]) : this.output.signal;
         signal.throwIfAborted();

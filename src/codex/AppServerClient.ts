@@ -2,6 +2,8 @@ import {RequestType, type MessageConnection} from "vscode-jsonrpc/node";
 import type {ClientRequest, FuzzyFileSearchParams, FuzzyFileSearchResponse, InitializeParams, InitializeResponse, ServerNotification} from "../app-server";
 import type {
     CancelLoginAccountParams,
+    DynamicToolCallParams,
+    DynamicToolCallResponse,
     CancelLoginAccountResponse,
     CommandExecutionRequestApprovalParams,
     CommandExecutionRequestApprovalResponse,
@@ -126,6 +128,7 @@ const FileChangeApprovalRequest = new RequestType<FileChangeRequestApprovalParam
 const PermissionsApprovalRequest = new RequestType<PermissionsRequestApprovalParams, PermissionsRequestApprovalResponse, void>("item/permissions/requestApproval");
 const McpServerElicitationRequest = new RequestType<McpServerElicitationRequestParams, McpServerElicitationRequestResponse, void>("mcpServer/elicitation/request");
 const ToolRequestUserInputRequest = new RequestType<ToolRequestUserInputParams, ToolRequestUserInputResponse, void>("item/tool/requestUserInput");
+const DynamicToolCallRequest = new RequestType<DynamicToolCallParams, DynamicToolCallResponse, void>("item/tool/call");
 
 type CodexRequest = ClientRequest extends infer R ? (R extends {method: string} ? Omit<R, "id"> : never) : never;
 
@@ -144,6 +147,7 @@ export class AppServerClient {
     private readonly threadHandlers = new Map<string, NotificationHandler>();
     private readonly approvalHandlers = new Map<string, ApprovalHandler>();
     private readonly elicitationHandlers = new Map<string, ElicitationHandler>();
+    private readonly dynamicToolHandlers = new Map<string, (params: DynamicToolCallParams) => Promise<DynamicToolCallResponse>>();
     private readonly turnCompletionWaiters = new Map<string, (event: TurnCompletedNotification) => void>();
     private readonly earlyTurnCompletions = new Map<string, TurnCompletedNotification>();
     private readonly startingThreads = new Map<string, number>();
@@ -156,6 +160,10 @@ export class AppServerClient {
     private readonly disconnected = new AbortController();
 
     constructor(readonly connection: MessageConnection) {
+        connection.onRequest(DynamicToolCallRequest, async params => {
+            const handler = this.dynamicToolHandlers.get(params.threadId);
+            return handler ? await handler(params) : {success: false, contentItems: [{type: "inputText", text: "Client tools are unavailable for this thread"}]};
+        });
         connection.onClose(() => this.disconnected.abort(new Error("Connection to Codex was lost")));
         connection.onDispose(() => this.disconnected.abort(new Error("Connection to Codex was lost")));
         connection.onUnhandledNotification((message) => {
@@ -195,16 +203,19 @@ export class AppServerClient {
         notification: NotificationHandler;
         approval: ApprovalHandler;
         elicitation: ElicitationHandler;
+        tool?: (params: DynamicToolCallParams) => Promise<DynamicToolCallResponse>;
     }): void {
         this.threadHandlers.set(threadId, handlers.notification);
         this.approvalHandlers.set(threadId, handlers.approval);
         this.elicitationHandlers.set(threadId, handlers.elicitation);
+        if (handlers.tool) this.dynamicToolHandlers.set(threadId, handlers.tool);
     }
 
     detachThread(threadId: string): void {
         this.threadHandlers.delete(threadId);
         this.approvalHandlers.delete(threadId);
         this.elicitationHandlers.delete(threadId);
+        this.dynamicToolHandlers.delete(threadId);
         for (const key of this.mcpStartupStates.keys()) {
             if (key.startsWith(`${threadId}\u0000`)) this.mcpStartupStates.delete(key);
         }

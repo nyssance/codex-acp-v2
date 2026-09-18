@@ -102,6 +102,7 @@ export type RecordedUpdate = acp.SessionUpdate & {sessionId: string};
 
 /** Records everything the agent sends to the client and answers its requests. */
 export class FakeClient implements ClientLink {
+    toolResponder: (request: unknown) => unknown | Promise<unknown> = () => ({success: true, contentItems: [{type: "text", text: "ok"}]});
     readonly notifications: Array<{method: string; params: unknown}> = [];
     readonly requests: Array<{method: string; params: unknown}> = [];
     permissionResponder: (request: acp.RequestPermissionRequest) => acp.RequestPermissionResponse | Promise<acp.RequestPermissionResponse> =
@@ -115,6 +116,7 @@ export class FakeClient implements ClientLink {
 
     request = vi.fn(async (method: string, params?: unknown): Promise<unknown> => {
         this.requests.push({method, params});
+        if (method === "_alwith/tool/call") return await this.toolResponder(params);
         if (method === acp.methods.client.session.requestPermission) {
             return await this.permissionResponder(params as acp.RequestPermissionRequest);
         }

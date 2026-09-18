@@ -397,3 +397,34 @@ and [turn context construction](https://github.com/openai/codex/blob/rust-v0.153
 Turn-scoped `item/*` notifications are ignored while idle or when they name a
 known different active turn. Items are accepted while a local turn's id is still
 unknown, because Codex may deliver them before its start response.
+# Module-owned client tools
+
+The adapter advertises `capabilities._meta.alwith.tools = {version: 1}`. On
+`session/new`, `session/resume` and `session/fork`, a trusted host may supply
+`_meta.alwith.tools = {version: 1, revision, definitions}`. Definitions contain
+unique `name`, `description` and object `inputSchema` fields (at most 128 tools).
+New threads receive these as Codex dynamic functions before their first turn.
+Codex persists dynamic definitions across resume/fork; the host must retain the
+original revision and declarations with the session and refuse incompatible
+restores. Supplying a new set on resume does not replace persisted definitions.
+
+Calls use the reverse request `_alwith/tool/call` with
+`{sessionId, turnId, toolCallId, name, arguments, toolSetRevision}`. Tool names in
+Codex have an `alwith_client_` prefix; callback names are the original names.
+Results are `{success, contentItems}`. Items are `{type:"text",text}` or bounded
+base64 `{type:"image"|"audio",mimeType,data}`. Arbitrary resource URLs are never
+fetched by the adapter. Results have a 16 MiB serialized limit.
+
+Declaring a tool does not grant permission. Non-full-access modes use the
+existing ACP permission channel before execution. Only this user decision
+enters `requires_action`; executing the host callback remains `running`.
+The module must still validate scope, arguments, task ownership and revision.
+Cancellation uses standard ACP `$/cancel_request` with `requestId`. Callbacks
+are deduplicated within a turn; conflicting call IDs fail closed. Cancel,
+session close and engine disconnect terminate waiting, and late results cannot
+update a subsequent turn. Hosts must separately preserve operation identity
+for writes whose outcome is unknown across process loss.
+
+Runtime hosts route callbacks privately to the module that owns the Agent
+process. They must not expose tool arguments/results on the public event bus
+or replay journal. UI progress uses normal `tool_call_update` frames.

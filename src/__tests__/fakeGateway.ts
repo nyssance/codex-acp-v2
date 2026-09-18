@@ -18,7 +18,7 @@ export interface FakeGateway {
     close(): Promise<void>;
 }
 
-export function startFakeGateway(options: {token: string; reply: string}): Promise<FakeGateway> {
+export function startFakeGateway(options: {token: string; reply: string; toolForRequest?: (index: number) => {name: string; arguments: Record<string, unknown>} | undefined}): Promise<FakeGateway> {
     const requests: GatewayRequest[] = [];
     const server = http.createServer((request, response) => {
         const chunks: Buffer[] = [];
@@ -44,7 +44,8 @@ export function startFakeGateway(options: {token: string; reply: string}): Promi
                 return;
             }
             response.writeHead(200, {"content-type": "text/event-stream", "cache-control": "no-cache"});
-            response.end(responsesStream(options.reply, typeof body["model"] === "string" ? body["model"] : "unknown"));
+            const tool = options.toolForRequest?.(requests.length - 1);
+            response.end(tool ? toolStream(tool, requests.length) : responsesStream(options.reply, typeof body["model"] === "string" ? body["model"] : "unknown"));
         });
     });
     return new Promise(resolve => {
@@ -57,6 +58,20 @@ export function startFakeGateway(options: {token: string; reply: string}): Promi
             });
         });
     });
+}
+
+function toolStream(tool: {name: string; arguments: Record<string, unknown>}, index: number): string {
+    const item = {type: "function_call", id: `fc_${index}`, call_id: `call_${index}`, name: tool.name, arguments: JSON.stringify(tool.arguments), status: "completed"};
+    const response = {id: `resp_${index}`, object: "response", status: "completed", output: [item], usage: {input_tokens: 12, output_tokens: 3, total_tokens: 15}};
+    const events = [
+        {type: "response.created", response: {...response, status: "in_progress", output: []}},
+        {type: "response.output_item.added", output_index: 0, item: {...item, arguments: "", status: "in_progress"}},
+        {type: "response.function_call_arguments.delta", item_id: item.id, output_index: 0, delta: item.arguments},
+        {type: "response.function_call_arguments.done", item_id: item.id, output_index: 0, arguments: item.arguments},
+        {type: "response.output_item.done", output_index: 0, item},
+        {type: "response.completed", response},
+    ];
+    return events.map((data, sequence_number) => `event: ${data.type}\ndata: ${JSON.stringify({...data, sequence_number})}\n\n`).join("");
 }
 
 function responsesStream(text: string, model: string): string {

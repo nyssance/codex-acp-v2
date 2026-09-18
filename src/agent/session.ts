@@ -4,6 +4,7 @@ import type {AgentMode} from "../codex/modes";
 import type {ModelSelection} from "../codex/models";
 import type {GatewayGroup} from "./providers";
 import type {TokenCount} from "../util/tokens";
+import type {ClientToolSet} from "./clientTools";
 
 export interface ActiveTurn {
     /** Codex turn id; null until `turn/start` has returned. */
@@ -24,6 +25,7 @@ export interface ActiveTurn {
 }
 
 export interface Session {
+    clientTools?: ClientToolSet;
     readonly id: string;
     cwd: string;
     additionalDirectories: string[];

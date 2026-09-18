@@ -37,7 +37,7 @@
     "package:win-x64": "cd dist/bin && zip codex-acp-v2-x64-windows.zip codex-acp-v2-x64-windows.exe",
     "package:win-arm64": "cd dist/bin && zip codex-acp-v2-arm64-windows.zip codex-acp-v2-arm64-windows.exe",
     "start": "bun src/index.ts",
-    "generate-types": "codex app-server generate-ts --out src/app-server",
+    "generate-types": "codex app-server generate-ts --experimental --out src/app-server",
     "test": "vitest run --exclude src/__tests__/e2e.test.ts",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",

@@ -1,4 +1,5 @@
 import type {ThreadItem} from "../app-server/v2";
+import {clientToolsOf, dynamicTools, ClientTools} from "./clientTools";
 import {classifyTurnError} from "./turnErrors";
 import * as acp from "@agentclientprotocol/sdk/experimental/v2";
 import type {JsonValue} from "../app-server/serde_json/JsonValue";
@@ -214,7 +215,7 @@ export class CodexAgent {
                 // pass-through surface for a host that manages Codex's catalogs itself.
                 // rename / account / fuzzyFileSearch: `_codex/session_rename`, `_codex/account_read`,
                 // `_codex/rate_limits` (+ `_codex/rate_limits_updated`) and `_codex/fuzzy_file_search`.
-                _meta: {codex: {archive: true, seedHistory: true, skills: true, plugins: true, providerCatalog: true, rename: true, account: true, fuzzyFileSearch: true}},
+                _meta: {alwith: {tools: {version: 1}}, codex: {archive: true, seedHistory: true, skills: true, plugins: true, providerCatalog: true, rename: true, account: true, fuzzyFileSearch: true}},
             },
             authMethods: authMethods(this.capabilities, this.env),
         };
@@ -452,6 +453,7 @@ export class CodexAgent {
             this.assertUnsubscribeSettled(open.request.sessionId);
         }
         const mcpServers = request.mcpServers ?? [];
+        const clientTools = clientToolsOf(request._meta);
 
         // Which provider this thread runs on. Route mode: the gateway, always. Catalog mode:
         // the gateway serving the model the client asks for, or (resume) the one Codex says
@@ -483,7 +485,8 @@ export class CodexAgent {
             if (signal?.aborted) throw acp.RequestError.requestCancelled(undefined, "Session opening was cancelled");
             switch (open.kind) {
                 case "new":
-                    return await this.codex.threadStart({config, cwd: request.cwd, modelProvider, model: startModel});
+                    return await this.codex.threadStart({config, cwd: request.cwd, modelProvider, model: startModel,
+                        ...(clientTools ? {dynamicTools: dynamicTools(clientTools)} : {})});
                 case "resume":
                     try {
                         // History is paged through thread/turns/list during replay; full hydration here is deprecated.
@@ -526,6 +529,7 @@ export class CodexAgent {
             const catalog = this.providers.catalog(codexCatalog);
             const model = resolveModelSelection(catalog, startModel ?? thread.model, thread.reasoningEffort);
             const session: Session = {
+                ...(clientTools ? {clientTools} : {}),
                 id: sessionId,
                 cwd: request.cwd,
                 additionalDirectories,
@@ -602,12 +606,14 @@ export class CodexAgent {
         const approval = new CodexApprovalHandler(client, turnContext, signal);
         const elicitation = new CodexElicitationHandler(client, turnContext, signal);
         const runtime: SessionRuntime = {config, modelProvider, stale: false, readOnly, session, client, bridge, turnContext, elicitation, lifetime: new AbortController(), queue: Promise.resolve()};
+        const tools = new ClientTools(session, client, AbortSignal.any([runtime.lifetime.signal, this.codex.disconnectSignal]));
         // Frames already queued (e.g. the tool call under review) must reach the client before its prompt.
         const drained = <P, T>(operation: (params: P) => Promise<T>) => async (params: P): Promise<T> => {
             await abortable(this.drain(runtime), this.codex.disconnectSignal);
             return await operation(params);
         };
         this.codex.attachThread(session.id, {
+            tool: params => tools.call(params),
             notification: (notification) => this.enqueue(runtime, notification),
             approval: {
                 handleCommandExecution: drained(params => approval.handleCommandExecution(params)),
