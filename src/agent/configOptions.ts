@@ -81,7 +81,7 @@ export async function applyConfigOption(
                 threadId: session.id,
                 collaborationMode: {
                     mode,
-                    settings: {model: session.model.model, reasoning_effort: session.model.effort, developer_instructions: null},
+                    settings: {model: findModel(session.catalog, session.model.model)?.model ?? session.model.model, reasoning_effort: session.model.effort, developer_instructions: null},
                 },
             });
             session.collaborationMode = mode;

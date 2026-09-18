@@ -845,7 +845,7 @@ describe("providers", () => {
         expect(modelOption.currentValue).toBe("gpt-5");
         expect(modelOption.options.map(group => [group.groupId, group.name, group.options.map(option => option.value)])).toEqual([
             ["codex", "Codex", ["gpt-5"]],
-            ["custom-gateway", "DeepSeek", ["deepseek-flash"]],
+            ["custom-gateway", "DeepSeek", ["gateway:custom-gateway:deepseek-flash"]],
         ]);
     });
 
@@ -857,14 +857,14 @@ describe("providers", () => {
         const other = await t.agent.newSession({cwd: CWD}).catch(() => null);
         void other;
         const before = t.codex.calls("thread/resume").length;
-        const moved = await t.agent.setSessionConfigOption({sessionId: THREAD_ID, configId: "model", type: "id", value: "deepseek-flash"});
+        const moved = await t.agent.setSessionConfigOption({sessionId: THREAD_ID, configId: "model", type: "id", value: "gateway:custom-gateway:deepseek-flash"});
         const resume = t.codex.lastParams<{threadId: string; modelProvider: string; model: string; config?: Record<string, unknown>}>("thread/resume");
         expect(t.codex.calls("thread/resume")).toHaveLength(before + 1);
         expect(resume).toMatchObject({threadId: THREAD_ID, modelProvider: "custom-gateway", model: "deepseek-flash"});
         expect(resume.config?.["web_search"]).toBe("disabled");
         expect(gatewayEntry(resume.config)?.["experimental_bearer_token"]).toBe("sk-test");
         const byId = Object.fromEntries((moved.configOptions ?? []).map(option => [option.configId, option]));
-        expect(byId["model"]).toMatchObject({currentValue: "deepseek-flash"});
+        expect(byId["model"]).toMatchObject({currentValue: "gateway:custom-gateway:deepseek-flash"});
         expect((byId["effort"] as {currentValue: string; options: Array<{value: string}>}).options.map(option => option.value)).toEqual(["low", "high", "max"]);
         expect((byId["effort"] as {currentValue: string}).currentValue).toBe("high");
         await t.agent.prompt({sessionId: THREAD_ID, prompt: [{type: "text", text: "hi"}]});
@@ -892,7 +892,7 @@ describe("providers", () => {
             if (listed === 1) throw new Error("thread is not materialized yet; thread/turns/list is unavailable before first user message");
             return {data: [], nextCursor: null, backwardsCursor: null};
         });
-        await t.agent.setSessionConfigOption({sessionId: THREAD_ID, configId: "model", type: "id", value: "deepseek-flash"});
+        await t.agent.setSessionConfigOption({sessionId: THREAD_ID, configId: "model", type: "id", value: "gateway:custom-gateway:deepseek-flash"});
         const injected = t.codex.lastParams<{threadId: string; items: Array<{role: string}>}>("thread/inject_items");
         expect(injected.threadId).toBe(THREAD_ID);
         expect(injected.items[0]?.role).toBe("developer");
@@ -905,12 +905,12 @@ describe("providers", () => {
         await t.initialize();
         await t.agent.setProvider(deepseek("catalog"));
         await expectRejects(t.agent.newSession({cwd: CWD}), -32000);
-        const response = await t.agent.newSession({cwd: CWD, _meta: {alwith: {model: "deepseek-flash"}}});
+        const response = await t.agent.newSession({cwd: CWD, _meta: {alwith: {model: "gateway:custom-gateway:deepseek-flash"}}});
         const start = t.codex.lastParams<ThreadStartParams>("thread/start");
         expect(start).toMatchObject({modelProvider: "custom-gateway", model: "deepseek-flash"});
         expect(gatewayEntry(start.config as Record<string, unknown>)?.["experimental_bearer_token"]).toBe("sk-test");
         const modelOption = response.configOptions?.find(option => option.configId === "model") as {currentValue: string};
-        expect(modelOption.currentValue).toBe("deepseek-flash");
+        expect(modelOption.currentValue).toBe("gateway:custom-gateway:deepseek-flash");
     });
 
     it("session/resume follows the provider Codex recorded for the thread", async () => {
@@ -923,7 +923,11 @@ describe("providers", () => {
         const resume = t.codex.lastParams<{modelProvider: string; config?: Record<string, unknown>}>("thread/resume");
         expect(resume.modelProvider).toBe("custom-gateway");
         expect(gatewayEntry(resume.config)).toBeDefined();
+        const beforeDisable = t.codex.calls("thread/resume").length;
         await t.agent.disableProvider({providerId: "openai"});
+        expect(t.codex.calls("thread/resume")).toHaveLength(beforeDisable);
+        await expectRejects(t.agent.prompt({sessionId: THREAD_ID, prompt: [{type: "text", text: "go"}]}), -32602, "unavailable");
+        await t.agent.setSessionConfigOption({sessionId: THREAD_ID, configId: "model", type: "id", value: "gpt-5"});
         const native = t.codex.lastParams<{modelProvider: string; config?: Record<string, unknown>}>("thread/resume");
         expect(native.modelProvider).toBe("openai");
         expect(native.config?.["model_providers"]).toBeUndefined();
@@ -939,7 +943,7 @@ describe("providers", () => {
         await t.openSession();
         await t.agent.prompt({sessionId: THREAD_ID, prompt: [{type: "text", text: "go"}]});
         await t.settle();
-        await expectRejects(t.agent.setSessionConfigOption({sessionId: THREAD_ID, configId: "model", type: "id", value: "deepseek-flash"}), -32600, "turn is running");
+        await expectRejects(t.agent.setSessionConfigOption({sessionId: THREAD_ID, configId: "model", type: "id", value: "gateway:custom-gateway:deepseek-flash"}), -32600, "turn is running");
         expect(t.codex.calls("thread/resume")).toHaveLength(0);
     });
 
@@ -1179,8 +1183,8 @@ describe("gateways", () => {
         const response = await t.agent.newSession({cwd: CWD});
         expect(groupsOf(response.configOptions)).toEqual([
             ["codex", "Codex", ["gpt-5"]],
-            ["deepseek", "DeepSeek", ["deepseek-flash"]],
-            ["openrouter", "OpenRouter", ["qwen/qwen3.8-max"]],
+            ["deepseek", "DeepSeek", ["gateway:deepseek:deepseek-flash"]],
+            ["openrouter", "OpenRouter", ["gateway:openrouter:qwen%2Fqwen3.8-max"]],
         ]);
         const listed = t.agent.listProviders({}).providers[0] as unknown as {current?: {baseUrl: string}; _meta?: {codex: {gateway: {id: string}; gateways: Array<{id: string; name: string; baseUrl: string; models: string[]}>}}};
         expect(listed.current?.baseUrl).toBe("https://api.openai.com/v1");
@@ -1197,14 +1201,14 @@ describe("gateways", () => {
         await t.agent.setProvider(deepseek());
         await t.agent.setProvider(openrouter());
         await t.openSession();
-        const toB = await t.agent.setSessionConfigOption({sessionId: THREAD_ID, configId: "model", type: "id", value: "qwen/qwen3.8-max"});
+        const toB = await t.agent.setSessionConfigOption({sessionId: THREAD_ID, configId: "model", type: "id", value: "gateway:openrouter:qwen%2Fqwen3.8-max"});
         const resumeB = t.codex.lastParams<Resume>("thread/resume");
         expect(resumeB).toMatchObject({threadId: THREAD_ID, modelProvider: "openrouter", model: "qwen/qwen3.8-max"});
         expect(Object.keys(providers(resumeB.config) ?? {})).toEqual(["openrouter"]);
         expect(providers(resumeB.config)?.["openrouter"]).toMatchObject({base_url: "https://openrouter.ai/api/v1", experimental_bearer_token: "sk-openrouter"});
         const effortB = toB.configOptions?.find(option => option.configId === "effort") as {options: Array<{value: string}>};
         expect(effortB.options.map(option => option.value)).toEqual(["low", "medium"]);
-        await t.agent.setSessionConfigOption({sessionId: THREAD_ID, configId: "model", type: "id", value: "deepseek-flash"});
+        await t.agent.setSessionConfigOption({sessionId: THREAD_ID, configId: "model", type: "id", value: "gateway:deepseek:deepseek-flash"});
         const resumeA = t.codex.lastParams<Resume>("thread/resume");
         expect(resumeA).toMatchObject({modelProvider: "deepseek", model: "deepseek-flash"});
         expect(Object.keys(providers(resumeA.config) ?? {})).toEqual(["deepseek"]);
@@ -1214,7 +1218,7 @@ describe("gateways", () => {
         expect(native.config?.["model_providers"]).toBeUndefined();
     });
 
-    it("disabling one gateway by id moves only its sessions back and keeps the other group", async () => {
+    it("disabling a gateway blocks its sessions until explicit selection and keeps the other group", async () => {
         const t = createTestAgent();
         await t.initialize();
         await t.agent.setProvider(deepseek());
@@ -1223,30 +1227,54 @@ describe("gateways", () => {
         t.codex.respond("thread/start", () => threadResponse({id: starts++ === 0 ? THREAD_ID : "thread-2"}));
         await t.openSession();
         await t.agent.newSession({cwd: CWD});
-        await t.agent.setSessionConfigOption({sessionId: THREAD_ID, configId: "model", type: "id", value: "qwen/qwen3.8-max"});
-        await t.agent.setSessionConfigOption({sessionId: "thread-2", configId: "model", type: "id", value: "deepseek-flash"});
+        await t.agent.setSessionConfigOption({sessionId: THREAD_ID, configId: "model", type: "id", value: "gateway:openrouter:qwen%2Fqwen3.8-max"});
+        await t.agent.setSessionConfigOption({sessionId: "thread-2", configId: "model", type: "id", value: "gateway:deepseek:deepseek-flash"});
         const before = t.codex.calls("thread/resume").length;
         await t.agent.disableProvider({providerId: "openai", _meta: {codex: {id: "openrouter"}}} as acp.DisableProviderRequest);
         const resumes = t.codex.calls("thread/resume").slice(before).map(call => call.params as Resume);
-        expect(resumes.map(resume => [resume.threadId, resume.modelProvider])).toEqual([[THREAD_ID, "openai"]]);
+        expect(resumes).toEqual([]);
+        await expectRejects(t.agent.prompt({sessionId: THREAD_ID, prompt: [{type: "text", text: "go"}]}), -32602, "unavailable");
         const options = t.client.updatesOf("config_option_update").at(-1) as {configOptions: acp.SessionConfigOption[]};
         expect(groupsOf(options.configOptions)).toEqual([
             ["codex", "Codex", ["gpt-5"]],
-            ["deepseek", "DeepSeek", ["deepseek-flash"]],
+            ["deepseek", "DeepSeek", ["gateway:deepseek:deepseek-flash"]],
         ]);
         const listed = t.agent.listProviders({}).providers[0] as unknown as {_meta?: {codex: {gateways: Array<{id: string}>}}};
         expect(listed._meta?.codex.gateways.map(gateway => gateway.id)).toEqual(["deepseek"]);
         await t.agent.disableProvider({providerId: "openai"});
         expect((t.agent.listProviders({}).providers[0] as unknown as {_meta?: unknown})._meta).toBeUndefined();
+        expect(t.codex.calls("thread/resume")).toHaveLength(before);
+        await expectRejects(t.agent.prompt({sessionId: "thread-2", prompt: [{type: "text", text: "go"}]}), -32602, "unavailable");
+        await t.agent.setSessionConfigOption({sessionId: "thread-2", configId: "model", type: "id", value: "gpt-5"});
         expect(t.codex.lastParams<Resume>("thread/resume")).toMatchObject({threadId: "thread-2", modelProvider: "openai"});
     });
 
-    it("refuses duplicate model ids across gateways and invalid gateway ids", async () => {
+    it("routes identical upstream models through the explicitly selected account", async () => {
+        const t = createTestAgent();
+        await t.initialize();
+        await t.agent.setProvider(gateway("account-a", "A", "https://a.example/v1", "same/model", ["low"]));
+        await t.agent.setProvider(gateway("account-b", "B", "https://b.example/v1", "same/model", ["low"]));
+        await t.openSession();
+        for (const id of ["account-a", "account-b"]) {
+            await t.agent.setSessionConfigOption({sessionId: THREAD_ID, configId: "model", type: "id", value: `gateway:${id}:same%2Fmodel`});
+            const resumed = t.codex.lastParams<Resume>("thread/resume");
+            expect(resumed).toMatchObject({modelProvider: id, model: "same/model"});
+            expect(Object.keys(providers(resumed.config) ?? {})).toEqual([id]);
+            expect(providers(resumed.config)?.[id]).toMatchObject({experimental_bearer_token: `sk-${id}`});
+        }
+        await t.agent.prompt({sessionId: THREAD_ID, prompt: [{type: "text", text: "go"}]});
+        await t.settle();
+        expect(t.codex.lastParams<{model: string}>("turn/start").model).toBe("same/model");
+        turnCompleted(t.codex);
+        await t.settle();
+    });
+
+    it("allows the same model on distinct connections and rejects invalid connection ids", async () => {
         const t = createTestAgent();
         await t.initialize();
         await t.agent.setProvider(deepseek());
         const clash = gateway("other", "Other", "https://other.example.com/v1", "deepseek-flash", ["low"]);
-        await expectRejects(t.agent.setProvider(clash), -32602, "already served by gateway \"deepseek\"");
+        await t.agent.setProvider(clash);
         const bad = deepseek();
         bad._meta.codex.id = "Not Valid";
         await expectRejects(t.agent.setProvider(bad), -32602, "_meta.codex.id");
@@ -1255,7 +1283,7 @@ describe("gateways", () => {
         await expectRejects(t.agent.setProvider(reserved), -32602, "Codex's own provider");
         // Re-registering the same id (a rotated key) is not a clash.
         await t.agent.setProvider(deepseek());
-        expect(groupsOf((await t.agent.newSession({cwd: CWD})).configOptions)).toHaveLength(2);
+        expect(groupsOf((await t.agent.newSession({cwd: CWD})).configOptions)).toHaveLength(3);
     });
 
     it("session/new with _meta.alwith.model starts on the gateway that serves the model", async () => {
@@ -1263,7 +1291,7 @@ describe("gateways", () => {
         await t.initialize();
         await t.agent.setProvider(deepseek());
         await t.agent.setProvider(openrouter());
-        await t.agent.newSession({cwd: CWD, _meta: {alwith: {model: "qwen/qwen3.8-max"}}});
+        await t.agent.newSession({cwd: CWD, _meta: {alwith: {model: "gateway:openrouter:qwen%2Fqwen3.8-max"}}});
         const start = t.codex.lastParams<ThreadStartParams>("thread/start");
         expect(start).toMatchObject({modelProvider: "openrouter", model: "qwen/qwen3.8-max"});
         expect(Object.keys(providers(start.config as Record<string, unknown>) ?? {})).toEqual(["openrouter"]);

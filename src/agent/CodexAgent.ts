@@ -316,8 +316,10 @@ export class CodexAgent {
                 // gateway objects, so identity tells the two apart. The others just learn the
                 // new catalog. A session stays on its gateway when the candidate still has it.
                 const wholesale = (this.providers.active !== null && this.providers.mode === "route") || (candidate.active !== null && candidate.mode === "route");
-                const moving = [...this.sessions.values()].filter(runtime => wholesale
-                    || (this.providers.hasGateway(runtime.modelProvider) && candidate.gateway(runtime.modelProvider) !== this.providers.gateway(runtime.modelProvider)));
+                const unavailable = new Set([...this.sessions.values()].filter(runtime =>
+                    this.providers.mode === "catalog" && this.providers.hasGateway(runtime.modelProvider) && !candidate.hasGateway(runtime.modelProvider)));
+                const moving = [...this.sessions.values()].filter(runtime => !unavailable.has(runtime) && (wholesale
+                    || (this.providers.hasGateway(runtime.modelProvider) && candidate.gateway(runtime.modelProvider) !== this.providers.gateway(runtime.modelProvider))));
                 const targets = new Map<SessionRuntime, string | null>(moving.map(runtime => {
                     if (candidate.active === null) return [runtime, null];
                     if (candidate.mode === "route") return [runtime, candidate.defaultGatewayId()];
@@ -350,10 +352,11 @@ export class CodexAgent {
                     await this.codex.threadUnsubscribe({threadId: runtime.session.id});
                     const thread = await this.withCodex(() => this.codex.threadResume({
                         threadId: runtime.session.id, cwd: runtime.session.cwd, config,
-                        modelProvider, model: selection.model, excludeTurns: true,
+                        modelProvider, model: candidate.upstreamModel(selection.model), excludeTurns: true,
                     }));
-                    staged.set(runtime, {config, catalog: nextCatalog, model: resolveModelSelection(nextCatalog, requestedModel ?? thread.model, thread.reasoningEffort)});
+                    staged.set(runtime, {config, catalog: nextCatalog, model: resolveModelSelection(nextCatalog, requestedModel ?? candidate.selectionId(thread.model, modelProvider), thread.reasoningEffort)});
                 }
+                for (const runtime of unavailable) runtime.config = candidate.rebind(runtime.config, this.providers, null);
                 this.providers = candidate;
                 for (const runtime of this.sessions.values()) {
                     const next = staged.get(runtime);
@@ -365,7 +368,7 @@ export class CodexAgent {
                     }
                     runtime.session.catalog = nextCatalog;
                     runtime.session.gatewayGroups = candidate.gatewayGroups();
-                    if (!next) runtime.session.model = resolveModelSelection(nextCatalog, findModel(nextCatalog, runtime.session.model.model) ? runtime.session.model.model : null, runtime.session.model.effort);
+                    if (!next && !unavailable.has(runtime)) runtime.session.model = resolveModelSelection(nextCatalog, findModel(nextCatalog, runtime.session.model.model) ? runtime.session.model.model : null, runtime.session.model.effort);
                     // Notification delivery cannot roll back an already committed routing transaction.
                     void runtime.client.update({sessionUpdate: "config_option_update", configOptions: sessionConfigOptions(runtime.session), _meta: {codex: {routing: {stale: false}}}}).catch(error => logger.error("Provider config notification failed", error));
                 }
@@ -376,7 +379,7 @@ export class CodexAgent {
                     try {
                         await this.codex.threadUnsubscribe({threadId: runtime.session.id});
                         await this.codex.threadResume({threadId: runtime.session.id, cwd: runtime.session.cwd,
-                            config: runtime.config, modelProvider: runtime.modelProvider, model: runtime.session.model.model, excludeTurns: true});
+                            config: runtime.config, modelProvider: runtime.modelProvider, model: this.providers.upstreamModel(runtime.session.model.model), excludeTurns: true});
                     } catch (rollbackError) {
                         runtime.stale = true;
                         staleSessions.push(runtime.session.id);
@@ -478,7 +481,7 @@ export class CodexAgent {
         const config = buildThreadConfig(this.providers.threadConfig(gatewayId), request.cwd, additionalDirectories, mcpServers, existingMcp);
         const mcpStartupGeneration = this.codex.mcpStartupGeneration;
         const modelProvider = gatewayId ?? await this.withCodex(() => this.resolveModelProvider());
-        const startModel = onGateway ? requestedModel ?? this.providers.gateway(gatewayId)?.model ?? null : requestedModel;
+        const startModel = this.providers.upstreamModel(onGateway ? requestedModel ?? this.providers.gateway(gatewayId)?.model ?? null : requestedModel);
 
         let readOnly = false;
         const {thread, skills} = await this.withSkillsContext(request.cwd, additionalDirectories, async skills => ({skills, thread: await this.withCodex(async () => {
@@ -527,7 +530,7 @@ export class CodexAgent {
                 openedAccount = (await this.withCodex(() => this.codex.accountRead({refreshToken: false}))).account;
             }
             const catalog = this.providers.catalog(codexCatalog);
-            const model = resolveModelSelection(catalog, startModel ?? thread.model, thread.reasoningEffort);
+            const model = resolveModelSelection(catalog, this.providers.selectionId(startModel ?? thread.model, gatewayId ?? thread.modelProvider), thread.reasoningEffort);
             const session: Session = {
                 ...(clientTools ? {clientTools} : {}),
                 id: sessionId,
@@ -970,10 +973,11 @@ export class CodexAgent {
     private async setSessionConfigOptionInternal(params: acp.SetSessionConfigOptionRequest): Promise<acp.SetSessionConfigOptionResponse> {
         const runtime = this.runtime(params.sessionId, "session/set_config_option");
         assertWritable(runtime);
-        if (params.configId === MODEL_CONFIG_ID && this.providers.mode === "catalog" && typeof params.value === "string") {
+        if (params.configId === MODEL_CONFIG_ID && (this.providers.mode === "catalog" || runtime.session.model.model.startsWith("gateway:")) && typeof params.value === "string") {
+            this.providers.upstreamModel(params.value);
             const target = this.providers.gatewayIdFor(params.value);
-            const current = this.providers.hasGateway(runtime.modelProvider) ? runtime.modelProvider : null;
-            if (target !== current) await this.rerouteSession(runtime, target, params.value);
+            const destination = target ?? await this.withCodex(() => this.resolveModelProvider());
+            if (destination !== runtime.modelProvider) await this.rerouteSession(runtime, target, params.value);
         }
         await this.withCodex(() => applyConfigOption(runtime.session, this.codex, params));
         const configOptions = sessionConfigOptions(runtime.session);
@@ -1003,10 +1007,10 @@ export class CodexAgent {
         const modelProvider = gatewayId ?? await this.withCodex(() => this.resolveModelProvider());
         await this.codex.threadUnsubscribe({threadId: session.id});
         try {
-            await this.withCodex(() => this.codex.threadResume({threadId: session.id, cwd: session.cwd, config, modelProvider, model: modelId, excludeTurns: true}));
+            await this.withCodex(() => this.codex.threadResume({threadId: session.id, cwd: session.cwd, config, modelProvider, model: this.providers.upstreamModel(modelId), excludeTurns: true}));
         } catch (error) {
             try {
-                await this.codex.threadResume({threadId: session.id, cwd: session.cwd, config: runtime.config, modelProvider: runtime.modelProvider, model: session.model.model, excludeTurns: true});
+                await this.codex.threadResume({threadId: session.id, cwd: session.cwd, config: runtime.config, modelProvider: runtime.modelProvider, model: this.providers.upstreamModel(session.model.model), excludeTurns: true});
             } catch (rollbackError) {
                 runtime.stale = true;
                 logger.error("Provider rollback failed", rollbackError, {sessionId: session.id});
@@ -1041,6 +1045,7 @@ export class CodexAgent {
             throw acp.RequestError.invalidParams(undefined, "prompt must contain at least one content block");
         }
         const {session} = runtime;
+        this.providers.upstreamModel(session.model.model);
         const model = findModel(session.catalog, session.model.model);
         if (!modelSupportsImages(model) && params.prompt.some(block => block.type === "image")) {
             throw acp.RequestError.invalidParams({model: session.model.model}, "The current model does not support image input");
@@ -1172,7 +1177,7 @@ export class CodexAgent {
                     approvalPolicy: session.mode.approvalPolicy,
                     approvalsReviewer: session.mode.approvalsReviewer,
                     sandboxPolicy: withWritableRoots(session.mode.sandboxPolicy, session.additionalDirectories),
-                    model: session.model.model,
+                    model: this.providers.upstreamModel(session.model.model),
                     effort: session.model.effort,
                     summary: disableSummary ? "none" : "auto",
                     serviceTier: session.fastMode ? FAST_SERVICE_TIER : null,

@@ -15,6 +15,10 @@ export const DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1";
 export const NATIVE_GROUP_ID = "codex";
 const GATEWAY_ID_PATTERN = /^[a-z0-9-]+$/;
 
+export function gatewayModelId(connectionId: string, modelId: string): string {
+    return `gateway:${encodeURIComponent(connectionId)}:${encodeURIComponent(modelId)}`;
+}
+
 /**
  * `route`: the gateway takes over Codex's OpenAI slot for every session (the original
  * behaviour). `catalog`: nothing is re-routed; the gateway's models are offered next to
@@ -136,13 +140,6 @@ export class ProviderRouting {
         }
         // Route mode owns the slot outright; a mode change replaces whatever was registered.
         if (hints.mode === "route" || this.mode !== hints.mode) this.gateways.clear();
-        for (const other of this.gateways.values()) {
-            if (other.id === hints.id) continue;
-            const duplicate = hints.models.find(model => other.models.some(candidate => candidate.id === model.id));
-            if (duplicate) {
-                throw acp.RequestError.invalidParams({id: hints.id, model: duplicate.id}, `Model "${duplicate.id}" is already served by gateway "${other.id}"; model ids must be unique across gateways`);
-            }
-        }
         this.gateways.set(hints.id, {
             id: hints.id,
             baseUrl,
@@ -164,7 +161,7 @@ export class ProviderRouting {
     /** The gateway serving `modelId`, when one does (catalog mode). */
     gatewayFor(modelId: string): Gateway | null {
         for (const gateway of this.gateways.values()) {
-            if (gateway.models.some(model => model.id === modelId)) return gateway;
+            if (gateway.models.some(model => (this.mode === "catalog" ? gatewayModelId(gateway.id, model.id) : model.id) === modelId)) return gateway;
         }
         return null;
     }
@@ -183,7 +180,22 @@ export class ProviderRouting {
         if (this.mode !== "catalog") return [];
         return [...this.gateways.values()]
             .filter(gateway => gateway.models.length > 0)
-            .map(gateway => ({id: gateway.id, name: gateway.name, modelIds: gateway.models.map(model => model.id)}));
+            .map(gateway => ({id: gateway.id, name: gateway.name, modelIds: gateway.models.map(model => gatewayModelId(gateway.id, model.id))}));
+    }
+
+    /** Convert a persisted Codex model/provider pair into the public catalog selection. */
+    selectionId(modelId: string | null, provider: string | null): string | null {
+        return modelId !== null && this.mode === "catalog" && this.hasGateway(provider)
+            ? gatewayModelId(provider!, modelId) : modelId;
+    }
+
+    /** Unknown gateway IDs must never fall through to native billing. */
+    upstreamModel(selectionId: string | null): string | null {
+        if (selectionId === null || !selectionId.startsWith("gateway:")) return selectionId;
+        const gateway = this.gatewayFor(selectionId);
+        const model = gateway?.models.find(model => gatewayModelId(gateway.id, model.id) === selectionId);
+        if (!model) throw acp.RequestError.invalidParams({model: selectionId}, "The selected provider connection or model is unavailable");
+        return model.id;
     }
 
     /**
@@ -288,7 +300,7 @@ export class ProviderRouting {
         }
         const own: Model[] = [];
         for (const gateway of this.gateways.values()) {
-            for (const model of gateway.models) own.push(gatewayModel(model, false, codexCatalog[0], gateway.catalogEntries.get(model.id)));
+            for (const model of gateway.models) own.push({...gatewayModel(model, false, codexCatalog[0], gateway.catalogEntries.get(model.id)), id: gatewayModelId(gateway.id, model.id)});
         }
         return [...codexCatalog, ...own];
     }
