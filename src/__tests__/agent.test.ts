@@ -7,6 +7,20 @@ import {describe, expect, it} from "vitest";
 import type {ThreadStartParams, TurnStartParams} from "../app-server/v2";
 import {createTestAgent, CWD, expectRejects, itemCompleted, itemStarted, model, thread, threadResponse, THREAD_ID, turn, turnCompleted, TURN_ID} from "./harness";
 
+describe("host session options", () => {
+    it("passes host instructions and the explicit permission preset to new and resumed threads", async () => {
+        const t = createTestAgent();
+        await t.initialize();
+        const meta = {alwith: {appendSystemPrompt: "Only edit through Board tools."}, codex: {mode: "read-only"}};
+        const created = await t.agent.newSession({cwd: CWD, _meta: meta});
+        expect(t.codex.lastParams("thread/start")).toMatchObject({developerInstructions: "Only edit through Board tools.", approvalPolicy: "on-request", approvalsReviewer: "user", sandbox: "workspace-write"});
+        await t.agent.closeSession({sessionId: created.sessionId});
+        await t.agent.resumeSession({sessionId: created.sessionId, cwd: CWD, _meta: meta});
+        expect(t.codex.lastParams("thread/resume")).toMatchObject({developerInstructions: "Only edit through Board tools.", approvalsReviewer: "user"});
+        await expectRejects(t.agent.newSession({cwd: CWD, _meta: {codex: {mode: "invalid"}}}), -32602, "mode");
+    });
+});
+
 describe("initialize", () => {
     it("advertises v2 capabilities and auth methods", async () => {
         const t = createTestAgent();

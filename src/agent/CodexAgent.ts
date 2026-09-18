@@ -36,7 +36,7 @@ import {EventBridge, type CompletedPlan} from "../bridge/EventBridge";
 import {mcpStartupFailed, ToolName} from "../bridge/toolCalls";
 import type {AppServerClient} from "../codex/AppServerClient";
 import type {CodexProcess} from "../codex/process";
-import {initialAgentMode, withWritableRoots} from "../codex/modes";
+import {findAgentMode, initialAgentMode, withWritableRoots} from "../codex/modes";
 import {
     DEFAULT_COLLABORATION_MODE,
     FAST_SERVICE_TIER,
@@ -457,6 +457,12 @@ export class CodexAgent {
         }
         const mcpServers = request.mcpServers ?? [];
         const clientTools = clientToolsOf(request._meta);
+        const host = hostSessionOptions(request._meta);
+        const mode = host.mode ?? initialAgentMode(this.env);
+        const hostThreadOptions = {
+            ...(host.instructions === undefined ? {} : {developerInstructions: host.instructions}),
+            ...(host.mode ? {approvalPolicy: mode.approvalPolicy, approvalsReviewer: mode.approvalsReviewer, sandbox: mode.sandboxMode} : {}),
+        };
 
         // Which provider this thread runs on. Route mode: the gateway, always. Catalog mode:
         // the gateway serving the model the client asks for, or (resume) the one Codex says
@@ -488,12 +494,12 @@ export class CodexAgent {
             if (signal?.aborted) throw acp.RequestError.requestCancelled(undefined, "Session opening was cancelled");
             switch (open.kind) {
                 case "new":
-                    return await this.codex.threadStart({config, cwd: request.cwd, modelProvider, model: startModel,
+                    return await this.codex.threadStart({...hostThreadOptions, config, cwd: request.cwd, modelProvider, model: startModel,
                         ...(clientTools ? {dynamicTools: dynamicTools(clientTools)} : {})});
                 case "resume":
                     try {
                         // History is paged through thread/turns/list during replay; full hydration here is deprecated.
-                        return await this.codex.threadResume({threadId: open.request.sessionId, config, cwd: request.cwd, modelProvider, model: startModel, excludeTurns: true});
+                        return await this.codex.threadResume({...hostThreadOptions, threadId: open.request.sessionId, config, cwd: request.cwd, modelProvider, model: startModel, excludeTurns: true});
                     } catch (error) {
                         // Codex's writer lock is a file lock across the Codex home: another Codex
                         // client (ChatGPT app, CLI, app-server) has this thread open, and nothing in
@@ -504,7 +510,7 @@ export class CodexAgent {
                         return readOnlyThread((await this.codex.threadRead({threadId: open.request.sessionId, includeTurns: false})).thread, request.cwd);
                     }
                 case "fork":
-                    return await this.codex.threadFork({threadId: open.request.sessionId, config, cwd: request.cwd, modelProvider, model: startModel, excludeTurns: true});
+                    return await this.codex.threadFork({...hostThreadOptions, threadId: open.request.sessionId, config, cwd: request.cwd, modelProvider, model: startModel, excludeTurns: true});
             }
         })}));
         const sessionId = thread.thread.id;
@@ -540,7 +546,7 @@ export class CodexAgent {
                 catalog,
                 gatewayGroups: this.providers.gatewayGroups(),
                 model,
-                mode: initialAgentMode(this.env),
+                mode,
                 collaborationMode: DEFAULT_COLLABORATION_MODE,
                 fastMode: thread.serviceTier === FAST_SERVICE_TIER,
                 account: openedAccount,
@@ -1599,6 +1605,17 @@ function readOnlyThread(thread: Thread, cwd: string): ThreadResumeResponse {
         turnsBackwardsCursor: null,
         itemsBackwardsCursor: null,
     } as ThreadResumeResponse;
+}
+
+function hostSessionOptions(meta: acp.NewSessionRequest["_meta"]) {
+    const instructions = (meta as {alwith?: {appendSystemPrompt?: unknown}} | undefined)?.alwith?.appendSystemPrompt;
+    if (instructions !== undefined && typeof instructions !== "string") {
+        throw acp.RequestError.invalidParams(undefined, "appendSystemPrompt must be a string");
+    }
+    const modeId = (meta as {codex?: {mode?: unknown}} | undefined)?.codex?.mode;
+    const mode = typeof modeId === "string" ? findAgentMode(modeId) : undefined;
+    if (modeId !== undefined && !mode) throw acp.RequestError.invalidParams(undefined, "Unknown Codex session mode");
+    return {instructions, mode};
 }
 
 /** `_meta.alwith.model` on `session/new` / `session/resume` / `session/fork`: the model to open the session with. */

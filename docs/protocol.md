@@ -428,3 +428,11 @@ for writes whose outcome is unknown across process loss.
 Runtime hosts route callbacks privately to the module that owns the Agent
 process. They must not expose tool arguments/results on the public event bus
 or replay journal. UI progress uses normal `tool_call_update` frames.
+
+### Host session instructions and initial mode
+
+`session/new`, `session/resume`, and `session/fork` accept
+`_meta.alwith.appendSystemPrompt` (a string) as Codex `developerInstructions`.
+The adapter preserves Codex base instructions; host text is never injected as a user message.
+`_meta.codex.mode` explicitly selects `read-only`, `agent`, or `agent-full-access`
+for that session, overriding the process default. Unknown modes are rejected before opening a thread.
