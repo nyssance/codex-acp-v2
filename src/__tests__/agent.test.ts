@@ -411,8 +411,8 @@ describe("resume, fork, list, close, delete", () => {
         await t.initialize();
         const response = await t.agent.listSessions({cwd: CWD});
         expect(response.sessions).toEqual([
-            {sessionId: THREAD_ID, cwd: CWD, title: "Alpha", updatedAt: new Date(1_700_000_100 * 1000).toISOString(), _meta: {codex: {archived: false}}},
-            {sessionId: "t2", cwd: CWD, title: "second prompt", updatedAt: new Date(1_700_000_100 * 1000).toISOString(), _meta: {codex: {archived: false}}},
+            {sessionId: THREAD_ID, cwd: CWD, title: "Alpha", updatedAt: new Date(1_700_000_100 * 1000).toISOString(), _meta: {codex: {archived: false, nativeSessionId: THREAD_ID, forkedFromId: null}}},
+            {sessionId: "t2", cwd: CWD, title: "second prompt", updatedAt: new Date(1_700_000_100 * 1000).toISOString(), _meta: {codex: {archived: false, nativeSessionId: THREAD_ID, forkedFromId: null}}},
         ]);
         expect(response.nextCursor).toBe("c2");
         expect(t.codex.lastParams<{cwd: string}>("thread/list").cwd).toBe(CWD);
@@ -477,10 +477,10 @@ describe("resume, fork, list, close, delete", () => {
         await t.initialize();
         const live = await t.agent.listSessions({});
         expect(t.codex.lastParams<{archived?: boolean}>("thread/list").archived).toBeUndefined();
-        expect(live.sessions[0]?._meta).toEqual({codex: {archived: false}});
+        expect(live.sessions[0]?._meta).toMatchObject({codex: {archived: false}});
         const archived = await t.agent.listSessions({_meta: {codex: {archived: true}}});
         expect(t.codex.lastParams<{archived?: boolean}>("thread/list").archived).toBe(true);
-        expect(archived.sessions[0]?._meta).toEqual({codex: {archived: true}});
+        expect(archived.sessions[0]?._meta).toMatchObject({codex: {archived: true}});
     });
 });
 
@@ -974,7 +974,7 @@ describe("providers", () => {
         t.codex.respond("thread/turns/list", () => ({data: [turn({items: [{type: "userMessage", id: "m1", clientId: null, content: [{type: "text", text: "earlier", text_elements: []}]}]})], nextCursor: null, backwardsCursor: null}));
         const response = await t.agent.resumeSession({sessionId: THREAD_ID, cwd: CWD, replayFrom: {type: "start"}});
         await t.settle();
-        expect(response._meta).toEqual({codex: {readOnly: true, reason: "active_writer"}});
+        expect(response._meta).toMatchObject({codex: {readOnly: true, reason: "active_writer"}});
         expect((response.configOptions?.find(option => option.configId === "model") as {currentValue: string}).currentValue).toBe("gpt-5");
         expect(t.codex.calls("thread/read")).toHaveLength(1);
         expect(t.codex.calls("thread/turns/list").length).toBeGreaterThan(0);
@@ -986,7 +986,7 @@ describe("providers", () => {
         expect(t.codex.calls("turn/start")).toHaveLength(0);
         // The other client let go: a second resume takes the writer and replaces the viewing session.
         const again = await t.agent.resumeSession({sessionId: THREAD_ID, cwd: CWD});
-        expect(again._meta).toBeUndefined();
+        expect(again._meta).toEqual({codex: {nativeSessionId: THREAD_ID, forkedFromId: null}});
         expect(attempts).toBe(2);
         expect(t.codex.calls("thread/unsubscribe")).toHaveLength(0);
         await t.agent.prompt({sessionId: THREAD_ID, prompt: [{type: "text", text: "hi"}]});

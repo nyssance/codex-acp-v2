@@ -67,6 +67,7 @@ import {ClientSession, type ClientCapabilitySet, type ClientLink} from "./client
 import {availableCommands, mcpMessage, parseCommand, resolveCommand, skillsMessage, statusMessage} from "./commands";
 import {applyConfigOption, sessionConfigOptions} from "./configOptions";
 import {historyTitle, historyUpdates} from "./history";
+import {nativeForks} from "./forkIndex";
 import {OPENAI_PROVIDER_ID, ProviderRouting} from "./providers";
 import {createActiveTurn, type ActiveTurn, type Session} from "./session";
 
@@ -84,6 +85,7 @@ export interface CodexAgentOptions {
 }
 
 interface SessionRuntime {
+    lineage: {nativeSessionId: string; forkedFromId: string | null; forkedAtTurnId?: string | null};
     config: JsonObject;
     modelProvider: string | null;
     stale: boolean;
@@ -129,6 +131,7 @@ export class CodexAgent {
     private readonly sessions = new Map<string, SessionRuntime>();
     private capabilities: ClientCapabilitySet | null = null;
     private codexInitialized = false;
+    private codexHome: string | null = null;
     private initializing: Promise<void> | null = null;
     private readonly terminalTurns = new WeakSet<ActiveTurn>();
     private readonly completedTurns = new WeakMap<ActiveTurn, string>();
@@ -184,10 +187,11 @@ export class CodexAgent {
         // Clients re-send initialize when they re-attach; Codex accepts it only once per process.
         if (!this.codexInitialized) {
             this.initializing ??= this.withCodex(async () => {
-                await this.codex.initialize({
+                const initialized = await this.codex.initialize({
                     clientInfo: {name: params.info.name, title: params.info.title ?? null, version: params.info.version},
                     capabilities: {experimentalApi: true, requestAttestation: false},
                 });
+                this.codexHome = initialized.codexHome;
                 this.codexInitialized = true;
             }).finally(() => { this.initializing = null; });
             await this.initializing;
@@ -215,7 +219,7 @@ export class CodexAgent {
                 // pass-through surface for a host that manages Codex's catalogs itself.
                 // rename / account / fuzzyFileSearch: `_codex/session_rename`, `_codex/account_read`,
                 // `_codex/rate_limits` (+ `_codex/rate_limits_updated`) and `_codex/fuzzy_file_search`.
-                _meta: {alwith: {tools: {version: 1}}, codex: {archive: true, seedHistory: true, skills: true, plugins: true, providerCatalog: true, rename: true, account: true, fuzzyFileSearch: true}},
+                _meta: {alwith: {tools: {version: 1}}, codex: {forkAtTurn: true, sessionLineage: true, archive: true, seedHistory: true, skills: true, plugins: true, providerCatalog: true, rename: true, account: true, fuzzyFileSearch: true}},
             },
             authMethods: authMethods(this.capabilities, this.env),
         };
@@ -399,18 +403,18 @@ export class CodexAgent {
 
     async newSession(params: acp.NewSessionRequest, signal?: AbortSignal): Promise<acp.NewSessionResponse> {
         const runtime = await this.openSession({kind: "new", request: params}, signal);
-        return {sessionId: runtime.session.id, configOptions: sessionConfigOptions(runtime.session)};
+        return {sessionId: runtime.session.id, configOptions: sessionConfigOptions(runtime.session), _meta: {codex: runtime.lineage}};
     }
 
     async resumeSession(params: acp.ResumeSessionRequest, signal?: AbortSignal): Promise<acp.ResumeSessionResponse> {
         const runtime = await this.openSession({kind: "resume", request: params}, signal);
         const configOptions = sessionConfigOptions(runtime.session);
-        return runtime.readOnly ? {configOptions, _meta: {codex: {readOnly: true, reason: "active_writer"}}} : {configOptions};
+        return {configOptions, _meta: {codex: {...runtime.lineage, ...(runtime.readOnly ? {readOnly: true, reason: "active_writer"} : {})}}};
     }
 
     async forkSession(params: acp.ForkSessionRequest, signal?: AbortSignal): Promise<acp.ForkSessionResponse> {
         const runtime = await this.openSession({kind: "fork", request: params}, signal);
-        return {sessionId: runtime.session.id, configOptions: sessionConfigOptions(runtime.session)};
+        return {sessionId: runtime.session.id, configOptions: sessionConfigOptions(runtime.session), _meta: {codex: runtime.lineage}};
     }
 
     private async openSession(open: OpenRequest, signal?: AbortSignal): Promise<SessionRuntime> {
@@ -442,6 +446,7 @@ export class CodexAgent {
         const capabilities = this.requireInitialized(method);
         if (open.kind !== "new") this.assertUnsubscribeSettled(open.request.sessionId);
         const {request} = open;
+        const lastTurnId = open.kind === "fork" ? forkTurnId(request._meta) : undefined;
         if (typeof request.cwd !== "string" || !path.isAbsolute(request.cwd)) {
             throw acp.RequestError.invalidParams({cwd: request.cwd}, "cwd must be an absolute path");
         }
@@ -510,7 +515,7 @@ export class CodexAgent {
                         return readOnlyThread((await this.codex.threadRead({threadId: open.request.sessionId, includeTurns: false})).thread, request.cwd);
                     }
                 case "fork":
-                    return await this.codex.threadFork({...hostThreadOptions, threadId: open.request.sessionId, config, cwd: request.cwd, modelProvider, model: startModel, excludeTurns: true});
+                    return await this.codex.threadFork({...hostThreadOptions, ...(lastTurnId === undefined ? {} : {lastTurnId}), threadId: open.request.sessionId, config, cwd: request.cwd, modelProvider, model: startModel, excludeTurns: true});
             }
         })}));
         const sessionId = thread.thread.id;
@@ -557,7 +562,7 @@ export class CodexAgent {
                 contextWindow: null,
                 closed: false,
             };
-            const runtime = this.installRuntime(session, capabilities, config, gatewayId ?? thread.modelProvider, readOnly);
+            const runtime = this.installRuntime(session, capabilities, config, gatewayId ?? thread.modelProvider, threadLineage(thread.thread), readOnly);
             const cancelOpening = () => {
                 runtime.session.closed = true;
                 runtime.lifetime.abort();
@@ -604,7 +609,7 @@ export class CodexAgent {
         }
     }
 
-    private installRuntime(session: Session, capabilities: ClientCapabilitySet, config: JsonObject, modelProvider: string | null, readOnly = false): SessionRuntime {
+    private installRuntime(session: Session, capabilities: ClientCapabilitySet, config: JsonObject, modelProvider: string | null, lineage: SessionRuntime["lineage"], readOnly = false): SessionRuntime {
         const client = new ClientSession(session.id, this.link, capabilities);
         const bridge = new EventBridge(client, session);
         const turnContext = new TurnContext(session.id);
@@ -614,7 +619,7 @@ export class CodexAgent {
         };
         const approval = new CodexApprovalHandler(client, turnContext, signal);
         const elicitation = new CodexElicitationHandler(client, turnContext, signal);
-        const runtime: SessionRuntime = {config, modelProvider, stale: false, readOnly, session, client, bridge, turnContext, elicitation, lifetime: new AbortController(), queue: Promise.resolve()};
+        const runtime: SessionRuntime = {lineage, config, modelProvider, stale: false, readOnly, session, client, bridge, turnContext, elicitation, lifetime: new AbortController(), queue: Promise.resolve()};
         const tools = new ClientTools(session, client, AbortSignal.any([runtime.lifetime.signal, this.codex.disconnectSignal]));
         // Frames already queued (e.g. the tool call under review) must reach the client before its prompt.
         const drained = <P, T>(operation: (params: P) => Promise<T>) => async (params: P): Promise<T> => {
@@ -703,10 +708,30 @@ export class CodexAgent {
             await publishTitle(firstPage.data);
             return;
         }
+        // Native turn IDs are preserved by fork. Comparing the two native histories locates
+        // the inherited boundary again after restart, without a second provenance store.
+        const parentTurns = new Set<string>();
+        if (thread.forkedFromId !== null) {
+            let parentCursor: string | null = null;
+            const seen = new Set<string>();
+            do {
+                const page = await this.withCodex(() => this.codex.threadTurnsList({threadId: thread.forkedFromId!, cursor: parentCursor, limit: HISTORY_PAGE_SIZE, sortDirection: "asc", itemsView: "summary"}));
+                for (const turn of page.data) parentTurns.add(turn.id);
+                parentCursor = page.nextCursor;
+                if (parentCursor !== null) {
+                    if (seen.has(parentCursor)) throw acp.RequestError.internalError(undefined, "Codex parent history repeated a cursor");
+                    seen.add(parentCursor);
+                }
+            } while (parentCursor !== null && !session.closed);
+            runtime.lineage.forkedAtTurnId = null;
+        }
         const cursors = new Set<string>();
         let cursor: string | null = null;
         do {
             const page: {data: Turn[]; nextCursor: string | null} = await this.turnPage(session.id, cursor);
+            for (const turn of page.data) {
+                if (parentTurns.has(turn.id)) runtime.lineage.forkedAtTurnId = turn.id;
+            }
             await publishTitle(page.data);
             await client.updateAll(historyUpdates(page.data));
             cursor = page.nextCursor;
@@ -754,20 +779,44 @@ export class CodexAgent {
         this.requireInitialized("session/list");
         const cwd = params.cwd?.trim() || null;
         const archived = archivedFilter(params._meta);
-        const response = await this.withCodex(() => this.codex.threadList({
-            cursor: params.cursor ?? null,
+        const list = (cursor: string | null) => this.withCodex(() => this.codex.threadList({
+            cursor,
             ...(cwd ? {cwd} : {}),
             sourceKinds: ["cli", "vscode", "exec", "appServer", "unknown"],
             // Codex lists non-archived threads by default; the archive is a separate page.
             ...(archived ? {archived: true} : {}),
         }));
+        const response = await list(params.cursor ?? null);
+        const home = this.codexHome;
+        if (home === null) throw acp.RequestError.internalError(undefined, "Codex home is unavailable after initialize");
+        const forks = await this.withCodex(() => nativeForks(home, archived, cwd,
+            async id => (await this.codex.threadRead({threadId: id, includeTurns: false})).thread));
+        const byId = new Map(forks.map(thread => [thread.id, thread]));
+        // Native list rows can lose forkedFromId after unload; thread/read retains the rollout lineage.
+        response.data = response.data.map(thread => byId.get(thread.id) ?? thread);
+        if (!params.cursor) {
+            const missing = new Map(byId);
+            for (const thread of response.data) missing.delete(thread.id);
+            // thread/read may hydrate a non-empty preview while the native list index still
+            // excludes it. Check actual pages, not the hydrated preview; avoid duplicate rows.
+            let cursor = response.nextCursor;
+            const cursors = new Set<string>();
+            while (missing.size > 0 && cursor !== null) {
+                if (cursors.has(cursor)) throw acp.RequestError.internalError(undefined, "Codex thread list repeated a cursor");
+                cursors.add(cursor);
+                const page = await list(cursor);
+                for (const thread of page.data) missing.delete(thread.id);
+                cursor = page.nextCursor;
+            }
+            response.data.push(...missing.values());
+        }
         return {
             sessions: response.data.map(thread => ({
                 sessionId: thread.id,
                 cwd: thread.cwd,
                 title: thread.name?.trim() || thread.preview.trim() || null,
                 updatedAt: new Date(thread.updatedAt * 1000).toISOString(),
-                _meta: {codex: {archived}},
+                _meta: {codex: {archived, ...threadLineage(thread)}},
             })),
             nextCursor: response.nextCursor,
         };
@@ -1088,7 +1137,11 @@ export class CodexAgent {
     private async runPrompt(runtime: SessionRuntime, turn: ActiveTurn, params: acp.PromptRequest, observed?: Promise<TurnCompletedNotification>, items: readonly ThreadItem[] = []): Promise<void> {
         const {session, bridge} = runtime;
         bridge.beginTurn();
-        if (items.length) runtime.queue = runtime.queue.then(() => bridge.restore(items));
+        if (items.length) {
+            const turnId = turn.turnId;
+            if (turnId === null) throw acp.RequestError.internalError(undefined, "Cannot restore items without their turn id");
+            runtime.queue = runtime.queue.then(() => bridge.restore(items, turnId));
+        }
         try {
             const command = parseCommand(params.prompt);
             const outcome = command ? resolveCommand(command, session) : {kind: "prompt" as const};
@@ -1657,4 +1710,17 @@ async function within(operation: Promise<unknown>, ms: number): Promise<boolean>
             new Promise<false>(resolve => { timer = setTimeout(() => resolve(false), ms); }),
         ]);
     } finally { clearTimeout(timer); }
+}
+
+function threadLineage(thread: Thread): SessionRuntime["lineage"] {
+    return {nativeSessionId: thread.sessionId, forkedFromId: thread.forkedFromId};
+}
+
+function forkTurnId(meta: acp.ForkSessionRequest["_meta"]): string | undefined {
+    const value = (meta as {codex?: {lastTurnId?: unknown}} | null | undefined)?.codex?.lastTurnId;
+    if (value === undefined) return undefined;
+    if (typeof value !== "string" || value.trim().length === 0) {
+        throw acp.RequestError.invalidParams(undefined, "lastTurnId must be a non-empty Codex turn id");
+    }
+    return value;
 }

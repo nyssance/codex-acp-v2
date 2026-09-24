@@ -1,6 +1,7 @@
 import type * as acp from "@agentclientprotocol/sdk/experimental/v2";
 import type {Thread, Turn} from "../app-server/v2";
 import {itemSnapshot} from "../bridge/itemSnapshot";
+import {withTurnId} from "../bridge/turnMetadata";
 
 /**
  * Renders a loaded Codex thread as the session updates a client would have seen
@@ -11,7 +12,7 @@ export function historyUpdates(turns: readonly Turn[]): acp.SessionUpdate[] {
     const updates: acp.SessionUpdate[] = [];
     for (const turn of turns) {
         for (const item of turn.items) {
-            updates.push(...itemSnapshot(item));
+            updates.push(...itemSnapshot(item).map(update => withTurnId(update, turn.id, turn.startedAt)));
         }
     }
     return updates;
