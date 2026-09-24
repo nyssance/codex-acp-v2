@@ -15,6 +15,7 @@ import {terminalExited, terminalOutputChunk, terminalStarted, usesTerminal} from
 import * as tool from "./toolCalls";
 import {itemSnapshot} from "./itemSnapshot";
 import {fromUserInput} from "../codex/sessionConfig";
+import {withTurnId} from "./turnMetadata";
 
 export type CompletedPlan = {itemId: string; text: string};
 
@@ -31,6 +32,7 @@ export class EventBridge {
     private lastError: TurnError | null = null;
     private completedPlan: CompletedPlan | null = null;
     private noticeSequence = 0;
+    private turnTime: {id: string; startedAt: number | null} | null = null;
 
     /** Tool calls reported as pending or in progress and not yet completed. */
     private readonly openToolCalls = new Set<string>();
@@ -77,17 +79,21 @@ export class EventBridge {
         return plan;
     }
 
-    async restore(items: readonly ThreadItem[]): Promise<void> {
+    async restore(items: readonly ThreadItem[], turnId: string): Promise<void> {
         for (const item of items) {
             if (item.type === "commandExecution" && item.status === "inProgress" && usesTerminal(item)) this.terminalItems.add(item.id);
             for (const update of itemSnapshot(item)) {
                 this.trackToolCall(update);
-                await this.client.update(update);
+                await this.client.update(withTurnId(update, turnId));
             }
         }
     }
 
     async handle(notification: ServerNotification): Promise<void> {
+        if (notification.method === "turn/started" || notification.method === "turn/completed") {
+            const {id, startedAt} = notification.params.turn;
+            this.turnTime = {id, startedAt};
+        }
         let updates = await this.translate(notification);
         if (notification.method === "item/completed") {
             const snapshots = itemSnapshot(notification.params.item);
@@ -98,7 +104,8 @@ export class EventBridge {
         }
         for (const update of updates) {
             this.trackToolCall(update);
-            await this.client.update(update);
+            const turnId = "turnId" in notification.params ? notification.params.turnId : null;
+            await this.client.update(typeof turnId === "string" ? withTurnId(update, turnId, this.turnTime?.id === turnId ? this.turnTime.startedAt : null) : update);
         }
     }
 
