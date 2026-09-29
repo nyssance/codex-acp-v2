@@ -215,7 +215,7 @@ export class CodexAgent {
                 // pass-through surface for a host that manages Codex's catalogs itself.
                 // rename / account / fuzzyFileSearch: `_codex/session_rename`, `_codex/account_read`,
                 // `_codex/rate_limits` (+ `_codex/rate_limits_updated`) and `_codex/fuzzy_file_search`.
-                _meta: {alwith: {tools: {version: 1}}, codex: {archive: true, seedHistory: true, skills: true, plugins: true, providerCatalog: true, rename: true, account: true, fuzzyFileSearch: true}},
+                _meta: {alwith: {tools: {version: 1}, turns: {version: 2}}, codex: {archive: true, seedHistory: true, skills: true, plugins: true, providerCatalog: true, rename: true, account: true, fuzzyFileSearch: true}},
             },
             authMethods: authMethods(this.capabilities, this.env),
         };
@@ -1038,7 +1038,7 @@ export class CodexAgent {
     // ---- prompts ------------------------------------------------------------------
 
     async prompt(params: acp.PromptRequest): Promise<acp.PromptResponse> {
-        return await this.promptInternal(params, false, crypto.randomUUID());
+        return await this.promptInternal(params, false, requestedMessageId(params) ?? crypto.randomUUID());
     }
 
     /**
@@ -1066,7 +1066,7 @@ export class CodexAgent {
         }
         const turn = createActiveTurn(session.id, messageId);
         session.activeTurn = turn;
-        runtime.client.reportRunning();
+        runtime.client.reportRunning(messageId);
         void this.runPrompt(runtime, turn, params);
         return {messageId};
     }
@@ -1293,7 +1293,7 @@ export class CodexAgent {
         await runtime.bridge.finishOpenToolCalls(reason === "cancelled" ? "cancelled" : reason === "end_turn" ? "completed" : "failed");
         // The client may send its next prompt as soon as it receives idle.
         if (runtime.session.activeTurn === turn) runtime.session.activeTurn = null;
-        await runtime.client.reportIdle(reason, extra);
+        await runtime.client.reportIdle(reason, extra, turn.clientUserMessageId ?? undefined);
     }
 
     private async reportTurnFailure(runtime: SessionRuntime, turn: ActiveTurn, error: TurnError): Promise<void> {
@@ -1492,6 +1492,19 @@ export class CodexAgent {
 
 function mcpServerNames(servers: readonly acp.McpServer[]): string[] {
     return servers.flatMap(server => typeof server.name === "string" ? [sanitizeMcpServerName(server.name)] : []);
+}
+
+/**
+ * A host may name the receipt itself (`_meta.alwith.messageId`) so it can correlate the turn's
+ * state frames before the prompt response arrives; the adapter mints one otherwise.
+ */
+function requestedMessageId(params: acp.PromptRequest): string | undefined {
+    const alwith = (params._meta as Record<string, unknown> | null | undefined)?.["alwith"] as {messageId?: unknown} | undefined;
+    if (alwith?.messageId === undefined) return undefined;
+    if (typeof alwith.messageId !== "string" || alwith.messageId.length === 0) {
+        throw acp.RequestError.invalidParams(undefined, "_meta.alwith.messageId must be a non-empty string");
+    }
+    return alwith.messageId;
 }
 
 function agentMessage(messageId: string, text: string): acp.SessionUpdate {

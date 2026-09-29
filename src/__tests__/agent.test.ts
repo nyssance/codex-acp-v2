@@ -181,6 +181,23 @@ describe("session/prompt", () => {
         expect(t.client.states()).toEqual(["running", "idle"]);
     });
 
+    it("honours a host-named receipt and stamps it on every state frame of that turn", async () => {
+        const t = createTestAgent();
+        const initialized = await t.initialize();
+        await t.openSession();
+        expect(initialized).toMatchObject({capabilities: {_meta: {alwith: {turns: {version: 2}}}}});
+        const response = await t.agent.prompt({sessionId: THREAD_ID, prompt: [{type: "text", text: "hello"}], _meta: {alwith: {messageId: "host-receipt-1"}}});
+        expect(response).toEqual({messageId: "host-receipt-1"});
+        await t.settle();
+        expect(t.codex.lastParams<TurnStartParams>("turn/start").clientUserMessageId).toBe("host-receipt-1");
+        turnCompleted(t.codex);
+        await t.settle();
+        expect(t.client.updatesOf("state_update").map(update => [update.state, (update._meta as {alwith: {messageId: string}}).alwith.messageId]))
+            .toEqual([["running", "host-receipt-1"], ["idle", "host-receipt-1"]]);
+        await expect(t.agent.prompt({sessionId: THREAD_ID, prompt: [{type: "text", text: "x"}], _meta: {alwith: {messageId: ""}}}))
+            .rejects.toMatchObject({code: -32602});
+    });
+
     it("surfaces a failed turn as an error message and idle with error metadata", async () => {
         const t = createTestAgent();
         await t.initialize();

@@ -185,11 +185,19 @@ mapped to `tool_call_update`s as before.)
 
 `session/prompt` returns `{messageId}` immediately (or `-32602` for an empty prompt,
 an image on a text-only model, or an unknown session). The id is minted by the adapter
-and passed to Codex as `clientUserMessageId`, so the `user_message` echo and every
+unless the request names it in `_meta.alwith.messageId` (a non-empty string a host
+chooses so it can recognise the turn's frames before the response arrives), and it is
+passed to Codex as `clientUserMessageId`, so the `user_message` echo and every
 replay of that message report under it (`userMessage.clientId`; a message written by
 another Codex client has no `clientId` and keeps its item id). While a turn runs, another
 prompt on the same session is injected into it with `turn/steer` and returns
 `{messageId, _meta: {codex: {steered: "<turnId>"}}}`.
+
+Turn correlation (`capabilities._meta.alwith.turns = {version: 2}`): every `state_update`
+of a prompted turn (`running`, `requires_action`, `idle`) carries `_meta.alwith.messageId`,
+the receipt of the prompt that owns the turn. A turn Codex started elsewhere (observed
+foreign turn) has no receipt and no such field. An `idle` that belongs to an older turn is
+never published after a newer prompt started its turn on the session.
 Image capability validation also applies to steering. Once `idle` is published,
 the next prompt starts a new turn rather than steering the completed one.
 

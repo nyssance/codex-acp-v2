@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.7.2 — 2026-09-29
+
+### Added
+
+- Turn correlation v2 (`capabilities._meta.alwith.turns = {version: 2}`): `session/prompt`
+  accepts a host-named receipt in `_meta.alwith.messageId`, and every `state_update` of a
+  prompted turn carries `_meta.alwith.messageId`. A stale `idle` of an older turn is dropped
+  once a newer prompt owns the session.
+
 ## 0.7.1 — 2026-09-29
 
 ### Changed

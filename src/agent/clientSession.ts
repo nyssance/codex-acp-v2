@@ -22,6 +22,8 @@ export class ClientSession {
     private disposed = false;
     private readonly output = new AbortController();
     private terminalAttempted = false;
+    /** Receipt id of the prompt that owns the current turn; foreign turns have none. */
+    private messageId: string | undefined;
     get signal(): AbortSignal { return this.output.signal; }
 
     constructor(
@@ -81,7 +83,8 @@ export class ClientSession {
     }
 
     /** Foreground work started: report `running` (fire-and-forget, the frame is already queued). */
-    reportRunning(): void {
+    reportRunning(messageId?: string): void {
+        this.messageId = messageId;
         this.terminalAttempted = false;
         this.turnGeneration += 1;
         this.turnActive = true;
@@ -89,18 +92,28 @@ export class ClientSession {
         void this.state({sessionUpdate: "state_update", state: "running"});
     }
 
-    async reportIdle(stopReason: acp.StopReason, extra?: {usage?: acp.Usage | null; _meta?: Record<string, unknown>}): Promise<void> {
+    async reportIdle(stopReason: acp.StopReason, extra?: {usage?: acp.Usage | null; _meta?: Record<string, unknown>}, messageId = this.messageId): Promise<void> {
+        // An older turn's idle that lands after the next prompt started must not end the new turn.
+        if (messageId !== this.messageId) return;
         if (this.terminalAttempted) return;
         this.terminalAttempted = true;
         this.turnActive = false;
         this.waiting = 0;
-        await this.update({
+        await this.update(this.correlated({
             sessionUpdate: "state_update",
             state: "idle",
             stopReason,
             ...(extra?.usage === undefined ? {} : {usage: extra.usage}),
             ...(extra?._meta === undefined ? {} : {_meta: extra._meta}),
-        });
+        }));
+    }
+
+    /** Turn correlation v2: every state frame of a prompted turn names its prompt's `messageId`. */
+    private correlated(update: acp.SessionUpdate): acp.SessionUpdate {
+        if (this.messageId === undefined) return update;
+        const meta = update._meta as Record<string, unknown> | undefined;
+        const alwith = meta?.["alwith"] as Record<string, unknown> | undefined;
+        return {...update, _meta: {...meta, alwith: {...alwith, messageId: this.messageId}}};
     }
 
     private async waitingOnClient<T>(operation: () => Promise<T>, signal?: AbortSignal): Promise<T> {
@@ -123,7 +136,7 @@ export class ClientSession {
 
     private async state(update: acp.SessionUpdate): Promise<void> {
         try {
-            await this.update(update);
+            await this.update(this.correlated(update));
         } catch (error) {
             logger.error("Failed to publish session state", error, {sessionId: this.sessionId});
         }
