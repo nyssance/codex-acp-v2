@@ -394,8 +394,8 @@ steering into those turns. It is not thread or tenant isolation. Codex-created
 subagent/automatic turns and turns started by other app-server clients snapshot
 process-global roots at their own start time and are outside this guarantee.
 The pinned Codex 0.153 implementation constructs the skill snapshot before
-returning a started turn: [turn input handling](https://github.com/openai/codex/blob/rust-v0.153.0/codex-rs/core/src/session/turn_input.rs)
-and [turn context construction](https://github.com/openai/codex/blob/rust-v0.153.0/codex-rs/core/src/session/turn_context.rs).
+returning a started turn: [turn input handling](https://github.com/openai/codex/blob/rust-v0.158.0/codex-rs/core/src/session/turn_input.rs)
+and [turn context construction](https://github.com/openai/codex/blob/rust-v0.158.0/codex-rs/core/src/session/turn_context.rs).
 
 Turn-scoped `item/*` notifications are ignored while idle or when they name a
 known different active turn. Items are accepted while a local turn's id is still

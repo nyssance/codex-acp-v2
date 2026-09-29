@@ -318,7 +318,7 @@ describe("ACP v2 client conformance", () => {
         const t = await prompting();
         itemCompleted(t.codex, command);
         itemCompleted(t.codex, {type: "fileChange", id: "file", changes: [{path: `${CWD}/a.txt`, kind: {type: "add"}, diff: "a\n"}], status: "completed"});
-        itemCompleted(t.codex, {type: "mcpToolCall", id: "mcp", server: "docs", tool: "read", status: "completed", arguments: {}, appContext: null, pluginId: null, readOnlyHint: true, result: {content: [], structuredContent: null, _meta: null}, error: null, durationMs: 1});
+        itemCompleted(t.codex, {type: "mcpToolCall", id: "mcp", server: "docs", tool: "read", status: "completed", arguments: {}, appContext: null, mcpAppUi: null, pluginId: null, readOnlyHint: true, result: {content: [], structuredContent: null, _meta: null}, error: null, durationMs: 1});
         turnCompleted(t.codex); await t.settle();
         const client = new ProtocolOracle();
         for (const update of t.client.updates()) client.accept(update.sessionId, update);

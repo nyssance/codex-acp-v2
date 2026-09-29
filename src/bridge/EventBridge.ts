@@ -265,6 +265,8 @@ export class EventBridge {
             case "mcpServer/event/stream/notification":
             case "account/updated":
             case "account/login/completed":
+            case "account/gatewayOAuth/changed":
+            case "thread/attachment/updated":
             case "app/list/updated":
             case "remoteControl/status/changed":
             case "externalAgentConfig/import/progress":

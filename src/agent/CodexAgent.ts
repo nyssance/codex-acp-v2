@@ -1602,15 +1602,21 @@ function readOnlyThread(thread: Thread, cwd: string): ThreadResumeResponse {
         model: thread.model ?? "",
         modelProvider: thread.modelProvider,
         serviceTier: null,
+        disabledPluginIds: [],
         cwd,
+        runtimeWorkspaceRoots: [],
         instructionSources: [],
         approvalPolicy: "on-request",
         approvalsReviewer: "user",
         sandbox: {type: "readOnly", networkAccess: false},
+        activePermissionProfile: null,
         reasoningEffort: thread.reasoningEffort,
+        collaborationMode: null,
+        multiAgentMode: "explicitRequestOnly",
+        initialTurnsPage: null,
         turnsBackwardsCursor: null,
         itemsBackwardsCursor: null,
-    } as ThreadResumeResponse;
+    };
 }
 
 function hostSessionOptions(meta: acp.NewSessionRequest["_meta"]) {

@@ -134,7 +134,7 @@ describe("plans", () => {
 describe("other tools", () => {
     it("maps MCP, web search, image, compaction, and subagent items", async () => {
         const t = await openPrompting();
-        const mcp = {type: "mcpToolCall" as const, id: "m1", server: "srv", tool: "lookup", status: "inProgress" as const, arguments: {q: 1}, appContext: null, pluginId: null, readOnlyHint: null, result: null, error: null, durationMs: null};
+        const mcp = {type: "mcpToolCall" as const, id: "m1", server: "srv", tool: "lookup", status: "inProgress" as const, arguments: {q: 1}, appContext: null, mcpAppUi: null, pluginId: null, readOnlyHint: null, result: null, error: null, durationMs: null};
         itemStarted(t.codex, mcp);
         t.codex.emit({method: "item/mcpToolCall/progress", params: {threadId: THREAD_ID, turnId: TURN_ID, itemId: "m1", message: " 50% "}});
         itemCompleted(t.codex, {...mcp, status: "failed", error: {message: "nope"}});

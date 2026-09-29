@@ -177,7 +177,7 @@ describe("MCP elicitations", () => {
 
     it("routes message-only tool approvals through permissions and correlates the tool call", async () => {
         const t = await openPrompting();
-        itemStarted(t.codex, {type: "mcpToolCall", id: "m-1", server: "srv", tool: "run", status: "inProgress", arguments: {}, appContext: null, pluginId: null, readOnlyHint: null, result: null, error: null, durationMs: null});
+        itemStarted(t.codex, {type: "mcpToolCall", id: "m-1", server: "srv", tool: "run", status: "inProgress", arguments: {}, appContext: null, mcpAppUi: null, pluginId: null, readOnlyHint: null, result: null, error: null, durationMs: null});
         await t.settle();
         t.client.clear();
         t.client.permissionResponder = () => ({outcome: {outcome: "selected", optionId: "allow_session"}});

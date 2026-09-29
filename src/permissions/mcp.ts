@@ -7,6 +7,9 @@ import {permissionOption} from "./options";
 
 export type PersistValue = "session" | "always";
 
+/** Elicitations a permission prompt can answer; a device challenge has no message to approve. */
+export type ApprovalElicitationParams = Exclude<McpServerElicitationRequestParams, {mode: "openai/userVerification"}>;
+
 export type McpElicitationContext = {
     isToolApproval: boolean;
     persistOptions: Set<PersistValue>;
@@ -60,7 +63,7 @@ export function mcpPermissionOptions(isToolApproval: boolean, persist: ReadonlyS
 
 /** Builds the permission request used when an MCP elicitation carries no form fields. */
 export function mcpPermissionRequest(
-    params: McpServerElicitationRequestParams,
+    params: ApprovalElicitationParams,
     context: McpElicitationContext,
     nextStandaloneToolCallId: () => string,
 ): Omit<acp.RequestPermissionRequest, "sessionId"> {

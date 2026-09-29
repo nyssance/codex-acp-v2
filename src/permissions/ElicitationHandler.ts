@@ -54,6 +54,11 @@ export class CodexElicitationHandler implements ElicitationHandler {
 
     async handleElicitation(params: McpServerElicitationRequestParams): Promise<McpServerElicitationRequestResponse> {
         try {
+            if (params.mode === "openai/userVerification") {
+                // A signed device challenge has no ACP surface; enrollment and proof stay inside Codex.
+                logger.log("MCP user verification is not supported over ACP", {server: params.serverName});
+                return cancelled();
+            }
             const context = this.mcpContext(params);
             const messageOnly = isMessageOnlyForm(params);
             if (!messageOnly && this.useAcpElicitation(params)) {

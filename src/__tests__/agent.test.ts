@@ -1051,7 +1051,7 @@ describe("remaining commands", () => {
         const t = createTestAgent();
         await t.initialize();
         await t.openSession();
-        t.codex.emit({method: "account/rateLimits/updated", params: {rateLimits: {limitId: "weekly", limitName: "Weekly", primary: {usedPercent: 40, windowDurationMins: 10080, resetsAt: null}, secondary: null, credits: {hasCredits: true, unlimited: true, balance: null}, individualLimit: null, spendControlReached: null, planType: null, rateLimitReachedType: null}}});
+        t.codex.emit({method: "account/rateLimits/updated", params: {rateLimits: {limitId: "weekly", limitName: "Weekly", normalModelSlug: null, primary: {usedPercent: 40, windowDurationMins: 10080, resetsAt: null}, secondary: null, credits: {hasCredits: true, unlimited: true, balance: null}, individualLimit: null, spendControlReached: null, planType: null, rateLimitReachedType: null}}});
         await t.settle();
         await t.agent.prompt({sessionId: THREAD_ID, prompt: [{type: "text", text: "/status"}]});
         await t.settle();

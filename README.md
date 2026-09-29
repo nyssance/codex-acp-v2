@@ -59,7 +59,7 @@ See [`docs/protocol.md`](docs/protocol.md) for the exact wire contract.
 
 ## Requirements
 
-- Codex CLI **0.153.0 or newer** — the app-server types under `src/app-server` are generated
+- Codex CLI **0.158.0 or newer** — the app-server types under `src/app-server` are generated
   from the `@openai/codex` release named in `optionalDependencies`, and the agent checks
   `codex --version` before starting the server; an older Codex fails at startup with an
   upgrade hint.

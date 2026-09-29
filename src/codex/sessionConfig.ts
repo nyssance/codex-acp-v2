@@ -133,7 +133,7 @@ export function fromUserInput(input: UserInput): acp.ContentBlock[] {
         case "text":
             return input.text.length > 0 ? [{type: "text", text: input.text}] : [];
         case "image":
-            return [{type: "text", text: formatUriAsLink("image", input.url)}];
+            return [{type: "text", text: "url" in input ? formatUriAsLink("image", input.url) : `image:${input.fileId}`}];
         case "localImage":
             return [{type: "text", text: formatUriAsLink(null, toFileUri(input.path))}];
         case "skill":

@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.7.1 — 2026-09-29
+
+### Changed
+
+- Generated against Codex 0.158.0 (`@openai/codex` `^0.158.0`); the version floor follows.
+- MCP `openai/userVerification` elicitations (signed device challenges) are declined with
+  `cancelled`: ACP has no surface for them and enrollment stays inside Codex.
+- `codexErrorInfo` `flexUnavailable` classifies as `flex_unavailable`, retryable.
+- Replayed `image` user input renders `image:<fileId>` when Codex stored an uploaded file
+  instead of a URL.
+
+## 0.7.0 — 2026-09-29
+
+### Changed
+
+- `session/prompt` returns `{messageId}` (ACP v2, sdk 1.5.1). The id is passed to Codex as
+  `clientUserMessageId`; `user_message` echoes and replays report it as `messageId`
+  (`userMessage.clientId ?? id`). Steering returns `{messageId, _meta.codex.steered}`.
+
 ## 0.6.0 — 2026-09-11
 
 ### Added

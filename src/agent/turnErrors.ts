@@ -22,6 +22,7 @@ export function classifyTurnError(info: CodexErrorInfo | null): Failure {
         case "usageLimitExceeded": return failure("usage_limit");
         case "rateLimitExceeded": return failure("rate_limit", true);
         case "serverOverloaded": return failure("overloaded", true);
+        case "flexUnavailable": return failure("flex_unavailable", true);
         case "internalServerError": return failure("internal", true);
         case "unauthorized": return failure("authentication");
         case "badRequest": return failure("invalid_request");

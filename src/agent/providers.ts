@@ -438,6 +438,7 @@ function gatewayModel(model: GatewayModel, isDefault: boolean, template: Model |
         additionalSpeedTiers: [],
         serviceTiers: [],
         defaultServiceTier: null,
+        availableAccessPrograms: null,
         isDefault,
     };
 }
