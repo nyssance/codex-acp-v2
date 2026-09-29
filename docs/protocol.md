@@ -183,10 +183,13 @@ mapped to `tool_call_update`s as before.)
 
 ## Prompts and state
 
-`session/prompt` returns `{}` immediately (or `-32602` for an empty prompt, an image
-on a text-only model, or an unknown session). While a turn runs, another prompt on
-the same session is injected into it with `turn/steer` and returns
-`{_meta: {codex: {steered: "<turnId>"}}}`.
+`session/prompt` returns `{messageId}` immediately (or `-32602` for an empty prompt,
+an image on a text-only model, or an unknown session). The id is minted by the adapter
+and passed to Codex as `clientUserMessageId`, so the `user_message` echo and every
+replay of that message report under it (`userMessage.clientId`; a message written by
+another Codex client has no `clientId` and keeps its item id). While a turn runs, another
+prompt on the same session is injected into it with `turn/steer` and returns
+`{messageId, _meta: {codex: {steered: "<turnId>"}}}`.
 Image capability validation also applies to steering. Once `idle` is published,
 the next prompt starts a new turn rather than steering the completed one.
 

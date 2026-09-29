@@ -139,10 +139,12 @@ describe("session/prompt", () => {
         await t.initialize();
         await t.openSession();
         const response = await t.agent.prompt({sessionId: THREAD_ID, prompt: [{type: "text", text: "hello"}], _meta: {alwith: {providerId: "codex"}}});
-        expect(response).toEqual({});
+        expect(response).toEqual({messageId: expect.any(String)});
         await t.settle();
         expect(t.client.states()).toEqual(["running"]);
         const start = t.codex.lastParams<TurnStartParams>("turn/start");
+        // The receipt names the user message before Codex materializes it.
+        expect(start.clientUserMessageId).toBe(response.messageId);
         expect(start).toMatchObject({
             threadId: THREAD_ID,
             input: [{type: "text", text: "hello", text_elements: []}],
@@ -205,7 +207,7 @@ describe("session/prompt", () => {
         expect(t.client.updatesOf("agent_message_chunk").at(-1)?.content).toEqual({type: "text", text: "boom"});
         // the session is usable again
         t.codex.respond("turn/start", () => ({turn: turn({status: "inProgress"})}));
-        await expect(t.agent.prompt({sessionId: THREAD_ID, prompt: [{type: "text", text: "again"}]})).resolves.toEqual({});
+        await expect(t.agent.prompt({sessionId: THREAD_ID, prompt: [{type: "text", text: "again"}]})).resolves.toEqual({messageId: expect.any(String)});
     });
 
     it("steers the running turn when a second prompt arrives", async () => {
@@ -215,8 +217,8 @@ describe("session/prompt", () => {
         await t.agent.prompt({sessionId: THREAD_ID, prompt: [{type: "text", text: "first"}]});
         await t.settle();
         const response = await t.agent.prompt({sessionId: THREAD_ID, prompt: [{type: "text", text: "also this"}]});
-        expect(response).toEqual({_meta: {codex: {steered: TURN_ID}}});
-        expect(t.codex.lastParams<{expectedTurnId: string; input: unknown[]}>("turn/steer")).toMatchObject({expectedTurnId: TURN_ID, input: [{type: "text", text: "also this"}]});
+        expect(response).toEqual({messageId: expect.any(String), _meta: {codex: {steered: TURN_ID}}});
+        expect(t.codex.lastParams<{expectedTurnId: string; clientUserMessageId: string; input: unknown[]}>("turn/steer")).toMatchObject({expectedTurnId: TURN_ID, clientUserMessageId: response.messageId, input: [{type: "text", text: "also this"}]});
     });
 
     it("rejects image prompts for text-only models and empty prompts", async () => {

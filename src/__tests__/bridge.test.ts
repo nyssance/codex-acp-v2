@@ -173,6 +173,16 @@ describe("other tools", () => {
         ]);
     });
 
+    it("echoes a prompted user message under the receipt id Codex kept as clientId", async () => {
+        const t = await openPrompting();
+        itemStarted(t.codex, {type: "userMessage", id: "u1", clientId: "receipt-7", content: [{type: "text", text: "make it work", text_elements: []}]});
+        itemCompleted(t.codex, {type: "userMessage", id: "u1", clientId: "receipt-7", content: [{type: "text", text: "make it work", text_elements: []}]});
+        await t.settle();
+        expect(t.client.updatesOf("user_message")).toMatchObject([
+            {sessionUpdate: "user_message", messageId: "receipt-7", content: [{type: "text", text: "make it work"}]},
+        ]);
+    });
+
     it("ignores notifications for other threads", async () => {
         const t = await openPrompting();
         t.codex.emit({method: "item/agentMessage/delta", params: {threadId: "other", turnId: TURN_ID, itemId: "x", delta: "nope"}});

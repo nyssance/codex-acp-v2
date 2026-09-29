@@ -136,7 +136,7 @@ describe("close deadlines", () => {
         await t.agent.prompt({sessionId: THREAD_ID, prompt: [{type: "text", text: "/status"}]});
         await t.settle();
         expect(next).toBeDefined();
-        await expect(next).resolves.toEqual({});
+        await expect(next).resolves.toEqual({messageId: expect.any(String)});
         expect(t.codex.calls("turn/steer")).toHaveLength(0);
         expect(t.client.states()).toEqual(["running", "idle", "running"]);
         turnCompleted(t.codex);

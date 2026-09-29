@@ -1038,10 +1038,15 @@ export class CodexAgent {
     // ---- prompts ------------------------------------------------------------------
 
     async prompt(params: acp.PromptRequest): Promise<acp.PromptResponse> {
-        return await this.promptInternal(params);
+        return await this.promptInternal(params, false, crypto.randomUUID());
     }
 
-    private async promptInternal(params: acp.PromptRequest, allowReentry = false): Promise<acp.PromptResponse> {
+    /**
+     * `messageId` is minted here and handed to Codex as `clientUserMessageId`, so the receipt
+     * names the user message before Codex materializes it and the later `user_message` echo
+     * (`userMessage.clientId`) claims the same id. Steering keeps the id it was minted with.
+     */
+    private async promptInternal(params: acp.PromptRequest, allowReentry: boolean, messageId: string): Promise<acp.PromptResponse> {
         this.assertRoutingAvailable();
         if (!allowReentry && this.sessionMutations.has(params.sessionId)) throw acp.RequestError.invalidRequest({sessionId: params.sessionId}, "Session lifecycle or configuration work is in progress; retry when it finishes");
         const runtime = this.runtime(params.sessionId, "session/prompt");
@@ -1057,29 +1062,29 @@ export class CodexAgent {
             throw acp.RequestError.invalidParams({model: session.model.model}, "The current model does not support image input");
         }
         if (session.activeTurn) {
-            return await this.steerActiveTurn(runtime, session.activeTurn, params);
+            return await this.steerActiveTurn(runtime, session.activeTurn, params, messageId);
         }
-        const turn = createActiveTurn(session.id);
+        const turn = createActiveTurn(session.id, messageId);
         session.activeTurn = turn;
         runtime.client.reportRunning();
         void this.runPrompt(runtime, turn, params);
-        return {};
+        return {messageId};
     }
 
     /** A prompt during a running turn is injected into it; Codex calls this steering. */
-    private async steerActiveTurn(runtime: SessionRuntime, turn: ActiveTurn, params: acp.PromptRequest): Promise<acp.PromptResponse> {
+    private async steerActiveTurn(runtime: SessionRuntime, turn: ActiveTurn, params: acp.PromptRequest, messageId: string): Promise<acp.PromptResponse> {
         const turnId = turn.turnId ?? await turn.started;
         if (turnId === null || turn.threadId !== runtime.session.id) {
             throw acp.RequestError.invalidRequest({sessionId: params.sessionId}, "A turn is already running; wait for it to finish or cancel it");
         }
         try {
-            await this.codex.turnSteer({threadId: runtime.session.id, expectedTurnId: turnId, input: toUserInput(params.prompt)});
-            return {_meta: {codex: {steered: turnId}}};
+            await this.codex.turnSteer({threadId: runtime.session.id, expectedTurnId: turnId, clientUserMessageId: messageId, input: toUserInput(params.prompt)});
+            return {messageId, _meta: {codex: {steered: turnId}}};
         } catch (error) {
             // Retry as a new prompt only after a matching completion proves the steer lost the race.
             if (this.completedTurns.get(turn) === turnId || runtime.session.activeTurn !== turn) {
                 await turn.finished;
-                return await this.promptInternal(params, true);
+                return await this.promptInternal(params, true, messageId);
             }
             throw acp.RequestError.invalidRequest({sessionId: params.sessionId, turnId}, `Could not steer the running turn: ${errorMessage(error)}`);
         }
@@ -1179,6 +1184,7 @@ export class CodexAgent {
                 startSent = true;
                 const completed = this.withCodex(() => this.codex.runTurn({
                     threadId: session.id,
+                    clientUserMessageId: turn.clientUserMessageId,
                     input: toUserInput(prompt),
                     approvalPolicy: session.mode.approvalPolicy,
                     approvalsReviewer: session.mode.approvalsReviewer,

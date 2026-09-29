@@ -11,6 +11,12 @@ export interface ActiveTurn {
     turnId: string | null;
     /** Thread that owns the turn. Review turns run on a separate review thread. */
     threadId: string;
+    /**
+     * ACP `messageId` of the prompt that started the turn, sent to Codex as
+     * `clientUserMessageId` so the materialized `userMessage` item carries it back as
+     * `clientId`. Null for turns not started by `session/prompt` (recovery, review).
+     */
+    clientUserMessageId: string | null;
     readonly abort: AbortController;
     /** Ends local waiting when a closing session exceeds its grace period. */
     readonly stop: AbortController;
@@ -48,7 +54,7 @@ export interface Session {
     closed: boolean;
 }
 
-export function createActiveTurn(threadId: string): ActiveTurn {
+export function createActiveTurn(threadId: string, clientUserMessageId: string | null = null): ActiveTurn {
     let resolveStarted: (turnId: string | null) => void = () => {};
     let resolveFinished: () => void = () => {};
     let started = new Promise<string | null>(resolve => {
@@ -62,6 +68,7 @@ export function createActiveTurn(threadId: string): ActiveTurn {
     return {
         turnId: null,
         threadId,
+        clientUserMessageId,
         abort: new AbortController(),
         stop: new AbortController(),
         interrupts: new Map(),

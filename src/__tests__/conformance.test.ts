@@ -297,7 +297,7 @@ describe("ACP v2 client conformance", () => {
     it("starts a new turn when a rejected steer races a matching turn completion", async () => {
         const t = await prompting();
         t.codex.respond("turn/steer", () => {turnCompleted(t.codex); throw new Error("turn already ended");});
-        await expect(t.agent.prompt({sessionId: THREAD_ID, prompt: [{type: "text", text: "next"}]})).resolves.toEqual({});
+        await expect(t.agent.prompt({sessionId: THREAD_ID, prompt: [{type: "text", text: "next"}]})).resolves.toEqual({messageId: expect.any(String)});
         await t.settle();
         expect(t.codex.calls("turn/start")).toHaveLength(2);
         turnCompleted(t.codex); await t.settle();

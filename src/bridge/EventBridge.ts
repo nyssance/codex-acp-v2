@@ -327,10 +327,12 @@ export class EventBridge {
                 return [tool.compactionUpdate(item.id, "in_progress")];
             case "userMessage": {
                 // ACP: the agent MUST report where the user message landed in session
-                // history. Codex materializes it as a userMessage item at turn start;
-                // its item id is the messageId a later replay reports under.
+                // history. Codex materializes it as a userMessage item at turn start. A
+                // prompt sent through `session/prompt` already got its id in the receipt
+                // (`clientUserMessageId`, back here as `clientId`); the echo and every later
+                // replay report under that same id, so the client can claim it exactly.
                 const content = item.content.flatMap(fromUserInput);
-                return content.length > 0 ? [{sessionUpdate: "user_message", messageId: item.id, content}] : [];
+                return content.length > 0 ? [{sessionUpdate: "user_message", messageId: item.clientId ?? item.id, content}] : [];
             }
             case "hookPrompt":
             case "functionCallOutput":

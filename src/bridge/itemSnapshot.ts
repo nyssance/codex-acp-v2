@@ -9,7 +9,8 @@ export function itemSnapshot(item: ThreadItem): acp.SessionUpdate[] {
     switch (item.type) {
         case "userMessage": {
             const content = item.content.flatMap(fromUserInput);
-            return content.length > 0 ? [{sessionUpdate: "user_message", messageId: item.id, content}] : [];
+            // The receipt id (`clientId`) wins so a replay names the message the client knows.
+            return content.length > 0 ? [{sessionUpdate: "user_message", messageId: item.clientId ?? item.id, content}] : [];
         }
         case "agentMessage":
             return item.text.length > 0
