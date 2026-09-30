@@ -137,7 +137,7 @@ describe("EOF dispatch barrier", () => {
         const directory = await mkdtemp(path.join(tmpdir(), "acp-exit-"));
         const executable = path.join(directory, "codex-fixture");
         const script = `#!${process.execPath}\nconst {spawn} = require("node:child_process");
-if (process.argv.includes("--version")) { console.log("codex-cli 0.158.0"); }
+if (process.argv.includes("--version")) { console.log("codex-cli 0.159.2"); }
 else { process.stdin.once("data", data => {
  const id = JSON.parse(data.toString()).id;
  const reply = JSON.stringify({id, result: {data: [], nextCursor: null, backwardsCursor: null}});

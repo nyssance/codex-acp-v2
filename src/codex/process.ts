@@ -1,4 +1,5 @@
-import {existsSync} from "node:fs";
+import {existsSync, mkdtempSync, readFileSync, writeFileSync} from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import {spawn, spawnSync, type ChildProcessWithoutNullStreams} from "node:child_process";
 import {createRequire} from "node:module";
@@ -100,9 +101,12 @@ export function startCodexProcess(codexPath?: string, env: NodeJS.ProcessEnv = p
     const probe = spawnSync(launcher.command, [...launcher.prefixArgs, "--version"], {shell: launcher.shell, env, encoding: "utf8"});
     if (probe.error !== undefined) throw new Error(`Could not run Codex (${launcher.command}): ${probe.error.message}`);
     assertCodexVersion(probe.stdout.length > 0 ? probe.stdout : probe.stderr);
+    const catalog = mergedModelCatalog(launcher, env);
+    // A TOML literal string ('...') takes the temp path verbatim, backslashes included.
+    const catalogOverride = catalog === null ? null : `model_catalog_json='${catalog}'`;
     const child = launcher.shell
-        ? spawn(`${launcher.command} app-server`, {shell: true, env})
-        : spawn(launcher.command, [...launcher.prefixArgs, "app-server"], {env});
+        ? spawn(`${launcher.command}${catalogOverride === null ? "" : ` -c "${catalogOverride}"`} app-server`, {shell: true, env})
+        : spawn(launcher.command, [...launcher.prefixArgs, ...(catalogOverride === null ? [] : ["-c", catalogOverride]), "app-server"], {env});
 
     let stderr = "";
     child.stderr.on("data", (data: Buffer) => {
@@ -129,4 +133,52 @@ export function startCodexProcess(codexPath?: string, env: NodeJS.ProcessEnv = p
         recentStderr: () => stderr.trim(),
         exitCode: () => child.exitCode,
     };
+}
+
+/**
+ * Env naming extra Codex model catalog files (`{models: [...]}`, joined with the platform path
+ * delimiter): the gateway models whose metadata Codex needs. Codex builds its model table once, at
+ * app-server start, from `model_catalog_json`, and a per-thread `model_catalog_json` is not read; a
+ * gateway model it does not know runs on fallback metadata and every turn opens with Codex's
+ * "Model metadata ... not found" warning.
+ */
+export const EXTRA_MODEL_CATALOGS_ENV = "CODEX_ACP_MODEL_CATALOGS";
+
+/**
+ * With extra catalogs set: Codex's own current catalog (`codex debug models`, the same table it would
+ * serve) plus every extra entry it lacks, marked `visibility: "hide"` so gateway models never show in
+ * the ChatGPT group, written to a temp file for `-c model_catalog_json`. A catalog replaces Codex's
+ * table wholesale, which is why Codex's own entries are copied in first. Any failure throws.
+ */
+export function mergedModelCatalog(
+    launcher: {command: string; prefixArgs: string[]; shell: boolean},
+    env: NodeJS.ProcessEnv,
+): string | null {
+    const raw = env[EXTRA_MODEL_CATALOGS_ENV];
+    if (raw === undefined || raw.trim() === "") return null;
+    const files = raw.split(path.delimiter).filter(file => file.length > 0);
+    const dump = spawnSync(launcher.command, [...launcher.prefixArgs, "debug", "models"], {
+        shell: launcher.shell, env, encoding: "utf8", maxBuffer: 64 * 1024 * 1024,
+    });
+    if (dump.error !== undefined || dump.status !== 0) {
+        throw new Error(`codex debug models failed: ${dump.error?.message ?? dump.stderr.trim()}`);
+    }
+    const base = JSON.parse(dump.stdout) as {models?: unknown};
+    if (!Array.isArray(base.models)) throw new Error("codex debug models did not return {models: [...]}");
+    const models = base.models as Array<Record<string, unknown>>;
+    const slugs = new Set(models.map(model => model["slug"]));
+    for (const file of files) {
+        const extra = JSON.parse(readFileSync(file, "utf8")) as {models?: unknown};
+        if (!Array.isArray(extra.models)) throw new Error(`${EXTRA_MODEL_CATALOGS_ENV}: ${file} is not {models: [...]}`);
+        for (const entry of extra.models as Array<Record<string, unknown>>) {
+            if (typeof entry["slug"] !== "string") throw new Error(`${EXTRA_MODEL_CATALOGS_ENV}: ${file} has an entry without a slug`);
+            if (slugs.has(entry["slug"])) continue;
+            slugs.add(entry["slug"]);
+            models.push({...entry, visibility: "hide"});
+        }
+    }
+    const directory = mkdtempSync(path.join(os.tmpdir(), "codex-acp-v2-catalog-"));
+    const target = path.join(directory, "models.json");
+    writeFileSync(target, JSON.stringify({...base, models}));
+    return target;
 }

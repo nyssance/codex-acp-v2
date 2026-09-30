@@ -54,7 +54,7 @@ export function thread(overrides: Partial<Thread> = {}): Thread {
         status: {type: "idle"},
         path: null,
         cwd: CWD,
-        cliVersion: "0.158.0",
+        cliVersion: "0.159.2",
         source: "cli",
         threadSource: null,
         agentNickname: null,

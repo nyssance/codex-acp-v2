@@ -2,7 +2,7 @@ import readline from "node:readline";
 import {model, threadResponse, turn} from "./fixtures";
 
 if (process.argv.includes("--version")) {
-    console.log("codex-cli 0.158.0");
+    console.log("codex-cli 0.159.2");
     process.exit(0);
 }
 const send = (message: unknown) => process.stdout.write(JSON.stringify(message) + "\n");

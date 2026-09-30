@@ -18,6 +18,8 @@ export function classifyTurnError(info: CodexErrorInfo | null): Failure {
         case "contextWindowExceeded": return failure("context_window", false, "max_tokens");
         case "cyberPolicy":
         case "misalignmentPolicyViolation": return failure("policy", false, "refusal");
+        // Codex ends the turn after too many permission denials; retrying asks the same questions again.
+        case "tooManyDenials": return failure("too_many_denials");
         case "sessionBudgetExceeded": return failure("budget");
         case "usageLimitExceeded": return failure("usage_limit");
         case "rateLimitExceeded": return failure("rate_limit", true);

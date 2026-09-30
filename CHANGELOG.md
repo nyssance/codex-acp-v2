@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.7.4 — 2026-09-30
+
+### Added
+
+- `CODEX_ACP_MODEL_CATALOGS`: extra model catalog files for gateway models. Codex builds its model
+  table once at app-server start and ignores a per-thread `model_catalog_json`, so gateway models ran on
+  fallback metadata and every reply opened with "Model metadata for `…` not found". The adapter now dumps
+  Codex's own catalog (`codex debug models`), adds the extra entries hidden, and starts the app-server
+  with the merged file.
+
+### Changed
+
+- Generated against Codex 0.159.2 (`@openai/codex` ^0.159.2): `tooManyDenials` turn errors are
+  classified `too_many_denials` (not retryable); `thread/items/list` cursors may be item anchors.
+
 ## 0.7.3 — 2026-09-30
 
 ### Changed

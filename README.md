@@ -91,6 +91,7 @@ adjust defaults.
 | Variable | Effect |
 | --- | --- |
 | `CODEX_PATH` | Codex executable to spawn (`codex app-server`). Default: bundled `@openai/codex`. |
+| `CODEX_ACP_MODEL_CATALOGS` | Extra Codex model catalog files (`{models: [...]}`, joined with the platform path delimiter) for gateway models. Codex reads model metadata only at app-server start, so these are merged, hidden from the ChatGPT group, into Codex's own catalog there; without them a gateway model runs on fallback metadata and Codex warns on every turn. |
 | `CODEX_CONFIG` | JSON object merged into every thread's Codex config. |
 | `MODEL_PROVIDER` | Codex model provider for new threads. |
 | `INITIAL_AGENT_MODE` | `read-only`, `agent` (default), or `agent-full-access`. |
