@@ -1,6 +1,7 @@
 import type * as acp from "@agentclientprotocol/sdk/experimental/v2";
 import type {Model, ReasoningEffortOption} from "../app-server/v2";
 import type {ModeKind} from "../app-server/ModeKind";
+import {NATIVE_GROUP_ID, NATIVE_GROUP_NAME} from "../agent/providers";
 
 export const MODEL_CONFIG_ID = "model";
 export const EFFORT_CONFIG_ID = "effort";
@@ -92,7 +93,7 @@ export function modelConfigOption(
     return {
         ...base,
         options: [
-            {groupId: "codex", name: "Codex", options: native},
+            {groupId: NATIVE_GROUP_ID, name: NATIVE_GROUP_NAME, options: native},
             ...gatewayGroups.map(group => ({groupId: group.id, name: group.name, options: options.filter(option => owner.get(option.value) === group.id)})),
         ],
     };

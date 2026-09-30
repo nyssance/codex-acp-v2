@@ -877,7 +877,7 @@ describe("providers", () => {
         const modelOption = response.configOptions?.find(option => option.configId === "model") as {currentValue: string; options: Array<{groupId: string; name: string; options: Array<{value: string}>}>};
         expect(modelOption.currentValue).toBe("gpt-5");
         expect(modelOption.options.map(group => [group.groupId, group.name, group.options.map(option => option.value)])).toEqual([
-            ["codex", "Codex", ["gpt-5"]],
+            ["chatgpt", "ChatGPT", ["gpt-5"]],
             ["custom-gateway", "DeepSeek", ["gateway:custom-gateway:deepseek-flash"]],
         ]);
     });
@@ -1215,7 +1215,7 @@ describe("gateways", () => {
         await t.agent.setProvider(openrouter());
         const response = await t.agent.newSession({cwd: CWD});
         expect(groupsOf(response.configOptions)).toEqual([
-            ["codex", "Codex", ["gpt-5"]],
+            ["chatgpt", "ChatGPT", ["gpt-5"]],
             ["deepseek", "DeepSeek", ["gateway:deepseek:deepseek-flash"]],
             ["openrouter", "OpenRouter", ["gateway:openrouter:qwen%2Fqwen3.8-max"]],
         ]);
@@ -1269,7 +1269,7 @@ describe("gateways", () => {
         await expectRejects(t.agent.prompt({sessionId: THREAD_ID, prompt: [{type: "text", text: "go"}]}), -32602, "unavailable");
         const options = t.client.updatesOf("config_option_update").at(-1) as {configOptions: acp.SessionConfigOption[]};
         expect(groupsOf(options.configOptions)).toEqual([
-            ["codex", "Codex", ["gpt-5"]],
+            ["chatgpt", "ChatGPT", ["gpt-5"]],
             ["deepseek", "DeepSeek", ["gateway:deepseek:deepseek-flash"]],
         ]);
         const listed = t.agent.listProviders({}).providers[0] as unknown as {_meta?: {codex: {gateways: Array<{id: string}>}}};

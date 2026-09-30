@@ -12,7 +12,9 @@ export const OPENAI_PROVIDER_ID = "openai";
 /** Default id of a gateway: the Codex `model_providers` entry it is written to and its select group. */
 export const GATEWAY_MODEL_PROVIDER = "custom-gateway";
 export const DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1";
-export const NATIVE_GROUP_ID = "codex";
+/** Select group of the models Codex serves through the ChatGPT sign-in: named after the models, not the CLI. */
+export const NATIVE_GROUP_ID = "chatgpt";
+export const NATIVE_GROUP_NAME = "ChatGPT";
 const GATEWAY_ID_PATTERN = /^[a-z0-9-]+$/;
 
 export function gatewayModelId(connectionId: string, modelId: string): string {
@@ -374,6 +376,9 @@ function readGatewayId(meta: unknown): string | null {
     if (raw === undefined) return null;
     if (typeof raw !== "string" || !GATEWAY_ID_PATTERN.test(raw)) {
         throw acp.RequestError.invalidParams({id: raw}, "_meta.codex.id must match [a-z0-9-]+");
+    }
+    if (raw === NATIVE_GROUP_ID) {
+        throw acp.RequestError.invalidParams({id: raw}, `_meta.codex.id "${NATIVE_GROUP_ID}" is the native model group`);
     }
     return raw;
 }

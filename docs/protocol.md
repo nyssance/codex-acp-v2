@@ -50,7 +50,7 @@ Accepted hints on `providers/set._meta`:
 
 | Hint | Meaning |
 | --- | --- |
-| `codex.id` | Gateway id, `[a-z0-9-]+`, default `custom-gateway`: the `model_providers` entry, the `modelProvider` value and (catalog mode) the select group. Codex's own provider ids (`openai`, the configured `model_provider`) are refused. |
+| `codex.id` | Gateway id, `[a-z0-9-]+`, default `custom-gateway`: the `model_providers` entry, the `modelProvider` value and (catalog mode) the select group. Codex's own provider ids (`openai`, the configured `model_provider`) and the native group id `chatgpt` are refused. |
 | `alwith.models` | `[{id, label?, description?}]`: the models the gateway serves; Codex cannot list them. Model ids must be unique across gateways; a clash is refused with `-32602` naming the other gateway. |
 | `alwith.model` | The model to select on the gateway. |
 | `codex.name` | Label of the `model_providers` entry (and of the gateway's select group in catalog mode). |
@@ -68,8 +68,8 @@ anything. Any number of gateways can be registered this way, each under its own
 `codex.id`; a route-mode `providers/set` replaces them all. `providers/list` keeps
 reporting native routing, with every gateway under `providers[]._meta.codex.gateways`
 (`[{id, name, baseUrl, models}]`; `_meta.codex.gateway` is the first one, kept for older
-clients), and every session's `model` option becomes one group per source: `codex`
-(Codex's models) followed by one group per gateway (groupId = its id, named after
+clients), and every session's `model` option becomes one group per source: `chatgpt`
+(named ChatGPT: the models Codex serves through the ChatGPT sign-in) followed by one group per gateway (groupId = its id, named after
 `codex.name`, listing its `alwith.models`). Advertised as
 `capabilities._meta.codex.providerCatalog: true`.
 

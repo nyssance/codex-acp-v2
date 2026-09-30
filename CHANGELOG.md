@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.3 — 2026-09-30
+
+### Changed
+
+- In catalog mode the native model group is `chatgpt`, named ChatGPT: it lists the ChatGPT models
+  Codex serves, and Codex is the CLI, not the model. Gateway ids may not take `chatgpt`. The `_codex/*`
+  methods and the `_meta.codex` namespace are unchanged; they belong to the CLI.
+
 ## 0.7.2 — 2026-09-29
 
 ### Added
