@@ -227,6 +227,33 @@ also ends waits for compaction and plan approval with `_error`.
 
 ## Session updates
 
+### Chat branches
+
+`capabilities._meta.codex.forkAtTurn: true` advertises an optional
+`session/fork._meta.codex.lastTurnId` non-empty string. It maps to Codex
+`thread/fork.lastTurnId`: the referenced completed turn is included and later
+turns are omitted. Codex rejects unknown or in-progress boundaries. Omitting
+the hint preserves the whole-thread fork. Message/item ids are not turn ids.
+
+Live `user_message` / `agent_message_chunk` and replayed `user_message` /
+`agent_message` updates carry `_meta.codex.turnId` for their enclosing Codex
+turn, alongside existing phase metadata.
+When Codex supplies the turn's original `startedAt`, those messages also carry
+`_meta.codex.turnStartedAt` as Unix milliseconds, on live delivery and history
+replay alike. It is omitted when native timing is unavailable; clients must not
+display a replay arrival time as the historical turn time.
+
+`capabilities._meta.codex.sessionLineage: true` advertises
+`_meta.codex.{nativeSessionId, forkedFromId}` on `session/new`, `session/resume`,
+`session/fork` responses and each `session/list` entry. These are Codex's native
+`Thread.sessionId` and `Thread.forkedFromId`. ACP `sessionId` still identifies
+one thread. Despite its upstream type comment, native `Thread.sessionId` can
+change on fork (verified with Codex 0.156.1); clients must build branch relations
+from `forkedFromId`, not equality of `nativeSessionId`. A root has
+`forkedFromId: null`. Subagent `parentThreadId` is unrelated. Clients must page
+the list fully when looking for branches; a branch can have a different cwd.
+The adapter does not persist a separate branch index.
+
 | Update | Source |
 | --- | --- |
 | `agent_message_chunk` | `item/agentMessage/delta`; `messageId` is the Codex item id; `_meta.codex.phase` is `commentary` or `final_answer`. Notices (warnings, model reroutes) use `_meta.codex.notice: true`. |
@@ -447,3 +474,20 @@ or replay journal. UI progress uses normal `tool_call_update` frames.
 The adapter preserves Codex base instructions; host text is never injected as a user message.
 `_meta.codex.mode` explicitly selects `read-only`, `agent`, or `agent-full-access`
 for that session, overriding the process default. Unknown modes are rejected before opening a thread.
+
+Empty-preview fork compatibility: Codex 0.156.1 omits such threads from `thread/list`
+even after continuation. For `session/list` the adapter reads only
+`session_meta` headers beneath the server-reported `codexHome` (`sessions` or
+`archived_sessions`), discovers native `forked_from_id` records, and resolves their
+summaries with `thread/read`. The hydrated preview from `thread/read` can differ from the list index; the adapter
+checks every native page before supplementing IDs to avoid duplicates. Only missing forks from the requested
+source/archive/project scope are appended. Native cursors are retained. Native list rows can also omit `forkedFromId` after
+unload; each page is enriched with the lineage confirmed by `thread/read`.
+No Codex file is written and no second conversation index is persisted. This also
+allows a fresh adapter process to discover forks before they have a new user turn.
+
+Fork/resume responses with history replay also include `_meta.codex.forkedAtTurnId`
+(string or null) for forks. This is the last native turn ID shared with the parent,
+resolved from both native histories each time; it identifies where an inherited-history
+marker belongs even after the child continues and the adapter restarts. Null means
+there is no shared visible turn (for example an empty fork).

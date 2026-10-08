@@ -133,6 +133,7 @@ describe.skipIf(!RUN)("live codex", {timeout: 240_000}, () => {
         const init = await client.call("initialize", {protocolVersion: 2, info: {name: "e2e", version: "0"}, capabilities: {elicitation: {url: {}, form: {}}}});
         expect(init.protocolVersion).toBe(2);
         expect(init.capabilities.providers).toEqual({});
+        expect(init.capabilities._meta).toMatchObject({alwith: {turns: {version: 2}}, codex: {forkAtTurn: true, sessionLineage: true}});
         if (process.env["CODEX_API_KEY"] || process.env["OPENAI_API_KEY"]) {
             await client.call("auth/login", {methodId: "api-key"});
         }
@@ -152,13 +153,14 @@ describe.skipIf(!RUN)("live codex", {timeout: 240_000}, () => {
         firstSessionId = created.sessionId;
         expect(created.configOptions.map((option: any) => option.configId)).toEqual(expect.arrayContaining(["mode", "model", "effort"]));
         const mark = client.mark();
-        expect(await client.call("session/prompt", {sessionId: firstSessionId, prompt: [{type: "text", text: "Reply with exactly the single word: pong"}]})).toEqual({});
+        const receipt = await client.call("session/prompt", {sessionId: firstSessionId, prompt: [{type: "text", text: "Reply with exactly the single word: pong"}]});
+        expect(receipt).toEqual({messageId: expect.any(String)});
         const idle = await client.idle(firstSessionId, TURN_TIMEOUT_MS, mark);
         expect(idle.stopReason).toBe("end_turn");
         expect(idle.usage.totalTokens).toBeGreaterThan(0);
         const frames = client.since(mark, firstSessionId);
         expect(frames[0]).toMatchObject({sessionUpdate: "state_update", state: "running"});
-        expect(frames.some(update => update.sessionUpdate === "user_message")).toBe(true);
+        expect(frames.find(update => update.sessionUpdate === "user_message")).toMatchObject({messageId: receipt.messageId, _meta: {codex: {turnId: expect.any(String)}}});
         expect(client.text(mark, firstSessionId).toLowerCase()).toContain("pong");
         expect(frames.find(update => update.sessionUpdate === "session_info_update")?.title).toBe("Reply with exactly the single word: pong");
     });
@@ -215,10 +217,33 @@ describe.skipIf(!RUN)("live codex", {timeout: 240_000}, () => {
         expect(replay.find(update => update.sessionUpdate === "session_info_update")?.title).toBeTruthy();
 
         const forkMark = client.mark();
-        const forked = await client.call("session/fork", {sessionId: firstSessionId, cwd, mcpServers: []});
+        const boundary = replay.find(update => update.sessionUpdate === "agent_message")?._meta?.codex?.turnId;
+        expect(boundary).toEqual(expect.any(String));
+        const nextMark = client.mark();
+        await client.call("session/prompt", {sessionId: firstSessionId, prompt: [{type: "text", text: "Reply with exactly: AFTER_FORK_BOUNDARY"}]});
+        expect((await client.idle(firstSessionId, TURN_TIMEOUT_MS, nextMark)).stopReason).toBe("end_turn");
+        const forked = await client.call("session/fork", {sessionId: firstSessionId, cwd, mcpServers: [], _meta: {codex: {lastTurnId: boundary}}});
         expect(forked.sessionId).not.toBe(firstSessionId);
-        expect(client.since(forkMark, forked.sessionId).some(update => update.sessionUpdate === "agent_message")).toBe(true);
+        const forkHistory = client.since(forkMark, forked.sessionId);
+        expect(forkHistory.some(update => update.sessionUpdate === "agent_message")).toBe(true);
+        expect(JSON.stringify(forkHistory)).not.toContain("AFTER_FORK_BOUNDARY");
+        expect(forked._meta.codex).toMatchObject({nativeSessionId: expect.any(String), forkedFromId: firstSessionId, forkedAtTurnId: boundary});
 
+        await client.call("session/close", {sessionId: forked.sessionId});
+        const restoredFork = await client.call("session/resume", {sessionId: forked.sessionId, cwd, mcpServers: [], replayFrom: {type: "start"}});
+        expect(restoredFork._meta.codex.forkedAtTurnId).toBe(boundary);
+        const continueMark = client.mark();
+        await client.call("session/prompt", {sessionId: forked.sessionId, prompt: [{type: "text", text: "Reply with exactly: FORK_CONTINUED"}]});
+        expect((await client.idle(forked.sessionId, TURN_TIMEOUT_MS, continueMark)).stopReason).toBe("end_turn");
+        expect(client.text(continueMark, forked.sessionId)).toContain("FORK_CONTINUED");
+
+        await client.call("session/close", {sessionId: forked.sessionId});
+        const fresh = new StdioClient();
+        try {
+            await fresh.call("initialize", {protocolVersion: 2, info: {name: "fork-list-e2e", version: "0"}});
+            const listed = await fresh.call("session/list", {});
+            expect(listed.sessions.find((entry: any) => entry.sessionId === forked.sessionId)?._meta.codex.forkedFromId).toBe(firstSessionId);
+        } finally { fresh.close(); }
         await client.call("session/close", {sessionId: firstSessionId});
         expect(await client.call("session/delete", {sessionId: forked.sessionId})).toEqual({});
     });
