@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.7.5 — 2026-10-08
+
+### Changed
+
+- `@agentclientprotocol/sdk` ^1.7.0 (schema v2.0.0-alpha.7). The protocol now lets `session/new` and
+  `session/resume` responses carry `availableCommands` and `configOptions`; the adapter does not fill
+  them yet and still announces commands through `available_commands_update`. The 1.7.0 types reject a
+  hand-built update with an unknown tag (no `_` prefix) or a malformed known variant at compile time;
+  runtime validation is unchanged.
+
+### Fixed
+
+- `AppServerClient` wrote a raw NUL byte into a template literal as the turn-key separator, so `file`
+  and `grep` treated the source as binary. It is the `\0` escape now.
+
 ## 0.7.4 — 2026-09-30
 
 ### Added

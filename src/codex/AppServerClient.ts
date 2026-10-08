@@ -646,7 +646,7 @@ export class AppServerClient {
 }
 
 function turnKey(threadId: string, turnId: string): string {
-    return `${threadId} ${turnId}`;
+    return `${threadId}\0${turnId}`;
 }
 
 function mcpKey(threadId: string | null, name: string): string {
