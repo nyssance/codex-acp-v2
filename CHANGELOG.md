@@ -2,6 +2,12 @@
 
 ## 0.7.5 — 2026-10-08
 
+### Added
+
+- Chat branches and fork lineage under `_meta.codex`: `forkAtTurn` and `sessionLineage` capabilities;
+  `session/fork` and `session/resume` responses carry `nativeSessionId` and `forkedFromId`; session
+  messages carry `turnId` and `turnStartedAt` so a client can tell which turn a message came from.
+
 ### Changed
 
 - `@agentclientprotocol/sdk` ^1.7.0 (schema v2.0.0-alpha.7). The protocol now lets `session/new` and
