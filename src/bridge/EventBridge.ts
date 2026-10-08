@@ -38,6 +38,9 @@ export class EventBridge {
     private readonly openToolCalls = new Set<string>();
     private readonly announcedTools = new Set<string>();
     private readonly messagePhases = new Map<string, string | null>();
+    /** `session/prompt` `_meta` by receipt id, echoed once on the `user_message` so the host's own
+     *  metadata rides the session event log and survives replay. */
+    private readonly promptMeta = new Map<string, Record<string, unknown>>();
     private readonly reasoningWithDeltas = new Set<string>();
     private readonly terminalItems = new Set<string>();
     private readonly imageGenerations = new Set<string>();
@@ -51,6 +54,11 @@ export class EventBridge {
     private planChain: Promise<void> = Promise.resolve();
 
     constructor(private readonly client: ClientSession, private readonly session: Session) {}
+
+    /** Keeps a prompt's `_meta` until Codex echoes the user message under the same receipt id. */
+    rememberPromptMeta(messageId: string, meta: Record<string, unknown>): void {
+        this.promptMeta.set(messageId, meta);
+    }
 
     beginTurn(): void {
         this.lastError = null;
@@ -341,7 +349,11 @@ export class EventBridge {
                 // (`clientUserMessageId`, back here as `clientId`); the echo and every later
                 // replay report under that same id, so the client can claim it exactly.
                 const content = item.content.flatMap(fromUserInput);
-                return content.length > 0 ? [{sessionUpdate: "user_message", messageId: item.clientId ?? item.id, content}] : [];
+                if (content.length === 0) return [];
+                const messageId = item.clientId ?? item.id;
+                const meta = this.promptMeta.get(messageId);
+                this.promptMeta.delete(messageId);
+                return [{sessionUpdate: "user_message", messageId, content, ...(meta ? {_meta: meta} : {})}];
             }
             case "hookPrompt":
             case "functionCallOutput":

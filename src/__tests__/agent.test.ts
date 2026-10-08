@@ -198,6 +198,24 @@ describe("session/prompt", () => {
             .rejects.toMatchObject({code: -32602});
     });
 
+    it("echoes the prompt's _meta on the user_message under the receipt id, once", async () => {
+        const t = createTestAgent();
+        await t.initialize();
+        await t.openSession();
+        const meta = {alwith: {messageId: "host-receipt-2"}, board: {nodeIds: ["n1", "n2"], skillName: "storyboard"}};
+        await t.agent.prompt({sessionId: THREAD_ID, prompt: [{type: "text", text: "hello"}], _meta: meta});
+        await t.settle();
+        itemStarted(t.codex, {type: "userMessage", id: "u2", clientId: "host-receipt-2", content: [{type: "text", text: "hello", text_elements: []}]});
+        await t.settle();
+        expect(t.client.updatesOf("user_message")).toMatchObject([{messageId: "host-receipt-2", _meta: meta}]);
+        // Codex may report the same item again (history snapshot); the metadata rides the live echo only.
+        itemStarted(t.codex, {type: "userMessage", id: "u2", clientId: "host-receipt-2", content: [{type: "text", text: "hello", text_elements: []}]});
+        await t.settle();
+        expect(t.client.updatesOf("user_message")[1]?._meta).not.toHaveProperty("board");
+        turnCompleted(t.codex);
+        await t.settle();
+    });
+
     it("surfaces a failed turn as an error message and idle with error metadata", async () => {
         const t = createTestAgent();
         await t.initialize();

@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.7.6 — 2026-10-08
+
+### Added
+
+- The `_meta` of a `session/prompt` is echoed once on the `user_message` reported under the same receipt id
+  (`_meta.alwith.messageId`), merged with the adapter's own `_meta.codex`. A host can therefore attach its own
+  per-message metadata (canvas references, attachments, a skill name) and get it back from the live stream and
+  from the Runtime's session event log on replay. Codex's own history snapshots (`session/load`) do not carry it.
+
 ## 0.7.5 — 2026-10-08
 
 ### Added

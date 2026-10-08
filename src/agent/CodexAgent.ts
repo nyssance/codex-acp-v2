@@ -1105,6 +1105,7 @@ export class CodexAgent {
             throw acp.RequestError.invalidParams(undefined, "prompt must contain at least one content block");
         }
         const {session} = runtime;
+        if (params._meta && typeof params._meta === "object") runtime.bridge.rememberPromptMeta(messageId, params._meta as Record<string, unknown>);
         this.providers.upstreamModel(session.model.model);
         const model = findModel(session.catalog, session.model.model);
         if (!modelSupportsImages(model) && params.prompt.some(block => block.type === "image")) {
