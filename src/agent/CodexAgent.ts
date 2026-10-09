@@ -67,6 +67,8 @@ import {ClientSession, type ClientCapabilitySet, type ClientLink} from "./client
 import {availableCommands, mcpMessage, parseCommand, resolveCommand, skillsMessage, statusMessage} from "./commands";
 import {applyConfigOption, sessionConfigOptions} from "./configOptions";
 import {historyTitle, historyUpdates} from "./history";
+import {readSessionHistory, readSessionHistoryItems, type SessionHistoryItemsParams, type SessionHistoryItemsResponse, type SessionHistoryParams, type SessionHistoryResponse} from "./sessionHistory";
+import {historyError} from "./historyProtocol";
 import {nativeForks} from "./forkIndex";
 import {OPENAI_PROVIDER_ID, ProviderRouting} from "./providers";
 import {createActiveTurn, type ActiveTurn, type Session} from "./session";
@@ -219,7 +221,7 @@ export class CodexAgent {
                 // pass-through surface for a host that manages Codex's catalogs itself.
                 // rename / account / fuzzyFileSearch: `_codex/session_rename`, `_codex/account_read`,
                 // `_codex/rate_limits` (+ `_codex/rate_limits_updated`) and `_codex/fuzzy_file_search`.
-                _meta: {alwith: {tools: {version: 1}, turns: {version: 2}}, codex: {forkAtTurn: true, sessionLineage: true, archive: true, seedHistory: true, skills: true, plugins: true, providerCatalog: true, rename: true, account: true, fuzzyFileSearch: true}},
+                _meta: {alwith: {tools: {version: 1}, turns: {version: 2}}, codex: {forkAtTurn: true, sessionLineage: true, archive: true, sessionHistory: {version: 2, items: true, modes: ["browse", "export"]}, seedHistory: true, skills: true, plugins: true, providerCatalog: true, rename: true, account: true, fuzzyFileSearch: true}},
             },
             authMethods: authMethods(this.capabilities, this.env),
         };
@@ -783,6 +785,8 @@ export class CodexAgent {
             cursor,
             ...(cwd ? {cwd} : {}),
             sourceKinds: ["cli", "vscode", "exec", "appServer", "unknown"],
+            // Omitting this lets Codex hide threads created through another gateway.
+            modelProviders: [],
             // Codex lists non-archived threads by default; the archive is a separate page.
             ...(archived ? {archived: true} : {}),
         }));
@@ -841,6 +845,29 @@ export class CodexAgent {
         // Real deletion, like Codex desktop's Delete; hiding is `_codex/session_archive`.
         await this.withCodex(() => this.codex.threadDelete({threadId: params.sessionId}));
         return {};
+    }
+
+    async sessionHistory(params: SessionHistoryParams, signal?: AbortSignal): Promise<SessionHistoryResponse> {
+        this.requireInitialized("_codex/session_history");
+        this.checkHistoryIdle(params);
+        const response = await readSessionHistory(this.codex, params, signal);
+        this.checkHistoryIdle(params);
+        return {...response, running: this.sessions.get(params.sessionId)?.session.activeTurn ? true : response.running};
+    }
+
+    async sessionHistoryItems(params: SessionHistoryItemsParams, signal?: AbortSignal): Promise<SessionHistoryItemsResponse> {
+        this.requireInitialized("_codex/session_history_items");
+        this.checkHistoryIdle(params);
+        const response = await readSessionHistoryItems(this.codex, params, signal);
+        this.checkHistoryIdle(params);
+        return {...response, running: this.sessions.get(params.sessionId)?.session.activeTurn ? true : response.running};
+    }
+
+    private checkHistoryIdle(params: SessionHistoryParams | SessionHistoryItemsParams): void {
+        // Browsing is allowed during a prompt; export must also guard the accepted-but-not-persisted gap.
+        if (params.mode === "export" && this.sessions.get(params.sessionId)?.session.activeTurn) {
+            throw historyError("history_busy", "Session history is still running; retry after the turn finishes", true);
+        }
     }
 
     async archiveSession(params: SessionIdParams): Promise<Record<string, never>> {

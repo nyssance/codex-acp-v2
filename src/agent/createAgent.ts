@@ -12,6 +12,7 @@ import type {
     SkillsListParams,
 } from "../app-server/v2";
 import {CodexAgent, type CodexAgentOptions, objectParams, parseFuzzyFileSearchParams, parseSessionIdParams, parseSessionRenameParams} from "./CodexAgent";
+import {parseSessionHistoryParams, parseSessionHistoryItemsParams} from "./sessionHistory";
 
 /**
  * Registers every ACP v2 method on the SDK's agent builder. Each handler
@@ -39,6 +40,8 @@ export function createAgentApp(options: CodexAgentOptions): acp.AgentApp {
         .onRequest(acp.methods.agent.session.list, ctx => current().listSessions(ctx.params))
         .onRequest(acp.methods.agent.session.close, ctx => current().closeSession(ctx.params))
         .onRequest(acp.methods.agent.session.delete, ctx => current().deleteSession(ctx.params))
+        .onRequest("_codex/session_history", {parse: parseSessionHistoryParams}, ctx => current().sessionHistory(ctx.params, ctx.signal))
+        .onRequest("_codex/session_history_items", {parse: parseSessionHistoryItemsParams}, ctx => current().sessionHistoryItems(ctx.params, ctx.signal))
         .onRequest("_codex/session_archive", {parse: parseSessionIdParams}, ctx => current().archiveSession(ctx.params))
         .onRequest("_codex/session_unarchive", {parse: parseSessionIdParams}, ctx => current().unarchiveSession(ctx.params))
         .onRequest("_codex/skills_list", {parse: objectParams<SkillsListParams>()}, ctx => current().skillsList(ctx.params))

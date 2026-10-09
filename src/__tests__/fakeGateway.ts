@@ -18,7 +18,7 @@ export interface FakeGateway {
     close(): Promise<void>;
 }
 
-export function startFakeGateway(options: {token: string; reply: string; toolForRequest?: (index: number) => {name: string; arguments: Record<string, unknown>} | undefined}): Promise<FakeGateway> {
+export function startFakeGateway(options: {token: string; reply: string; delayMs?: number; toolForRequest?: (index: number) => {name: string; arguments: Record<string, unknown>} | undefined}): Promise<FakeGateway> {
     const requests: GatewayRequest[] = [];
     const server = http.createServer((request, response) => {
         const chunks: Buffer[] = [];
@@ -45,7 +45,9 @@ export function startFakeGateway(options: {token: string; reply: string; toolFor
             }
             response.writeHead(200, {"content-type": "text/event-stream", "cache-control": "no-cache"});
             const tool = options.toolForRequest?.(requests.length - 1);
-            response.end(tool ? toolStream(tool, requests.length) : responsesStream(options.reply, typeof body["model"] === "string" ? body["model"] : "unknown"));
+            const payload = tool ? toolStream(tool, requests.length) : responsesStream(options.reply, typeof body["model"] === "string" ? body["model"] : "unknown");
+            if (options.delayMs) setTimeout(() => response.end(payload), options.delayMs);
+            else response.end(payload);
         });
     });
     return new Promise(resolve => {
