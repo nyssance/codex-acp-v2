@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import readline from "node:readline";
 import {afterAll, afterEach, beforeAll, describe, expect, it} from "vitest";
+import type {SessionHistoryResponse, SessionHistoryItemsResponse} from "../agent/sessionHistory";
 import {ProtocolOracle} from "./protocolOracle";
 import {startFakeGateway, type FakeGateway} from "./fakeGateway";
 
@@ -291,6 +292,92 @@ describe.skipIf(!RUN)("live codex", {timeout: 240_000}, () => {
             expect((await client.call("providers/list", {})).providers[0].current.baseUrl).toBe("https://api.openai.com/v1");
         } finally {
             await gateway.close();
+        }
+    });
+});
+
+
+describe.skipIf(!RUN)("live read-only history", {timeout: 120_000}, () => {
+    it("pages a foreign writer's history, detects changes and reads closed and archived sessions", async () => {
+        const owner = new StdioClient();
+        const reader = new StdioClient();
+        const gateway = await startFakeGateway({token: "history-token", reply: "HISTORY_ANSWER", delayMs: 1500});
+        const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "codex-history-e2e-"));
+        let sessionId: string | undefined;
+        try {
+            for (const connection of [owner, reader]) {
+                const init = await connection.call("initialize", {protocolVersion: 2, info: {name: "history-e2e", version: "0"}});
+                expect(init.capabilities._meta.codex.sessionHistory).toMatchObject({version: 2, items: true});
+            }
+            await owner.call("providers/set", {providerId: "openai", apiType: "openai", baseUrl: gateway.baseUrl,
+                headers: {authorization: "Bearer history-token"}, _meta: {alwith: {model: "fake-model", models: [{id: "fake-model", label: "Fake"}]}}});
+            sessionId = (await owner.call("session/new", {cwd})).sessionId as string;
+            const prompt = async (text: string): Promise<void> => {
+                const mark = owner.mark();
+                await owner.call("session/prompt", {sessionId, prompt: [{type: "text", text}]});
+                expect((await owner.idle(sessionId!, 60_000, mark)).stopReason).toBe("end_turn");
+            };
+            await prompt("HISTORY_ONE");
+            await prompt("HISTORY_TWO");
+            const ownerMark = owner.mark();
+            const first = await reader.call<SessionHistoryResponse>("_codex/session_history", {mode: "export", itemsView: "full", sessionId, limit: 1});
+            expect(first.turns).toHaveLength(1);
+            expect(first.complete).toBe(false);
+            expect(first.nextCursor).toEqual(expect.any(String));
+            const second = await reader.call<SessionHistoryResponse>("_codex/session_history", {mode: "export", itemsView: "full", sessionId, limit: 1, cursor: first.nextCursor});
+            expect(second).toMatchObject({revision: first.revision, complete: true, nextCursor: null});
+            expect(JSON.stringify(first.turns)).toContain("HISTORY_ONE");
+            expect(JSON.stringify(second.turns)).toContain("HISTORY_TWO");
+            expect(first.turns[0]?.turnId).not.toBe(second.turns[0]?.turnId);
+            expect(first.turns[0]?.updates).toEqual(expect.arrayContaining([
+                expect.objectContaining({sessionUpdate: "agent_message", _meta: expect.objectContaining({codex: expect.objectContaining({turnId: first.turns[0]?.turnId})})}),
+            ]));
+            const latest = await reader.call<SessionHistoryResponse>("_codex/session_history", {sessionId, sortDirection: "desc", limit: 1});
+            expect(latest).toMatchObject({consistency: "live", revision: null});
+            expect(latest.turns[0]).toMatchObject({turnId: second.turns[0]?.turnId, itemsView: "summary", updates: []});
+            const items = await reader.call<SessionHistoryItemsResponse>("_codex/session_history_items", {sessionId, turnId: first.turns[0]!.turnId, limit: 1, includeNative: true});
+            expect(items.items).toHaveLength(1);
+            expect(items.items[0]).toMatchObject({turnId: first.turns[0]!.turnId, itemId: expect.any(String), _meta: {codex: {item: {type: "userMessage"}}}});
+            expect(JSON.stringify(items.items)).toContain("HISTORY_ONE");
+            const anchored = await reader.call<SessionHistoryItemsResponse>("_codex/session_history_items", {sessionId, turnId: first.turns[0]!.turnId, anchorItemId: items.items[0]!.itemId, includeNative: true});
+            expect(anchored.items.some(entry => entry.itemId === items.items[0]!.itemId)).toBe(false);
+            expect(JSON.stringify(anchored.items)).toContain("HISTORY_ANSWER");
+            const nextItems = await reader.call<SessionHistoryItemsResponse>("_codex/session_history_items", {sessionId, turnId: first.turns[0]!.turnId, cursor: items.nextCursor, includeNative: true});
+            expect(JSON.stringify(nextItems.items)).toContain("HISTORY_ANSWER");
+            expect(reader.updates).toEqual([]);
+            expect(owner.since(ownerMark)).toEqual([]);
+            expect((await reader.request("session/prompt", {sessionId, prompt: []})).error).toBeDefined();
+            const runningMark = owner.mark();
+            const third = prompt("HISTORY_THREE");
+            try {
+                await owner.nextUpdate(update => update.sessionId === sessionId && update.sessionUpdate === "state_update" && update.state === "running", 60_000, runningMark);
+                const browsing = await owner.call<SessionHistoryResponse>("_codex/session_history", {sessionId, limit: 1});
+                expect(browsing).toMatchObject({running: true, consistency: "live"});
+                expect(browsing.turns[0]?.turnId).toBe(first.turns[0]?.turnId);
+                const exporting = await owner.request("_codex/session_history", {sessionId, mode: "export"});
+                expect(exporting.error.data.reason).toBe("history_busy");
+            } finally { await third; }
+            expect((await reader.request("_codex/session_history", {mode: "export", itemsView: "full", sessionId, cursor: first.nextCursor})).error.data.reason).toBe("history_changed");
+            await owner.call("session/close", {sessionId});
+            const closed = await reader.call<SessionHistoryResponse>("_codex/session_history", {mode: "export", itemsView: "full", sessionId});
+            expect(closed.complete).toBe(true);
+            expect(JSON.stringify(closed.turns)).toContain("HISTORY_THREE");
+            await owner.call("_codex/session_archive", {sessionId});
+            const archived = await reader.call<SessionHistoryResponse>("_codex/session_history", {mode: "export", itemsView: "full", sessionId});
+            expect(archived.turns).toEqual(closed.turns);
+            const listed = await reader.call("session/list", {cwd: closed.cwd, _meta: {codex: {archived: true}}});
+            expect(listed.sessions.some((entry: {sessionId: string}) => entry.sessionId === sessionId), JSON.stringify({cwd, storedCwd: closed.cwd, listed})).toBe(true);
+            expect(reader.updates).toEqual([]);
+            expect(owner.oracle.issues).toEqual([]);
+        } finally {
+            try {
+                if (sessionId) await owner.call("session/delete", {sessionId});
+            } finally {
+                owner.close();
+                reader.close();
+                await gateway.close();
+                fs.rmSync(cwd, {recursive: true, force: true});
+            }
         }
     });
 });

@@ -508,6 +508,20 @@ describe("resume, fork, list, close, delete", () => {
         await expectRejects(t.agent.newSession({cwd: CWD, mcpServers: [], _meta: {codex: {seedHistory: [{role: "system", text: "x"}]}}}), -32602, "seedHistory");
     });
 
+    it("session/list includes sessions across model providers, including the archive", async () => {
+        const t = createTestAgent();
+        t.codex.respond("thread/list", params => ({
+            data: Array.isArray(params.modelProviders) && params.modelProviders.length === 0
+                ? [thread({modelProvider: "custom-gateway"})] : [],
+            nextCursor: null, backwardsCursor: null,
+        }));
+        await t.initialize();
+        for (const archived of [false, true]) {
+            const result = await t.agent.listSessions({_meta: {codex: {archived}}});
+            expect(result.sessions.map(session => session.sessionId)).toEqual([THREAD_ID]);
+        }
+    });
+
     it("session/list pages the archive only when _meta.codex.archived is true", async () => {
         const t = createTestAgent();
         t.codex.respond("thread/list", () => ({data: [thread()], nextCursor: null, backwardsCursor: null}));

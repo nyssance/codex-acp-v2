@@ -106,12 +106,17 @@ clients), and every session's `model` option becomes one group per source: `chat
 | `session/list` | `cwd` filters by exact Codex thread cwd; `cursor` pages. |
 | `session/close` | Detaches locally within a single 5-second budget, subject to event-loop scheduling. At most half is spent waiting for an interrupted turn; the remainder is reserved for unsubscribe. Stalled client writes do not prevent cleanup. A late start is interrupted when its id becomes known. |
 | `session/delete` | Close plus `thread/delete` (permanent deletion). |
+| `_codex/session_history` | Read-only turn metadata or full ACP history without opening or subscribing to the session. See the contract below. Advertised as `capabilities._meta.codex.sessionHistory: {version: 2, items: true, modes: ["browse", "export"]}`. |
+| `_codex/session_history_items` | Independent item pagination across a thread or within one turn; supports item anchors and optional native data. Part of the version 2 history capability. |
 | `_codex/session_archive` | `{sessionId}` closes and archives the thread (reversible hiding). Advertised as `capabilities._meta.codex.archive: true`. |
 | `_codex/session_unarchive` | `{sessionId}` restores an archived thread's visibility. |
 | `_codex/session_rename` | `{sessionId, name}` → `thread/name/set`. A loaded thread then reports `thread/name/updated`, delivered as `session_info_update` with the new `title`; a thread that is not loaded gets no notification. Advertised as `capabilities._meta.codex.rename: true`. |
 | `session/set_config_option` | Returns and broadcasts the full option list. |
 
 `session/list` with `_meta: {codex: {archived: true}}` lists archived threads.
+Both lists include all model providers, including custom gateways. `cwd` must match
+the stored canonical path exactly (use the path returned by Codex, especially on
+platforms where temporary directories have symlink aliases).
 The default is the non-archived list; each returned session includes
 `_meta.codex.archived`.
 
@@ -122,6 +127,160 @@ model-visible history before the first prompt. This extension is advertised as
 
 Invalid replay cursors, additional directories, and seed history are rejected
 before an existing session is closed or a new thread is created.
+
+### Read-only history (version 2)
+
+`capabilities._meta.codex.sessionHistory` advertises
+`{version: 2, items: true, modes: ["browse", "export"]}`. Both history methods require
+`initialize`, but not `session/resume`. They do not acquire a writer, create a runtime,
+change subscriptions, interrupt a turn, unarchive a thread, or publish `session/update`
+notifications. They read Codex's persisted history through its app-server, including
+closed, archived, and other clients' threads. No second transcript store is created.
+
+#### Turn pages and item pages
+
+Get the latest turn summaries for a history browser:
+
+```json
+{"sessionId": "thread-id", "sortDirection": "desc", "limit": 20}
+```
+
+Send that request to `_codex/session_history`. `itemsView` defaults to `"summary"`:
+only turn metadata is returned, with empty `updates` and `omissions`. Choose `"full"`
+to project whole turns, or use `_codex/session_history_items` for bounded item pages:
+
+```json
+{"sessionId": "thread-id", "turnId": "turn-id", "limit": 20, "includeNative": true}
+```
+
+The item method accepts `turnId` to restrict the result to one turn. Omit it to page
+items across the thread. `anchorItemId` requires `turnId` and starts exclusively after
+that item in ascending order, or before it in descending order; it cannot be combined
+with `cursor`. Continue from the returned cursor without repeating the anchor.
+Turn IDs are obtained from the turn method; no full-turn load is required to locate
+and read a turn's items.
+
+Common parameters:
+
+| Parameter | Contract |
+| --- | --- |
+| `sessionId` | Required non-empty Codex thread ID. |
+| `cursor` | Opaque next cursor, null/omitted for the first page. Bound to the session, endpoint, direction, mode, view, native-data choice and (for items) turn filter. Preserve those options when continuing. |
+| `limit` | Integer 1–100, default 50. Counts turns or items according to the endpoint. Can change between pages. |
+| `sortDirection` | `"asc"` (default) or `"desc"`. Order within a whole turn remains chronological; the item endpoint orders individual items in the chosen direction. Start a new traversal to change direction. |
+| `mode` | `"browse"` (default) or `"export"`, described below. |
+| `includeNative` | Default false. Retain exact native item records under `_meta.codex`. On the turn method this requires `itemsView: "full"`. |
+| `maxBytes` | Maximum serialized **result payload** size in bytes, excluding the JSON-RPC envelope. Default 1 MiB, allowed range 1 KiB–16 MiB. Can change between pages. |
+
+Unknown parameters, invalid types, incompatible options and version 1 cursors fail
+explicitly. Version 2 changes the unreleased version 1 default from full export to
+summary browsing and replaces `omittedItems` with `omissions`.
+
+Both responses contain `sessionId`, `cwd`, `title` (explicit name or preview, nullable),
+`createdAt`, `updatedAt` (Unix **seconds**), `forkedFromId`, `running`, `consistency`,
+`revision`, `nextCursor`, and `complete`. `running` is the observed thread/local prompt
+state, not a subscription or a guarantee about the state after the response. It is
+null when Codex reports an unloaded/unknown state: absence of a local runtime does
+not prove that another client is idle.
+
+- Turn responses add `turns[]`: `turnId`, `status`, `error`, `startedAt`, `completedAt`
+  (nullable Unix **seconds**), `durationMs`, `itemsView`, `updates`, `omissions`, and
+  optional `_meta.codex.items` containing full native `ThreadItem` records.
+- Item responses add `items[]`: `turnId`, `itemId` (native item ID), `startedAtMs`,
+  `completedAtMs` (nullable Unix **milliseconds**), `updates`, `omissions`, and optional
+  `_meta.codex.item`. Item timestamps are not misreported as turn timestamps.
+- `updates` contains standard ACP update payloads as response data, never notifications.
+  Apply tool upserts in order. Message IDs preserve the existing receipt-ID convention;
+  `_meta.codex.turnId` and the enclosing turn/item identify provenance. Full-turn message
+  updates also carry `turnStartedAt` in milliseconds when known.
+- `complete` means exactly `nextCursor === null`, the end of **this traversal**. It is
+  not a complete-content, immutable-snapshot, or full-thread assertion: a traversal
+  may be anchored, turn-filtered, summary-only, or missing previously collected pages.
+
+#### Browsing versus export
+
+`mode: "browse"` allows running sessions and returns `consistency: "live"`,
+`revision: null`. The cursor remains usable when a new turn is appended. Codex may
+change a returned in-progress item, or reject an invalidated cursor after rollback;
+clients should upsert by turn/item identity and refresh or restart as appropriate.
+This is suitable for history viewers, loading older messages, inspection and monitoring.
+Each page requires one metadata read and one turn/item page read.
+
+`mode: "export"` returns `consistency: "optimistic"` and a change fingerprint in
+`revision`. It rejects a known running session, including a locally accepted prompt
+not yet persisted by Codex. Before and after each page it compares thread metadata
+and the last turn's **summary**, with the fingerprint carried by continuation cursors.
+It no longer reloads a large final tool result merely to check every page boundary.
+A detected change invalidates the traversal: discard collected pages and restart.
+Use the same mode throughout a traversal and wait for the thread to become quiescent.
+
+Example for textual/ACP export:
+
+```json
+{"sessionId": "thread-id", "mode": "export", "itemsView": "full", "limit": 10}
+```
+
+Export mode is a best-effort conflict check, **not an atomic snapshot or a content
+hash of the entire history**. Codex has no transactional history version and its
+thread timestamps have second precision. Changes to earlier items, or details absent
+from a summary, can evade detection with unchanged timestamps/summary. No guarantee
+extends past the final check. Strict backup/audit snapshots require stronger support
+from Codex itself; version 2 does not claim to provide them.
+
+#### Content fidelity and size
+
+The new endpoints use a history-specific projection without changing live replay.
+Mixed text, audio, images, skills and mentions retain separate content blocks. URL
+and local media become `resource_link` blocks with `_meta.codex.inputType`; local paths
+become file URIs. File-ID-only images use `codex-file:<encoded-id>` and retain `fileId`.
+These are references, not fetched media or an automatic resource resolver. Text spans
+are retained under `_meta.codex.textElements`.
+
+`omissions[]` records `{itemId, field, reason}` for known projection losses, including
+unmapped items (`field: "*"`), reasoning content replaced by a summary, and unrepresented
+assistant fields. It is a diagnostic list, not a proof that every native field was
+represented. For lossless capture of **native item records returned by Codex**, request
+`includeNative: true`; the raw records remain namespaced under `_meta.codex` and follow
+Codex's versioned schema. These records cannot recover data Codex never persisted,
+truncated tool output, missing host metadata, or unavailable external files.
+
+Responses exceeding `maxBytes` fail with `history_page_too_large` and `bytes`/`maxBytes`
+diagnostics. Nothing is truncated and no continuation is consumed: retry the same
+cursor with a smaller limit or a larger budget. To switch from whole turns to item
+pagination, start the item endpoint without reusing a turn cursor. A single item can
+still exceed the maximum; this fails explicitly rather than silently omitting it.
+The cap applies after the native reply has been materialized; it bounds outgoing
+payloads, not Codex's allocations or peak adapter memory. There is no chunked blob
+transfer in this protocol.
+
+#### Errors and cancellation
+
+History errors include `data.reason` and `data.retryable`. Native failures also retain
+`data.native.code` and `data.native.data`; numeric native RPC codes are preserved.
+`retryable: null` means unknown, not an invitation to retry automatically. Known native
+not-found/cursor failures are classified; unknown native errors remain intact.
+
+| Reason | Caller action |
+| --- | --- |
+| `history_invalid_params` / `history_invalid_cursor` | Correct the request or start a new traversal; false. |
+| `history_busy` | Wait for idle, then retry export; true. |
+| `history_changed` | Discard all collected pages and restart without a cursor; true. |
+| `history_not_found` | Report the missing source; false. |
+| `history_unsupported` | Upgrade the Codex app-server; false. |
+| `history_unavailable` | Retry after the reported source/transport problem is resolved; true. |
+| `history_source_error` | Inspect preserved native diagnostics; retryability unknown. |
+| `history_incomplete` / `history_invalid_page` | Do not publish an export; investigate the native response; false. |
+| `history_page_too_large` | Retry with a smaller page or larger budget; true. |
+| `history_cancelled` | Stop this traversal; false. |
+
+Invalid inputs use `-32602`; local state conflicts/size/cancellation use `-32600`;
+incomplete/non-progressing native pages use `-32603`. No error becomes an empty
+successful archive. Clients should track continuation cursors to detect longer cycles.
+
+ACP `$/cancel_request` cancels an individual history request. It stops waiting and
+prevents further native reads; an already sent read-only request may finish in the
+background. It never sends `turn/interrupt`. These methods do not upload exports or
+perform the separate reversible `_codex/session_archive` operation.
 
 ### Config options
 
