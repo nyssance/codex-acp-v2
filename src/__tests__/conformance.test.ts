@@ -275,8 +275,8 @@ describe("ACP v2 client conformance", () => {
     it.each([
         {info: "contextWindowExceeded", reason: "max_tokens", category: "context_window", retryable: false},
         {info: "misalignmentPolicyViolation", reason: "refusal", category: "policy", retryable: false},
-        {info: "rateLimitExceeded", reason: "_error", category: "rate_limit", retryable: true},
-        {info: "tooManyDenials", reason: "_error", category: "too_many_denials", retryable: false},
+        {info: "rateLimitExceeded", reason: "error", category: "rate_limit", retryable: true},
+        {info: "tooManyDenials", reason: "error", category: "too_many_denials", retryable: false},
     ] as const)("maps $info to standard stop semantics", async ({info, reason, category, retryable}) => {
         const t = await prompting();
         turnCompleted(t.codex, {status: "failed", error: {message: "Cannot continue", codexErrorInfo: info, additionalDetails: null, misalignment: null}});

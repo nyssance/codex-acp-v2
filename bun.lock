@@ -5,7 +5,7 @@
     "": {
       "name": "@nyssance/codex-acp-v2",
       "dependencies": {
-        "@agentclientprotocol/sdk": "^1.7.0",
+        "@agentclientprotocol/sdk": "^1.8.0",
         "diff": "^9.0.0",
         "open": "^11.0.2",
         "vscode-jsonrpc": "^9.0.2",
@@ -22,7 +22,7 @@
     },
   },
   "packages": {
-    "@agentclientprotocol/sdk": ["@agentclientprotocol/sdk@1.7.0", "", { "peerDependencies": { "zod": "^3.25.0 || ^4.0.0" } }, "sha512-ZORuxsuEnLjRly7t6Ad7zAsWitjWsyprswyPUHz/yycPb+tTm3DGa8XheaHhRXqX8LS9snuxaYavXSRA50TlHw=="],
+    "@agentclientprotocol/sdk": ["@agentclientprotocol/sdk@1.8.0", "", { "peerDependencies": { "zod": "^3.25.0 || ^4.0.0" } }, "sha512-fbP7qHZsFyTJVT0/RPrcWJ8An26qLXHEuGCHHEKDyxD1xpXV+Ejyh2LAE6vBAFePkpVjZeeohnbgvuEhZ7wLMg=="],
 
     "@hono/node-server": ["@hono/node-server@2.1.1", "", { "peerDependencies": { "hono": "^4" } }, "sha512-ELuehkj5VCBdgEw9zs+ivkKwyzzUCSQuE96YmiPvn1ECBoZCczbFXJLeEGMTYjphP6gydh4pHMqEYPVMYUVgQg=="],
 

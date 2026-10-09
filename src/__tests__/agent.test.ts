@@ -226,7 +226,7 @@ describe("session/prompt", () => {
         await t.settle();
         const errorChunk = t.client.updatesOf("agent_message_chunk").at(-1);
         expect(errorChunk).toMatchObject({content: {type: "text", text: "Rate limited"}, _meta: {codex: {error: {codexErrorInfo: "rateLimitExceeded"}}}});
-        expect(t.client.updatesOf("state_update").at(-1)).toMatchObject({state: "idle", stopReason: "_error", _meta: {codex: {error: {message: "Rate limited"}}}});
+        expect(t.client.updatesOf("state_update").at(-1)).toMatchObject({state: "idle", stopReason: "error", error: {code: -32603, message: "Rate limited", data: {codex: {category: "rate_limit", retryable: true}}}, _meta: {codex: {error: {message: "Rate limited"}}}});
     });
 
     it("turns a turn/start failure into an error report instead of a hung session", async () => {
@@ -726,7 +726,7 @@ describe("codex process loss", () => {
             content: {type: "text", text: "Connection to Codex was lost\n\nthread 'main' panicked at core.rs:12"},
             _meta: {codex: {error: {message: "Connection to Codex was lost", additionalDetails: "thread 'main' panicked at core.rs:12"}}},
         });
-        expect(t.client.updatesOf("state_update").at(-1)).toMatchObject({state: "idle", stopReason: "_error"});
+        expect(t.client.updatesOf("state_update").at(-1)).toMatchObject({state: "idle", stopReason: "error"});
     });
 
     it("fails the active turn with a connection error", async () => {
@@ -738,7 +738,7 @@ describe("codex process loss", () => {
         t.codex.close();
         await t.settle();
         expect(t.client.updatesOf("agent_message_chunk").at(-1)?.content).toEqual({type: "text", text: "Connection to Codex was lost"});
-        expect(t.client.updatesOf("state_update").at(-1)).toMatchObject({state: "idle", stopReason: "_error"});
+        expect(t.client.updatesOf("state_update").at(-1)).toMatchObject({state: "idle", stopReason: "error"});
     });
 });
 

@@ -274,6 +274,6 @@ describe("remaining item and notification mappings", () => {
         t.codex.emit({method: "turn/completed", params: {threadId: THREAD_ID, turn: {id: TURN_ID, items: [], itemsView: "full", status: "completed", error: null, startedAt: null, completedAt: null, durationMs: null}}});
         await t.settle();
         expect(t.client.updatesOf("agent_message_chunk").at(-1)?.content).toEqual({type: "text", text: "stream broke\n\ndetails"});
-        expect(t.client.updatesOf("state_update").at(-1)).toMatchObject({state: "idle", stopReason: "_error"});
+        expect(t.client.updatesOf("state_update").at(-1)).toMatchObject({state: "idle", stopReason: "error"});
     });
 });

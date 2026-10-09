@@ -1,10 +1,12 @@
 import type * as acp from "@agentclientprotocol/sdk/experimental/v2";
 import type {CodexErrorInfo} from "../app-server/v2";
 
-type Failure = {stopReason: acp.StopReason; category: string; retryable: boolean};
+export type StopReason = Extract<acp.IdleStateUpdate, {stopReason: "end_turn" | "cancelled" | "error" | "max_tokens" | "max_turn_requests" | "refusal"}>["stopReason"];
+
+type Failure = {stopReason: StopReason; category: string; retryable: boolean};
 
 export function classifyTurnError(info: CodexErrorInfo | null): Failure {
-    const failure = (category: string, retryable = false, stopReason: acp.StopReason = "_error"): Failure => ({category, retryable, stopReason});
+    const failure = (category: string, retryable = false, stopReason: StopReason = "error"): Failure => ({category, retryable, stopReason});
     if (info === null) return failure("unknown");
     if (typeof info === "object") {
         if ("activeTurnNotSteerable" in info) return failure("turn_not_steerable");

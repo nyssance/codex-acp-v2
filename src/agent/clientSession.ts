@@ -1,4 +1,5 @@
 import * as acp from "@agentclientprotocol/sdk/experimental/v2";
+import type {StopReason} from "./turnErrors";
 import {logger} from "../util/logger";
 import {abortable} from "../util/abort";
 
@@ -92,20 +93,28 @@ export class ClientSession {
         void this.state({sessionUpdate: "state_update", state: "running"});
     }
 
-    async reportIdle(stopReason: acp.StopReason, extra?: {usage?: acp.Usage | null; _meta?: Record<string, unknown>}, messageId = this.messageId): Promise<void> {
+    async reportIdle(stopReason: StopReason, extra?: {usage?: acp.Usage | null; error?: acp.Error; _meta?: Record<string, unknown>}, messageId = this.messageId): Promise<void> {
         // An older turn's idle that lands after the next prompt started must not end the new turn.
         if (messageId !== this.messageId) return;
         if (this.terminalAttempted) return;
         this.terminalAttempted = true;
         this.turnActive = false;
         this.waiting = 0;
-        await this.update(this.correlated({
-            sessionUpdate: "state_update",
-            state: "idle",
-            stopReason,
+        const details = {
             ...(extra?.usage === undefined ? {} : {usage: extra.usage}),
             ...(extra?._meta === undefined ? {} : {_meta: extra._meta}),
-        }));
+        };
+        const idle = ((): acp.IdleStateUpdate => {
+            switch (stopReason) {
+                case "error": return {stopReason, ...details, ...(extra?.error === undefined ? {} : {error: extra.error})};
+                case "end_turn": return {stopReason, ...details};
+                case "cancelled": return {stopReason, ...details};
+                case "max_tokens": return {stopReason, ...details};
+                case "max_turn_requests": return {stopReason, ...details};
+                case "refusal": return {stopReason, ...details};
+            }
+        })();
+        await this.update(this.correlated({sessionUpdate: "state_update", state: "idle", ...idle}));
     }
 
     /** Turn correlation v2: every state frame of a prompted turn names its prompt's `messageId`. */

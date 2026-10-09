@@ -101,7 +101,7 @@ describe("compaction lifecycle", () => {
         await t.settle();
         t.codex.close();
         await t.settle();
-        expect(t.client.updatesOf("state_update").at(-1)).toMatchObject({state: "idle", stopReason: "_error"});
+        expect(t.client.updatesOf("state_update").at(-1)).toMatchObject({state: "idle", stopReason: "error"});
     });
 });
 
@@ -220,7 +220,7 @@ describe("blocking requests across turns", () => {
         expect(t.client.states().at(-1)).toBe("requires_action");
         t.codex.close();
         await t.settle();
-        expect(t.client.updatesOf("state_update").at(-1)).toMatchObject({state: "idle", stopReason: "_error"});
+        expect(t.client.updatesOf("state_update").at(-1)).toMatchObject({state: "idle", stopReason: "error"});
         approval.resolve({outcome: {outcome: "selected", optionId: "implement_plan"}});
         await t.settle();
         expect(t.codex.calls("turn/start")).toHaveLength(1);

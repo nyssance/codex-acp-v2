@@ -370,8 +370,8 @@ State frames:
 
 A failed turn emits an `agent_message_chunk` with the error text and
 `_meta.codex.error {message, codexErrorInfo, additionalDetails}`, then
-`idle` with `stopReason: "_error"` (an ACP extension value; render unknown reasons
-generically) and the same `_meta.codex.error`.
+`idle` with `stopReason: "error"` and a standard JSON-RPC `error {code, message, data}`.
+`data.codex` retains category and retryability; `_meta.codex.error` retains Codex diagnostics.
 
 `session/cancel` calls `turn/interrupt`; the turn ends with `idle` / `cancelled`.
 Repeated cancel/close requests coalesce an in-flight or successfully acknowledged interrupt. After an explicit rejection, a subsequent cancel or close retries; there is no automatic retry loop.
@@ -382,7 +382,7 @@ compaction-specific interrupt, so background compaction may still finish.
 
 Blocking requests are counted per turn: a late response from a previous turn
 cannot clear the current turn's `requires_action` state. A lost Codex connection
-also ends waits for compaction and plan approval with `_error`.
+also ends waits for compaction and plan approval with `error`.
 
 ## Session updates
 
@@ -547,7 +547,7 @@ splitting a surrogate pair. A capped result has `_meta.codex.outputTruncated`,
 complete output from the terminal or the classified tool call’s text content.
 
 Context-window exhaustion ends with `max_tokens`; Codex policy violations end
-with `refusal`. Other failures retain `_error`. Error metadata under
+with `refusal`. Other failures retain `error`. Error metadata under
 `_meta.codex.error` includes `category` and `retryable`; retryability is advisory
 and never causes automatic resubmission of a failed model turn.
 

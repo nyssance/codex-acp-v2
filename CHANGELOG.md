@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.8 — 2026-10-10
+
+### Fixed
+
+- Update ACP SDK to 1.8.0 and report failed turns with the standard `error` stop reason and JSON-RPC error details. Preserve Codex diagnostics and existing limit/refusal classifications.
+
 ## 0.7.7 — 2026-10-09
 
 ### Added

@@ -1,6 +1,6 @@
 import type {ThreadItem} from "../app-server/v2";
 import {clientToolsOf, dynamicTools, ClientTools} from "./clientTools";
-import {classifyTurnError} from "./turnErrors";
+import {classifyTurnError, type StopReason} from "./turnErrors";
 import * as acp from "@agentclientprotocol/sdk/experimental/v2";
 import type {JsonValue} from "../app-server/serde_json/JsonValue";
 import path from "node:path";
@@ -1368,7 +1368,7 @@ export class CodexAgent {
         }
     }
 
-    private async reportIdle(runtime: SessionRuntime, turn: ActiveTurn, reason: acp.StopReason, extra?: Parameters<ClientSession["reportIdle"]>[1]): Promise<void> {
+    private async reportIdle(runtime: SessionRuntime, turn: ActiveTurn, reason: StopReason, extra?: Parameters<ClientSession["reportIdle"]>[1]): Promise<void> {
         if (this.terminalTurns.has(turn)) return;
         this.terminalTurns.add(turn);
         await runtime.bridge.finishOpenToolCalls(reason === "cancelled" ? "cancelled" : reason === "end_turn" ? "completed" : "failed");
@@ -1387,6 +1387,7 @@ export class CodexAgent {
             _meta: {codex: {error: {...classification, message: error.message, codexErrorInfo: error.codexErrorInfo, additionalDetails: error.additionalDetails}}},
         });
         await this.reportIdle(runtime, turn, stopReason, {
+            ...(stopReason === "error" ? {error: {code: -32603, message, data: {codex: {...classification, codexErrorInfo: error.codexErrorInfo}}}} : {}),
             usage: usageOf(runtime.session),
             _meta: {codex: {error: {...classification, message: error.message, codexErrorInfo: error.codexErrorInfo}}},
         });
