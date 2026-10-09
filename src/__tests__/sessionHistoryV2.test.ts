@@ -7,7 +7,7 @@ import {createTestAgent, thread, turn, THREAD_ID, type TestAgent} from "./harnes
 const mixed: ThreadItem = {type: "userMessage", id: "mixed", clientId: null, content: [
     {type: "text", text: "Listen", text_elements: []},
     {type: "audio", url: "https://example.test/a.wav"},
-    {type: "localImage", path: "/tmp/image.png"},
+    {type: "localImage", path: process.platform === "win32" ? "C:\\tmp\\image.png" : "/tmp/image.png"},
 ]};
 
 async function setup(): Promise<TestAgent> {
@@ -30,7 +30,7 @@ describe("general-purpose read-only history", () => {
         expect(page.turns[0]?.updates).toEqual([expect.objectContaining({sessionUpdate: "user_message", content: [
             expect.objectContaining({type: "text", text: "Listen"}),
             expect.objectContaining({type: "resource_link", uri: "https://example.test/a.wav", _meta: {codex: {inputType: "audio"}}}),
-            expect.objectContaining({type: "resource_link", uri: "file:///tmp/image.png", _meta: {codex: {inputType: "localImage"}}}),
+            expect.objectContaining({type: "resource_link", uri: process.platform === "win32" ? "file:///C:/tmp/image.png" : "file:///tmp/image.png", _meta: {codex: {inputType: "localImage"}}}),
         ]})]);
         expect(page.turns[0]?._meta?.codex.items).toEqual([mixed]);
         expect(page.turns[0]?.omissions).toEqual([]);
