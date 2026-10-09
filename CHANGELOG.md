@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.7.7 — 2026-10-09
+
+### Added
+
+- Independent read-only history APIs: `_codex/session_history` for paginated turns and
+  `_codex/session_history_items` for paginated items, advertised through the version 2
+  `sessionHistory` capability.
+- Browse mode for live history and export mode with optimistic consistency checks,
+  bounded response sizes, scoped cursors, cancellation, and structured errors.
+- History projections preserve media references and text annotations, with optional
+  native records and explicit omission metadata for archival and export consumers.
+
+### Fixed
+
+- Session listing includes custom-provider conversations by clearing the native
+  default model-provider filter.
+
 ## 0.7.6 — 2026-10-08
 
 ### Added
