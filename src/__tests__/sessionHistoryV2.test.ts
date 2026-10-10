@@ -1,6 +1,7 @@
-import {describe, expect, it} from "vitest";
+import {describe, expect, it, vi} from "vitest";
 import {parseSessionHistoryParams, parseSessionHistoryItemsParams} from "../agent/historyProtocol";
 import {ResponseError} from "vscode-jsonrpc/node";
+import {CommandReceipts} from "../agent/commandReceipts";
 import type {ThreadItem, ThreadTurnsListParams} from "../app-server/v2";
 import {createTestAgent, thread, turn, THREAD_ID, type TestAgent} from "./harness";
 
@@ -24,6 +25,50 @@ async function setup(): Promise<TestAgent> {
 }
 
 describe("general-purpose read-only history", () => {
+    it.each(["turns", "items"])("cancels %s history while receipt reads are pending", async (endpoint) => {
+        const commandReceipts = new CommandReceipts();
+        let rejectRead!: (reason: Error) => void;
+        let started!: () => void;
+        const reading = new Promise<void>(resolve => { started = resolve; });
+        vi.spyOn(commandReceipts, "read").mockImplementation(() => new Promise((_, reject) => {
+            rejectRead = reject;
+            started();
+        }));
+        const t = createTestAgent({commandReceipts});
+        await t.initialize();
+        t.codex.respond("thread/turns/list", () => ({data: [turn({itemsView: "full", items: [mixed]})], nextCursor: null, backwardsCursor: null}));
+        t.codex.respond("thread/items/list", () => ({data: [{turnId: "t1", item: mixed, startedAtMs: null, completedAtMs: null}], nextCursor: null, backwardsCursor: null}));
+        const controller = new AbortController();
+        const request = endpoint === "turns"
+            ? t.agent.sessionHistory({sessionId: THREAD_ID, itemsView: "full"}, controller.signal)
+            : t.agent.sessionHistoryItems({sessionId: THREAD_ID}, controller.signal);
+        const outcome = request.then(() => ({status: "success"}), (error: unknown) => ({status: "error", error}));
+        let result: unknown;
+        void outcome.then(value => { result = value; });
+        await reading;
+        controller.abort();
+        try {
+            await expect.poll(() => result, {timeout: 500}).toMatchObject({status: "error", error: {data: {reason: "history_cancelled"}}});
+        } finally {
+            rejectRead(new Error("late read failure"));
+            await outcome;
+        }
+    });
+
+    it("projects retained commands under their original receipt in both history APIs", async () => {
+        const commandReceipts = new CommandReceipts();
+        await commandReceipts.write("review-native", {kind: "review", messageId: "review-receipt", content: [{type: "text", text: "/review"}]});
+        const t = createTestAgent({commandReceipts});
+        await t.initialize();
+        const native: ThreadItem = {type: "userMessage", id: "review-native", clientId: null, content: [{type: "text", text: "Review the current code changes", text_elements: []}]};
+        t.codex.respond("thread/turns/list", () => ({data: [turn({id: "review-turn", itemsView: "full", items: [native]})], nextCursor: null, backwardsCursor: null}));
+        t.codex.respond("thread/items/list", () => ({data: [{turnId: "review-turn", item: native, startedAtMs: null, completedAtMs: null}], nextCursor: null, backwardsCursor: null}));
+        const page = await t.agent.sessionHistory({sessionId: THREAD_ID, itemsView: "full"});
+        expect(page.turns[0]?.updates).toMatchObject([{sessionUpdate: "user_message", messageId: "review-receipt", content: [{type: "text", text: "/review"}]}]);
+        const items = await t.agent.sessionHistoryItems({sessionId: THREAD_ID});
+        expect(items.items[0]?.updates).toMatchObject([{sessionUpdate: "user_message", messageId: "review-receipt", content: [{type: "text", text: "/review"}]}]);
+    });
+
     it("preserves mixed media as typed resource references without silent losses", async () => {
         const t = await setup();
         const page = await t.agent.sessionHistory({sessionId: THREAD_ID, itemsView: "full", includeNative: true});

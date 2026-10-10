@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.7.9 — 2026-10-10
+
+### Added
+
+- `/plan <task>` enables plan mode and starts the supplied task; `/plan` alone
+  continues to toggle plan mode.
+
+### Fixed
+
+- Insert foreground prompts and local commands before acknowledging acceptance,
+  preserving their original message IDs and content when Codex echoes them later.
+- Persist `/plan` and `/review` receipt mappings across adapter restarts, session
+  resume, forks, and read-only history; hide internal plan implementation prompts.
+- Guard history when command receipt persistence cannot be confirmed, while clearing
+  unused guards after explicit pre-execution rejections so history remains available.
+- Keep receipt writes off the notification queue, bound persistence and restoration
+  waits, and prevent cancelled or late reads from affecting subsequent turns.
+- Recover Stop when completion notifications are missing by checking native thread
+  status and retrying interruption; report cancellation only after stopping is
+  confirmed and allow another Stop attempt when confirmation is unavailable.
+- Restore active sessions without replaying stored messages or tool snapshots when
+  `replayFrom` is omitted or null; announce restored tools when live activity needs them.
+
 ## 0.7.8 — 2026-10-10
 
 ### Fixed

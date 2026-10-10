@@ -2,17 +2,19 @@ import type * as acp from "@agentclientprotocol/sdk/experimental/v2";
 import type {Thread, Turn} from "../app-server/v2";
 import {itemSnapshot} from "../bridge/itemSnapshot";
 import {withTurnId} from "../bridge/turnMetadata";
+import type {CommandReceipt} from "./commandReceipts";
 
 /**
  * Renders a loaded Codex thread as the session updates a client would have seen
  * live, so `session/resume` with `replayFrom: start` and `session/fork` restore
  * the transcript before the response resolves.
  */
-export function historyUpdates(turns: readonly Turn[]): acp.SessionUpdate[] {
+export function historyUpdates(turns: readonly Turn[], commandReceipts: ReadonlyMap<string, CommandReceipt> = new Map()): acp.SessionUpdate[] {
     const updates: acp.SessionUpdate[] = [];
     for (const turn of turns) {
         for (const item of turn.items) {
-            updates.push(...itemSnapshot(item).map(update => withTurnId(update, turn.id, turn.startedAt)));
+            const command = item.type === "userMessage" ? commandReceipts.get(item.id) : undefined;
+            updates.push(...itemSnapshot(item, command).map(update => withTurnId(update, turn.id, turn.startedAt)));
         }
     }
     return updates;
