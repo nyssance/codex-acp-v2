@@ -27,12 +27,15 @@ describe("command history projection", () => {
         const prepare = receipts.prepare.bind(receipts);
         let release!: () => void;
         const gate = new Promise<void>(resolve => { release = resolve; });
-        vi.spyOn(receipts, "prepare").mockImplementation(async threadId => { await gate; return await prepare(threadId); });
+        let started!: () => void;
+        const preparing = new Promise<void>(resolve => { started = resolve; });
+        vi.spyOn(receipts, "prepare").mockImplementation(async threadId => { started(); await gate; return await prepare(threadId); });
         const t = createTestAgent({commandReceipts: receipts, cancelGraceMs: 20});
         await t.initialize();
         await t.openSession();
         await t.agent.prompt({sessionId: THREAD_ID, prompt: [{type: "text", text: "/review"}]});
-        await t.settle();
+        // Cancel at the preparation barrier; timer draining can exceed the 20ms budget on Windows.
+        await preparing;
         await t.agent.cancel({sessionId: THREAD_ID});
         await t.settle();
         expect(t.client.updatesOf("state_update").at(-1)).toMatchObject({stopReason: "cancelled"});
