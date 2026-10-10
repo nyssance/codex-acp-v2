@@ -1,4 +1,4 @@
-import {spawn, type ChildProcess} from "node:child_process";
+import {execFileSync, spawn, type ChildProcess} from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -161,7 +161,10 @@ describe.skipIf(!RUN)("live codex", {timeout: 240_000}, () => {
         expect(idle.usage.totalTokens).toBeGreaterThan(0);
         const frames = client.since(mark, firstSessionId);
         expect(frames[0]).toMatchObject({sessionUpdate: "state_update", state: "running"});
-        expect(frames.find(update => update.sessionUpdate === "user_message")).toMatchObject({messageId: receipt.messageId, _meta: {codex: {turnId: expect.any(String)}}});
+        const userMessages = frames.filter(update => update.sessionUpdate === "user_message");
+        expect(userMessages[0]).toMatchObject({messageId: receipt.messageId, content: [{type: "text", text: "Reply with exactly the single word: pong"}]});
+        expect(userMessages.some(update => update.messageId === receipt.messageId && typeof update._meta?.codex?.turnId === "string")).toBe(true);
+        expect(new Set(userMessages.map(update => update.messageId))).toEqual(new Set([receipt.messageId]));
         expect(client.text(mark, firstSessionId).toLowerCase()).toContain("pong");
         expect(frames.find(update => update.sessionUpdate === "session_info_update")?.title).toBe("Reply with exactly the single word: pong");
     });
@@ -173,6 +176,62 @@ describe.skipIf(!RUN)("live codex", {timeout: 240_000}, () => {
         await client.call("session/prompt", {sessionId: firstSessionId, prompt: [{type: "text", text: "/status"}]});
         await client.idle(firstSessionId, 10_000, mark);
         expect(client.text(mark, firstSessionId)).toContain("(low)");
+    });
+
+    it("does not replay a transformed /plan prompt over its original command receipt", async () => {
+        const created = await client.call("session/new", {cwd, mcpServers: []});
+        const sessionId = created.sessionId as string;
+        const command = "/plan Give a short plan for saying hello. Do not edit files.";
+        const mark = client.mark();
+        const receipt = await client.call("session/prompt", {sessionId, prompt: [{type: "text", text: command}]});
+        await client.idle(sessionId, TURN_TIMEOUT_MS, mark);
+        const liveMessages = client.since(mark, sessionId).filter(update => update.sessionUpdate === "user_message");
+        expect(liveMessages.length).toBeGreaterThan(0);
+        expect(liveMessages.every(update => update.messageId === receipt.messageId && update.content[0]?.text === command)).toBe(true);
+
+        await client.call("session/close", {sessionId});
+        const fresh = new StdioClient();
+        try {
+            await fresh.call("initialize", {protocolVersion: 2, info: {name: "command-replay", version: "0"}});
+            const replayMark = fresh.mark();
+            await fresh.call("session/resume", {sessionId, cwd, replayFrom: {type: "start"}, mcpServers: []});
+            const replayed = fresh.since(replayMark, sessionId).filter(update => update.sessionUpdate === "user_message");
+            expect(replayed).toMatchObject([{messageId: receipt.messageId, content: [{type: "text", text: command}]}]);
+            const forkMark = fresh.mark();
+            const forked = await fresh.call("session/fork", {sessionId, cwd, mcpServers: [], _meta: {codex: {lastTurnId: replayed[0]._meta.codex.turnId}}});
+            expect(fresh.since(forkMark, forked.sessionId).filter(update => update.sessionUpdate === "user_message")).toMatchObject([
+                {messageId: receipt.messageId, content: [{type: "text", text: command}]},
+            ]);
+            await fresh.call("session/close", {sessionId: forked.sessionId});
+            await fresh.call("session/close", {sessionId});
+        } finally { fresh.close(); }
+    });
+
+    it("does not create a second user message for /review on resume", async () => {
+        // Review a bounded fixture, not the developer's potentially large working diff.
+        const reviewCwd = path.join(cwd, "review");
+        execFileSync("git", ["init", "--quiet", reviewCwd]);
+        fs.writeFileSync(path.join(reviewCwd, "add.ts"), "export function add(a: number, b: number): number { return a + b; }\n");
+        const created = await client.call("session/new", {cwd: reviewCwd, mcpServers: []});
+        const sessionId = created.sessionId as string;
+        const mark = client.mark();
+        const receipt = await client.call("session/prompt", {sessionId, prompt: [{type: "text", text: "/review"}]});
+        await client.idle(sessionId, TURN_TIMEOUT_MS, mark);
+        const liveMessages = client.since(mark, sessionId).filter(update => update.sessionUpdate === "user_message");
+        expect(liveMessages.length).toBeGreaterThan(0);
+        expect(liveMessages.every(update => update.messageId === receipt.messageId && update.content[0]?.text === "/review")).toBe(true);
+
+        await client.call("session/close", {sessionId});
+        const fresh = new StdioClient();
+        try {
+            await fresh.call("initialize", {protocolVersion: 2, info: {name: "review-replay", version: "0"}});
+            const replayMark = fresh.mark();
+            await fresh.call("session/resume", {sessionId, cwd: reviewCwd, replayFrom: {type: "start"}, mcpServers: []});
+            expect(fresh.since(replayMark, sessionId).filter(update => update.sessionUpdate === "user_message")).toMatchObject([
+                {messageId: receipt.messageId, content: [{type: "text", text: "/review"}]},
+            ]);
+            await fresh.call("session/close", {sessionId});
+        } finally { fresh.close(); }
     });
 
     it("cancels a running turn with stopReason cancelled", async () => {

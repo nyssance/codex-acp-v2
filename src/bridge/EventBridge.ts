@@ -14,8 +14,10 @@ import {toTokenCount} from "../util/tokens";
 import {terminalExited, terminalOutputChunk, terminalStarted, usesTerminal} from "./terminal";
 import * as tool from "./toolCalls";
 import {itemSnapshot} from "./itemSnapshot";
+import {isInternalPlanMessageId, type CommandReceipt} from "../agent/commandReceipts";
 import {fromUserInput} from "../codex/sessionConfig";
 import {withTurnId} from "./turnMetadata";
+import {abortable} from "../util/abort";
 
 export type CompletedPlan = {itemId: string; text: string};
 
@@ -32,6 +34,11 @@ export class EventBridge {
     private lastError: TurnError | null = null;
     private completedPlan: CompletedPlan | null = null;
     private noticeSequence = 0;
+    private commandEcho: {messageId: string; content: acp.ContentBlock[]; meta: Record<string, unknown> | undefined; nativeId?: string; review: boolean} | null = null;
+    private readonly restoredCommands = new Map<string, CommandReceipt>();
+    private readonly unresolvedUserItems = new Set<string>();
+    private readonly insertedMessages = new Map<string, {content: acp.ContentBlock[]; meta: Record<string, unknown> | undefined}>();
+    private readonly unannouncedItems = new Map<string, {item: ThreadItem; turnId: string}>();
     private turnTime: {id: string; startedAt: number | null} | null = null;
 
     /** Tool calls reported as pending or in progress and not yet completed. */
@@ -53,14 +60,36 @@ export class EventBridge {
     private planTimer: ReturnType<typeof setTimeout> | null = null;
     private planChain: Promise<void> = Promise.resolve();
 
-    constructor(private readonly client: ClientSession, private readonly session: Session) {}
+    constructor(private readonly client: ClientSession, private readonly session: Session,
+        private readonly onNativeCommand?: (itemId: string, receipt: CommandReceipt) => void,
+        private readonly readCommandReceipt?: (itemId: string) => Promise<CommandReceipt | null>) {}
 
-    /** Keeps a prompt's `_meta` until Codex echoes the user message under the same receipt id. */
+    /** Keeps prompt metadata until local insertion or a native steering echo reports it. */
     rememberPromptMeta(messageId: string, meta: Record<string, unknown>): void {
         this.promptMeta.set(messageId, meta);
     }
 
+    /** Insertion is local and synchronous; native execution and durable retention may fail later. */
+    async insertPrompt(messageId: string, content: acp.ContentBlock[]): Promise<void> {
+        const meta = this.promptMeta.get(messageId);
+        this.promptMeta.delete(messageId);
+        this.insertedMessages.set(messageId, {content, meta});
+        await this.client.update({sessionUpdate: "user_message", messageId, content, ...(meta ? {_meta: meta} : {})});
+    }
+
+    /** review/start cannot accept a client receipt, and plan input omits the command prefix. */
+    rememberCommand(messageId: string, native: "review" | "prompt"): void {
+        const inserted = this.insertedMessages.get(messageId);
+        if (!inserted) throw new Error("Cannot associate a command before inserting its user message");
+        this.commandEcho = {messageId, ...inserted, review: native === "review"};
+    }
+
     beginTurn(): void {
+        this.commandEcho = null;
+        this.restoredCommands.clear();
+        this.unresolvedUserItems.clear();
+        this.insertedMessages.clear();
+        this.unannouncedItems.clear();
         this.lastError = null;
         this.completedPlan = null;
         this.openToolCalls.clear();
@@ -87,10 +116,25 @@ export class EventBridge {
         return plan;
     }
 
-    async restore(items: readonly ThreadItem[], turnId: string): Promise<void> {
+    async restore(items: readonly ThreadItem[], turnId: string, signal?: AbortSignal, replay = true): Promise<void> {
+        // A failed lookup must not let a later native echo invent a different receipt ID.
         for (const item of items) {
+            if (item.type === "userMessage") this.unresolvedUserItems.add(item.id);
+            if (!replay && itemSnapshot(item).some(update => update.sessionUpdate === "tool_call_update")) {
+                this.unannouncedItems.set(item.id, {item, turnId});
+            }
+        }
+        for (const item of items) {
+            signal?.throwIfAborted();
+            const reading = item.type === "userMessage" ? this.readCommandReceipt?.(item.id) : undefined;
+            const receipt = reading ? await (signal ? abortable(reading, signal) : reading) : null;
+            signal?.throwIfAborted();
+            if (receipt) this.restoredCommands.set(item.id, receipt);
+            this.unresolvedUserItems.delete(item.id);
+            if (!replay) continue;
             if (item.type === "commandExecution" && item.status === "inProgress" && usesTerminal(item)) this.terminalItems.add(item.id);
-            for (const update of itemSnapshot(item)) {
+            for (const update of itemSnapshot(item, receipt ?? undefined)) {
+                signal?.throwIfAborted();
                 this.trackToolCall(update);
                 await this.client.update(withTurnId(update, turnId));
             }
@@ -98,6 +142,13 @@ export class EventBridge {
     }
 
     async handle(notification: ServerNotification): Promise<void> {
+        const itemId = "itemId" in notification.params ? notification.params.itemId
+            : "item" in notification.params && typeof notification.params.item === "object" && notification.params.item !== null && "id" in notification.params.item
+                ? notification.params.item.id : null;
+        if (typeof itemId === "string") await this.announceRestoredItem(itemId);
+        if ((notification.method === "item/started" || notification.method === "item/completed") && notification.params.item.type === "userMessage") {
+            this.rememberNativeCommand(notification.params.item);
+        }
         if (notification.method === "turn/started" || notification.method === "turn/completed") {
             const {id, startedAt} = notification.params.turn;
             this.turnTime = {id, startedAt};
@@ -117,8 +168,30 @@ export class EventBridge {
         }
     }
 
+    private rememberNativeCommand(item: Extract<ThreadItem, {type: "userMessage"}>): void {
+        const command = this.commandEcho;
+        if (!command || command.nativeId) return;
+        if (item.clientId !== command.messageId && !(command.review && !item.clientId)) return;
+        command.nativeId = item.id;
+        this.onNativeCommand?.(item.id, {kind: command.review ? "review" : "plan", messageId: command.messageId, content: command.content});
+    }
+
+    /** A context-only resume announces a tool only when new live activity needs it. */
+    private async announceRestoredItem(itemId: string): Promise<void> {
+        const restored = this.unannouncedItems.get(itemId);
+        if (!restored) return;
+        this.unannouncedItems.delete(itemId);
+        const {item, turnId} = restored;
+        if (item.type === "commandExecution" && item.status === "inProgress" && usesTerminal(item)) this.terminalItems.add(item.id);
+        for (const update of itemSnapshot(item)) {
+            this.trackToolCall(update);
+            await this.client.update(withTurnId(update, turnId));
+        }
+    }
+
     /** Reconcile missing item completions before ending the enclosing turn. */
     async finishOpenToolCalls(status: "cancelled" | "failed" | "completed"): Promise<void> {
+        this.unannouncedItems.clear();
         const ids = [...this.openToolCalls];
         const terminals = [...this.terminalItems];
         this.openToolCalls.clear();
@@ -343,11 +416,23 @@ export class EventBridge {
             case "contextCompaction":
                 return [tool.compactionUpdate(item.id, "in_progress")];
             case "userMessage": {
+                if (this.unresolvedUserItems.has(item.id)) return [];
+                if (isInternalPlanMessageId(item.clientId)) return [];
+                const restored = this.restoredCommands.get(item.id);
+                if (restored) return [{sessionUpdate: "user_message", messageId: restored.messageId, content: restored.content}];
                 // ACP: the agent MUST report where the user message landed in session
                 // history. Codex materializes it as a userMessage item at turn start. A
                 // prompt sent through `session/prompt` already got its id in the receipt
                 // (`clientUserMessageId`, back here as `clientId`); the echo and every later
                 // replay report under that same id, so the client can claim it exactly.
+                const command = this.commandEcho;
+                if (command && (item.clientId === command.messageId ||
+                    (command.review && !item.clientId && (!command.nativeId || command.nativeId === item.id)))) {
+                    command.nativeId = item.id;
+                    return [{sessionUpdate: "user_message", messageId: command.messageId, content: command.content, ...(command.meta ? {_meta: command.meta} : {})}];
+                }
+                const inserted = item.clientId ? this.insertedMessages.get(item.clientId) : undefined;
+                if (inserted) return [{sessionUpdate: "user_message", messageId: item.clientId!, content: inserted.content}];
                 const content = item.content.flatMap(fromUserInput);
                 if (content.length === 0) return [];
                 const messageId = item.clientId ?? item.id;

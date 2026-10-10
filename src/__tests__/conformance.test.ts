@@ -247,7 +247,10 @@ describe("ACP v2 client conformance", () => {
         for (const update of t.client.updates()) oracle.accept(update.sessionId, update);
         expect(oracle.issues).toEqual([]);
         expect(t.client.states()).toEqual(["running", "idle"]);
-        expect(t.client.updatesOf("tool_call_update").at(-1)).toMatchObject({status: "cancelled"});
+        expect(t.client.updatesOf("state_update").at(-1)).toMatchObject({stopReason: "cancelled"});
+        // Context-only resume must not manufacture a historical tool just to close it.
+        expect(t.client.updatesOf("tool_call_update")).toHaveLength(0);
+        expect(t.client.updatesOf("terminal_update")).toHaveLength(0);
     });
 
     it("restores running state when resuming an active thread without turn history", async () => {

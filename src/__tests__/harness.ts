@@ -6,6 +6,7 @@ import {expect, vi} from "vitest";
 import type {ServerNotification} from "../app-server";
 import type {Model, Thread, ThreadItem, Turn} from "../app-server/v2";
 import {CodexAgent} from "../agent/CodexAgent";
+import {CommandReceipts} from "../agent/commandReceipts";
 import type {ClientLink} from "../agent/clientSession";
 import {AppServerClient} from "../codex/AppServerClient";
 import type {CodexProcess} from "../codex/process";
@@ -177,7 +178,7 @@ export interface TestAgent {
     openSession(request?: Partial<acp.NewSessionRequest>): Promise<acp.NewSessionResponse>;
 }
 
-export function createTestAgent(options: {env?: NodeJS.ProcessEnv; catalog?: Model[]; closeGraceMs?: number; codexStderr?: string} = {}): TestAgent {
+export function createTestAgent(options: {env?: NodeJS.ProcessEnv; catalog?: Model[]; closeGraceMs?: number; cancelGraceMs?: number; codexStderr?: string; commandReceipts?: CommandReceipts} = {}): TestAgent {
     const codex = new FakeCodexConnection();
     const client = new FakeClient();
     const catalog = options.catalog ?? [model()];
@@ -211,8 +212,10 @@ export function createTestAgent(options: {env?: NodeJS.ProcessEnv; catalog?: Mod
     const appServer = new AppServerClient(codex.asMessageConnection());
     const agent = new CodexAgent(client, {
         codex: appServer,
+        commandReceipts: options.commandReceipts ?? new CommandReceipts(),
         info: {name: "codex-acp-v2-test", version: "0.0.0"},
         env: options.env ?? {},
+        ...(options.cancelGraceMs === undefined ? {} : {cancelGraceMs: options.cancelGraceMs}),
         ...(options.closeGraceMs === undefined ? {} : {closeGraceMs: options.closeGraceMs}),
         ...(options.codexStderr === undefined ? {} : {process: fakeProcess(options.codexStderr)}),
     });

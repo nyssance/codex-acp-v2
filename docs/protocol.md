@@ -191,6 +191,8 @@ not prove that another client is idle.
   `_meta.codex.item`. Item timestamps are not misreported as turn timestamps.
 - `updates` contains standard ACP update payloads as response data, never notifications.
   Apply tool upserts in order. Message IDs preserve the existing receipt-ID convention;
+  retained `/plan <task>` and `/review` commands use their original ACP receipt and
+  content, while internal plan implementation prompts have no ACP message update.
   `_meta.codex.turnId` and the enclosing turn/item identify provenance. Full-turn message
   updates also carry `turnStartedAt` in milliseconds when known.
 - `complete` means exactly `nextCursor === null`, the end of **this traversal**. It is
@@ -272,14 +274,17 @@ not-found/cursor failures are classified; unknown native errors remain intact.
 | `history_incomplete` / `history_invalid_page` | Do not publish an export; investigate the native response; false. |
 | `history_page_too_large` | Retry with a smaller page or larger budget; true. |
 | `history_cancelled` | Stop this traversal; false. |
+| `command_history_incomplete` | A command receipt mapping is unconfirmed in this thread or an ancestor; wait for saving to finish, or restore the command history data; retryability unknown. |
 
 Invalid inputs use `-32602`; local state conflicts/size/cancellation use `-32600`;
 incomplete/non-progressing native pages use `-32603`. No error becomes an empty
 successful archive. Clients should track continuation cursors to detect longer cycles.
 
 ACP `$/cancel_request` cancels an individual history request. It stops waiting and
-prevents further native reads; an already sent read-only request may finish in the
-background. It never sends `turn/interrupt`. These methods do not upload exports or
+prevents further native reads, including while saved command receipts are being
+loaded. An already started native or receipt read may finish in the background;
+the cancelled request returns `history_cancelled`. It never sends `turn/interrupt`.
+These methods do not upload exports or
 perform the separate reversible `_codex/session_archive` operation.
 
 ### Config options
@@ -342,7 +347,9 @@ mapped to `tool_call_update`s as before.)
 
 ## Prompts and state
 
-`session/prompt` returns `{messageId}` immediately (or `-32602` for an empty prompt,
+`session/prompt` inserts a new foreground prompt into the adapter's live conversation
+and starts publishing its `user_message` before returning `{messageId}`, without
+waiting for Codex startup (or returns `-32602` for an empty prompt,
 an image on a text-only model, or an unknown session). The id is minted by the adapter
 unless the request names it in `_meta.alwith.messageId` (a non-empty string a host
 chooses so it can recognise the turn's frames before the response arrives), and it is
@@ -374,7 +381,27 @@ A failed turn emits an `agent_message_chunk` with the error text and
 `data.codex` retains category and retryability; `_meta.codex.error` retains Codex diagnostics.
 
 `session/cancel` calls `turn/interrupt`; the turn ends with `idle` / `cancelled`.
-Repeated cancel/close requests coalesce an in-flight or successfully acknowledged interrupt. After an explicit rejection, a subsequent cancel or close retries; there is no automatic retry loop.
+Concurrent cancel requests coalesce; native interrupt RPCs coalesce only while in flight within the recovery budget.
+A timed-out RPC does not block a later retry.
+If completion is missing after three seconds, the adapter checks `thread/read` with a
+three-second deadline. Only native `idle` or `notLoaded` confirms interruption and
+allows the adapter to reconcile open tools and publish `idle` / `cancelled`. An
+unloaded thread requires reopening before the next prompt. An active or unreachable
+thread gets one interrupt retry and another bounded status check. If cancellation
+still cannot be confirmed, an actionable agent message is emitted while the session remains
+running; another Stop retries. Recovery is scoped to the original turn and cannot
+cancel or finalize a newer turn or another session.
+Restoring an active turn bounds each command-receipt read to three seconds. Stop
+cancels the restore wait; late reads cannot publish old messages into a later turn.
+Unknown user-message mappings are not replaced with native IDs. A restore failure
+does not mark a still-running native turn idle: updates continue, and normal native
+completion reports the history error; confirmed cancellation still reports
+`idle` / `cancelled`.
+When `replayFrom` is omitted or `null`, restoring the active turn only rebuilds internal
+state; it emits no stored message or tool snapshots, before or after the resume response.
+New live tool activity announces any required initial tool/terminal state before its
+updates. Tools never announced to the client are not manufactured merely to finalize
+them. Explicit `replayFrom: {type: "start"}` still replays retained history.
 Cancellation before `turn/start` prevents that turn from being sent, even if
 the preceding skills refresh is still pending. For `/compact`, cancellation
 ends the adapter's wait and reports `idle` / `cancelled`; Codex exposes no
@@ -417,8 +444,8 @@ The adapter does not persist a separate branch index.
 | --- | --- |
 | `agent_message_chunk` | `item/agentMessage/delta`; `messageId` is the Codex item id; `_meta.codex.phase` is `commentary` or `final_answer`. Notices (warnings, model reroutes) use `_meta.codex.notice: true`. |
 | `agent_thought_chunk` | reasoning deltas, keyed by item id |
-| `user_message` | history replay, and once per turn when Codex materializes the prompt as a `userMessage` item (its item id is the `messageId`) |
-| `agent_message`, `agent_thought` | history replay only |
+| `user_message` | local prompt insertion, native `userMessage` upserts, and retained history replay; the ACP receipt ID identifies prompts inserted through `session/prompt` |
+| `agent_message`, `agent_thought` | history replay; `agent_message` also reports cancellation recovery and command-save problems requiring user action |
 | `tool_call_update` | see below |
 | `terminal_update`, `terminal_output_chunk` | shell commands; `terminalId` equals the tool call id; data is base64 |
 | `plan_update` | `turn/plan/updated` → `{type: "items", planId: "codex-turn-plan"}`; plan-mode drafts → `{type: "markdown", planId: <item id>}` |

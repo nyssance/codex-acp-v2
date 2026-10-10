@@ -3,6 +3,7 @@ import {pathToFileURL} from "node:url";
 import type {ThreadItem, UserInput} from "../app-server/v2";
 import {itemSnapshot} from "../bridge/itemSnapshot";
 import {withTurnId} from "../bridge/turnMetadata";
+import {isInternalPlanMessageId, type CommandReceipt} from "./commandReceipts";
 
 export interface HistoryOmission { itemId: string; field: string; reason: string }
 export interface HistoryProjection { updates: acp.SessionUpdate[]; omissions: HistoryOmission[] }
@@ -20,11 +21,17 @@ function inputBlock(input: UserInput): acp.ContentBlock {
 }
 
 /** A history-specific projection: live replay behavior is deliberately unchanged. */
-export function projectHistoryItem(item: ThreadItem, turnId: string, startedAt?: number | null): HistoryProjection {
+export function projectHistoryItem(item: ThreadItem, turnId: string, startedAt?: number | null, command?: CommandReceipt | null): HistoryProjection {
     const omissions: HistoryOmission[] = [];
     let updates: acp.SessionUpdate[];
     if (item.type === "userMessage") {
-        updates = [{sessionUpdate: "user_message", messageId: item.clientId ?? item.id, content: item.content.map(inputBlock)}];
+        if (isInternalPlanMessageId(item.clientId)) {
+            updates = [];
+            omissions.push({itemId: item.id, field: "*", reason: "internal_command"});
+        } else {
+            updates = [{sessionUpdate: "user_message", messageId: command?.messageId ?? item.clientId ?? item.id,
+                content: command?.content ?? item.content.map(inputBlock)}];
+        }
     } else {
         updates = itemSnapshot(item);
         if (!updates.length) omissions.push({itemId: item.id, field: "*", reason: "no_acp_representation"});

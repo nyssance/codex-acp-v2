@@ -34,7 +34,7 @@ import type {
 } from "../app-server/v2";
 import {EventBridge, type CompletedPlan} from "../bridge/EventBridge";
 import {mcpStartupFailed, ToolName} from "../bridge/toolCalls";
-import type {AppServerClient} from "../codex/AppServerClient";
+import {TurnStartRejectedError, type AppServerClient} from "../codex/AppServerClient";
 import type {CodexProcess} from "../codex/process";
 import {findAgentMode, initialAgentMode, withWritableRoots} from "../codex/modes";
 import {
@@ -64,6 +64,7 @@ import {toAcpUsage} from "../util/tokens";
 import {abortable} from "../util/abort";
 import {authMethods, login, logout} from "./auth";
 import {ClientSession, type ClientCapabilitySet, type ClientLink} from "./clientSession";
+import {assertCommandHistory, CommandReceipts, internalPlanMessageId, type CommandHistoryGuard, type CommandReceipt} from "./commandReceipts";
 import {availableCommands, mcpMessage, parseCommand, resolveCommand, skillsMessage, statusMessage} from "./commands";
 import {applyConfigOption, sessionConfigOptions} from "./configOptions";
 import {historyTitle, historyUpdates} from "./history";
@@ -84,6 +85,9 @@ export interface CodexAgentOptions {
     env?: NodeJS.ProcessEnv;
     /** Total local close budget, including turn finalization and remote unsubscribe. */
     closeGraceMs?: number;
+    /** Budget per cancellation check and command history preparation/read/finalization. */
+    cancelGraceMs?: number;
+    commandReceipts?: CommandReceipts;
 }
 
 interface SessionRuntime {
@@ -130,6 +134,12 @@ export class CodexAgent {
     private readonly info: acp.Implementation;
     private readonly env: NodeJS.ProcessEnv;
     private readonly closeGraceMs: number;
+    private readonly cancelGraceMs: number;
+    private readonly cancelling = new WeakMap<ActiveTurn, Promise<void>>();
+    private readonly commandWrites = new WeakMap<ActiveTurn, Promise<void>>();
+    private readonly commandGuards = new WeakMap<ActiveTurn, CommandHistoryGuard>();
+    private readonly commandsStarted = new WeakSet<ActiveTurn>();
+    private commandReceipts: CommandReceipts | null;
     private readonly sessions = new Map<string, SessionRuntime>();
     private capabilities: ClientCapabilitySet | null = null;
     private codexInitialized = false;
@@ -152,6 +162,8 @@ export class CodexAgent {
         this.info = options.info;
         this.env = options.env ?? process.env;
         this.closeGraceMs = options.closeGraceMs ?? CLOSE_TURN_GRACE_MS;
+        this.cancelGraceMs = options.cancelGraceMs ?? 3_000;
+        this.commandReceipts = options.commandReceipts ?? null;
         void this.process?.exited.then(() => this.handleCodexExit());
         this.codex.connection.onClose(() => this.handleCodexExit());
         const stopObserving = this.codex.observeNotifications(notification => {
@@ -194,6 +206,7 @@ export class CodexAgent {
                     capabilities: {experimentalApi: true, requestAttestation: false},
                 });
                 this.codexHome = initialized.codexHome;
+                this.commandReceipts ??= new CommandReceipts(initialized.codexHome);
                 this.codexInitialized = true;
             }).finally(() => { this.initializing = null; });
             await this.initializing;
@@ -585,8 +598,9 @@ export class CodexAgent {
                 const latest = await this.withCodex(() => this.codex.threadTurnsList({threadId: session.id, limit: 1, sortDirection: "desc", itemsView: "full"}));
                 const active = latest.data.find(turn => turn.status === "inProgress");
                 if (active && !(openingStarts.has(active.id) && openingCompletions.has(active.id))) {
+                    await assertCommandHistory(this.codex, thread.thread, this.commandReceipts, signal);
                     const completed = openingCompletions.get(active.id);
-                    this.observeForeignTurn(runtime, active.id, completed ? Promise.resolve(completed) : undefined, active.items);
+                    this.observeForeignTurn(runtime, active.id, completed ? Promise.resolve(completed) : undefined, active.items, replay);
                 }
             }
             if (mcpServers.length > 0) void this.reportMcpStartup(runtime, mcpStartupGeneration);
@@ -613,7 +627,17 @@ export class CodexAgent {
 
     private installRuntime(session: Session, capabilities: ClientCapabilitySet, config: JsonObject, modelProvider: string | null, lineage: SessionRuntime["lineage"], readOnly = false): SessionRuntime {
         const client = new ClientSession(session.id, this.link, capabilities);
-        const bridge = new EventBridge(client, session);
+        const bridge = new EventBridge(client, session, (itemId, receipt) => {
+            const turn = session.activeTurn;
+            const guard = turn ? this.commandGuards.get(turn) : undefined;
+            const write = this.commandReceipts!.write(itemId, receipt).then(async () => {
+                if (guard) await this.commandReceipts!.complete(guard);
+            });
+            if (turn) this.commandWrites.set(turn, write);
+            // Keep disk I/O off the notification queue, and observe rejection immediately.
+            // Finalization checks the same promise after all item notifications registered it.
+            void write.catch(error => logger.error("Command receipt save failed", error, {sessionId: session.id, itemId}));
+        }, itemId => abortable(this.commandReceipts!.read(itemId), AbortSignal.timeout(this.cancelGraceMs)));
         const turnContext = new TurnContext(session.id);
         const signal = () => {
             const turn = session.activeTurn;
@@ -670,14 +694,14 @@ export class CodexAgent {
         runtime.queue = runtime.queue.then(run, run);
     }
 
-    private observeForeignTurn(runtime: SessionRuntime, turnId: string, completion?: Promise<TurnCompletedNotification>, items: readonly ThreadItem[] = []): void {
+    private observeForeignTurn(runtime: SessionRuntime, turnId: string, completion?: Promise<TurnCompletedNotification>, items: readonly ThreadItem[] = [], replayItems = true): void {
         if (runtime.session.activeTurn || runtime.session.closed) return;
         const turn = createActiveTurn(runtime.session.id);
         runtime.session.activeTurn = turn;
         this.turnStarted(runtime, turn, turnId, runtime.session.id);
         runtime.client.reportRunning();
         const completed = completion ?? this.codex.awaitTurnCompleted(runtime.session.id, turnId, turn.stop.signal);
-        void this.runPrompt(runtime, turn, {sessionId: runtime.session.id, prompt: []}, completed, items);
+        void this.runPrompt(runtime, turn, {sessionId: runtime.session.id, prompt: []}, completed, items, replayItems);
     }
 
     private async drain(runtime: SessionRuntime): Promise<void> {
@@ -731,11 +755,19 @@ export class CodexAgent {
         let cursor: string | null = null;
         do {
             const page: {data: Turn[]; nextCursor: string | null} = await this.turnPage(session.id, cursor);
+            await assertCommandHistory(this.codex, thread, this.commandReceipts, runtime.lifetime.signal);
             for (const turn of page.data) {
                 if (parentTurns.has(turn.id)) runtime.lineage.forkedAtTurnId = turn.id;
             }
             await publishTitle(page.data);
-            await client.updateAll(historyUpdates(page.data));
+            const commandReceipts = new Map<string, CommandReceipt>();
+            const userItems = page.data.flatMap(turn => turn.items.filter(item => item.type === "userMessage"));
+            const receipts = await Promise.all(userItems.map(item => this.commandReceipts?.read(item.id)));
+            for (let i = 0; i < userItems.length; i++) {
+                const receipt = receipts[i];
+                if (receipt) commandReceipts.set(userItems[i]!.id, receipt);
+            }
+            await client.updateAll(historyUpdates(page.data, commandReceipts));
             cursor = page.nextCursor;
             if (cursor !== null) {
                 if (cursors.has(cursor)) throw acp.RequestError.internalError({sessionId: session.id}, "Codex history pagination repeated a cursor; retry after restarting Codex");
@@ -850,7 +882,7 @@ export class CodexAgent {
     async sessionHistory(params: SessionHistoryParams, signal?: AbortSignal): Promise<SessionHistoryResponse> {
         this.requireInitialized("_codex/session_history");
         this.checkHistoryIdle(params);
-        const response = await readSessionHistory(this.codex, params, signal);
+        const response = await readSessionHistory(this.codex, params, signal, this.commandReceipts);
         this.checkHistoryIdle(params);
         return {...response, running: this.sessions.get(params.sessionId)?.session.activeTurn ? true : response.running};
     }
@@ -858,7 +890,7 @@ export class CodexAgent {
     async sessionHistoryItems(params: SessionHistoryItemsParams, signal?: AbortSignal): Promise<SessionHistoryItemsResponse> {
         this.requireInitialized("_codex/session_history_items");
         this.checkHistoryIdle(params);
-        const response = await readSessionHistoryItems(this.codex, params, signal);
+        const response = await readSessionHistoryItems(this.codex, params, signal, this.commandReceipts);
         this.checkHistoryIdle(params);
         return {...response, running: this.sessions.get(params.sessionId)?.session.activeTurn ? true : response.running};
     }
@@ -1167,20 +1199,45 @@ export class CodexAgent {
         }
     }
 
-    private async runPrompt(runtime: SessionRuntime, turn: ActiveTurn, params: acp.PromptRequest, observed?: Promise<TurnCompletedNotification>, items: readonly ThreadItem[] = []): Promise<void> {
+    private async runPrompt(runtime: SessionRuntime, turn: ActiveTurn, params: acp.PromptRequest, observed?: Promise<TurnCompletedNotification>, items: readonly ThreadItem[] = [], replayItems = true): Promise<void> {
         const {session, bridge} = runtime;
         bridge.beginTurn();
+        let restoreError: Error | undefined;
         if (items.length) {
             const turnId = turn.turnId;
             if (turnId === null) throw acp.RequestError.internalError(undefined, "Cannot restore items without their turn id");
-            runtime.queue = runtime.queue.then(() => bridge.restore(items, turnId));
+            const signal = AbortSignal.any([turn.abort.signal, turn.stop.signal, runtime.lifetime.signal]);
+            runtime.queue = runtime.queue.then(async () => {
+                try {
+                    await bridge.restore(items, turnId, signal, replayItems);
+                } catch (error) {
+                    if (signal.aborted) return;
+                    restoreError = new Error("Could not restore command history; check Codex home access and reopen the session.", {cause: error});
+                    logger.error("Restoring active turn history failed", error, {sessionId: session.id, turnId});
+                }
+            });
         }
         try {
+            if (!observed) {
+                if (turn.clientUserMessageId === null) throw acp.RequestError.internalError(undefined, "Prompt requires a message receipt");
+                // Record the ACP insertion before promptInternal returns success, independently of Codex.
+                await bridge.insertPrompt(turn.clientUserMessageId, params.prompt);
+            }
             const command = parseCommand(params.prompt);
             const outcome = command ? resolveCommand(command, session) : {kind: "prompt" as const};
+            if (!observed && outcome.kind !== "prompt") {
+                const native = outcome.kind === "review" ? "review" : outcome.kind === "config" && outcome.promptText ? "prompt" : null;
+                if (turn.clientUserMessageId === null) throw acp.RequestError.internalError(undefined, "Command requires a prompt receipt");
+                if (native) {
+                    bridge.rememberCommand(turn.clientUserMessageId, native);
+                    await this.prepareCommand(runtime, turn);
+                }
+            }
             let completed = await abortable(observed ?? this.executePrompt(runtime, turn, command, outcome, params), turn.stop.signal);
             await this.drain(runtime);
             await bridge.flush();
+            if (restoreError && !turn.abort.signal.aborted) throw restoreError;
+            await this.finishCommandWrite(runtime, turn);
 
             if (completed?.turn.status === "completed" && !turn.abort.signal.aborted && !this.exitHandled) {
                 completed = await abortable(this.maybeImplementPlan(runtime, turn, completed), turn.stop.signal);
@@ -1201,6 +1258,11 @@ export class CodexAgent {
             await this.publishFallbackTitle(runtime, promptTitle(params.prompt));
             await this.reportIdle(runtime, turn, "end_turn", {usage: usageOf(session)});
         } catch (error) {
+            if (error instanceof TurnStartRejectedError && turn.turnId === null && !this.commandWrites.has(turn)) this.commandsStarted.delete(turn);
+            const guard = this.commandGuards.get(turn);
+            if (guard && !this.commandsStarted.has(turn)) {
+                await this.finishCommandWrite(runtime, turn).catch(cleanupError => logger.error("Unused command guard cleanup failed", cleanupError, {sessionId: session.id}));
+            }
             if (this.terminalTurns.has(turn)) {
                 logger.error("Terminal update failed", error, {sessionId: session.id});
                 return;
@@ -1219,6 +1281,45 @@ export class CodexAgent {
         }
     }
 
+    private async prepareCommand(runtime: SessionRuntime, turn: ActiveTurn): Promise<void> {
+        let guard: CommandHistoryGuard | undefined;
+        const preparing = this.commandReceipts!.prepare(runtime.session.id).then(value => { guard = value; });
+        try {
+            const signal = AbortSignal.any([turn.abort.signal, turn.stop.signal]);
+            if (!await abortable(within(preparing, this.cancelGraceMs), signal)) {
+                throw new Error("Protecting command history timed out; check Codex home access and retry. The command was not executed.");
+            }
+            this.commandGuards.set(turn, guard!);
+        } catch (error) {
+            // Preparation alone cannot create native history, even if it settles after cancellation.
+            void preparing.then(async () => { if (guard) await this.commandReceipts!.complete(guard); })
+                .catch(cleanupError => logger.error("Command history preparation failed", cleanupError, {sessionId: runtime.session.id}));
+            throw error;
+        }
+    }
+
+    private async finishCommandWrite(runtime: SessionRuntime, turn: ActiveTurn): Promise<void> {
+        const guard = this.commandGuards.get(turn);
+        const write = this.commandWrites.get(turn) ?? (guard
+            ? this.commandsStarted.has(turn)
+                ? Promise.reject(new Error("Codex did not report the command's native user message."))
+                : this.commandReceipts!.complete(guard)
+            : undefined);
+        if (!write) return;
+        try {
+            if (!await abortable(within(write, this.cancelGraceMs), turn.stop.signal)) {
+                throw new Error("Saving the command receipt timed out.");
+            }
+        } catch (error) {
+            if (turn.stop.signal.aborted) throw error;
+            const message = `Could not confirm saved command history. ${errorMessage(error)} History replay is blocked until its receipt mapping is restored; check Codex home access and free space.`;
+            if (!turn.abort.signal.aborted) throw acp.RequestError.internalError({sessionId: runtime.session.id}, message);
+            // Native cancellation is already confirmed; a failed save must not prevent idle.
+            await runtime.client.update({sessionUpdate: "agent_message", messageId: `command-save:${turn.clientUserMessageId ?? turn.turnId}`,
+                content: [{type: "text", text: message}], _meta: {codex: {notice: true}}});
+        }
+    }
+
     private async executePrompt(runtime: SessionRuntime, turn: ActiveTurn, command: ReturnType<typeof parseCommand>, outcome: ReturnType<typeof resolveCommand>, params: acp.PromptRequest): Promise<TurnCompletedNotification | null> {
         const {session, client} = runtime;
         let completed: TurnCompletedNotification | null = null;
@@ -1231,11 +1332,18 @@ export class CodexAgent {
                 break;
             case "config":
                 await this.setSessionConfigOption({sessionId: session.id, configId: outcome.configId, type: "id", value: outcome.value});
+                if (outcome.promptText) {
+                    completed = await this.runCodexTurn(runtime, turn, [{type: "text", text: outcome.promptText}, ...params.prompt.slice(1)]);
+                } else {
+                    await client.update(agentMessage(`command:${turn.clientUserMessageId}`, `Plan mode ${outcome.value === PLAN_COLLABORATION_MODE ? "enabled" : "disabled"}.`));
+                }
                 break;
             case "compact":
                 await this.runCompaction(runtime, turn);
                 break;
             case "review":
+                turn.abort.signal.throwIfAborted();
+                this.commandsStarted.add(turn);
                 completed = await this.withCodex(() => this.codex.runReview({threadId: session.id, target: outcome.target, delivery: "inline"}, (turnId, threadId) => {
                     this.turnStarted(runtime, turn, turnId, threadId);
                 }, turn.stop.signal));
@@ -1249,7 +1357,7 @@ export class CodexAgent {
         return completed;
     }
 
-    private async runCodexTurn(runtime: SessionRuntime, turn: ActiveTurn, prompt: readonly acp.ContentBlock[]): Promise<TurnCompletedNotification> {
+    private async runCodexTurn(runtime: SessionRuntime, turn: ActiveTurn, prompt: readonly acp.ContentBlock[], clientUserMessageId = turn.clientUserMessageId): Promise<TurnCompletedNotification> {
         const {session} = runtime;
         const model = findModel(session.catalog, session.model.model);
         const disableSummary = session.account?.type === "apiKey" || modelLacksReasoning(model);
@@ -1263,9 +1371,10 @@ export class CodexAgent {
                 if (this.publishedSkills.get(runtime) !== skills) void this.publishAvailableCommands(runtime, skills);
                 if (turn.abort.signal.aborted || turn.stop.signal.aborted) return {completed: Promise.resolve(interruptedTurn(session.id))};
                 startSent = true;
+                if (this.commandGuards.has(turn)) this.commandsStarted.add(turn);
                 const completed = this.withCodex(() => this.codex.runTurn({
                     threadId: session.id,
-                    clientUserMessageId: turn.clientUserMessageId,
+                    clientUserMessageId,
                     input: toUserInput(prompt),
                     approvalPolicy: session.mode.approvalPolicy,
                     approvalsReviewer: session.mode.approvalsReviewer,
@@ -1318,7 +1427,7 @@ export class CodexAgent {
         await this.setSessionConfigOption({sessionId: runtime.session.id, configId: "collaboration_mode", type: "id", value: DEFAULT_COLLABORATION_MODE});
         runtime.bridge.beginTurn();
         turn.resetStarted();
-        const implementation = await this.runCodexTurn(runtime, turn, [{type: "text", text: "Implement the approved plan."}]);
+        const implementation = await this.runCodexTurn(runtime, turn, [{type: "text", text: "Implement the approved plan."}], internalPlanMessageId());
         await this.drain(runtime);
         await runtime.bridge.flush();
         return implementation;
@@ -1404,7 +1513,68 @@ export class CodexAgent {
         const runtime = this.sessions.get(params.sessionId);
         const turn = runtime?.session.activeTurn;
         if (!runtime || !turn) return;
-        await this.interruptTurn(runtime, turn);
+        if (this.cancelling.has(turn)) return;
+        const interrupt = this.interruptTurn(runtime, turn);
+        const recovery = this.recoverCancellation(runtime, turn, interrupt).finally(() => {
+            if (this.cancelling.get(turn) === recovery) this.cancelling.delete(turn);
+            // A timed-out RPC must not block a later Stop forever.
+            this.forgetInterrupt(turn);
+        });
+        this.cancelling.set(turn, recovery);
+        void recovery.catch(error => logger.error("Cancellation recovery failed", error, {sessionId: params.sessionId}));
+        // Notifications must not wait indefinitely for an unresponsive native RPC.
+        await within(interrupt, this.cancelGraceMs);
+    }
+
+    private async recoverCancellation(runtime: SessionRuntime, turn: ActiveTurn, interrupt: Promise<void>): Promise<void> {
+        const current = (): boolean => !runtime.session.closed && runtime.session.activeTurn === turn;
+        let failure = "Codex still reports an active turn.";
+        for (let attempt = 0; attempt < 2 && current(); attempt++) {
+            if (attempt > 0) {
+                this.forgetInterrupt(turn);
+                interrupt = this.interruptTurn(runtime, turn);
+            }
+            if (await within(Promise.race([turn.finished, interrupt.then(() => turn.finished)]), this.cancelGraceMs) || !current()) return;
+            // A late turn/start can still create work. Only reconcile an identified turn.
+            const turnId = turn.turnId;
+            if (turnId === null) {
+                failure = "Codex has not acknowledged the turn start.";
+                continue;
+            }
+            let snapshot: Thread | undefined;
+            try {
+                const received = await within(this.codex.threadRead({threadId: turn.threadId, includeTurns: false}).then(result => { snapshot = result.thread; }), this.cancelGraceMs);
+                if (!current()) return;
+                if (!received || !snapshot) {
+                    failure = "Codex did not answer the status check.";
+                    continue;
+                }
+                // Interrupt acceptance alone is not completion. Thread status is authoritative
+                // when Codex omits turn/completed (including cancelled MCP calls).
+                if (snapshot.status.type === "idle" || snapshot.status.type === "notLoaded") {
+                    if (snapshot.status.type === "notLoaded") {
+                        runtime.stale = true;
+                        await runtime.client.update({sessionUpdate: "agent_message", messageId: `cancel-unloaded:${turn.turnId}`, content: [{type: "text", text: "Codex unloaded this conversation. Reopen it before sending another message."}], _meta: {codex: {notice: true}}});
+                        if (!current()) return;
+                    }
+                    this.codex.resolveTurnInterrupted(turn.threadId, turnId);
+                    if (await within(turn.finished, this.cancelGraceMs) || !current()) return;
+                    failure = "Codex stopped, but session updates have not finished.";
+                } else {
+                    failure = `Codex still reports thread status "${snapshot.status.type}".`;
+                }
+            } catch (error) {
+                failure = `Could not verify the Codex thread state: ${errorMessage(error)}`;
+                logger.error("Cancellation status check failed", error, {sessionId: runtime.session.id, turnId});
+            }
+        }
+        if (!current()) return;
+        await runtime.client.update({
+            sessionUpdate: "agent_message",
+            messageId: `cancel-pending:${turn.clientUserMessageId ?? turn.turnId}`,
+            content: [{type: "text", text: `Cancellation has not been confirmed. ${failure} Click Stop again to retry.`}],
+            _meta: {codex: {notice: true}},
+        });
     }
 
     private async interruptTurn(runtime: SessionRuntime, turn: ActiveTurn): Promise<void> {
@@ -1414,13 +1584,19 @@ export class CodexAgent {
         await this.sendInterrupt(runtime, turn, turnId);
     }
 
+    private forgetInterrupt(turn: ActiveTurn): void {
+        if (turn.turnId !== null) turn.interrupts.delete(`${turn.threadId}:${turn.turnId}`);
+    }
+
     private sendInterrupt(runtime: SessionRuntime, turn: ActiveTurn, turnId: string): Promise<void> {
         const key = `${turn.threadId}:${turnId}`;
         let pending = turn.interrupts.get(key);
         if (!pending) {
             pending = this.codex.turnInterrupt({threadId: turn.threadId, turnId}).then(() => {}, error => {
-                turn.interrupts.delete(key);
                 logger.error("turn/interrupt failed", error, {sessionId: runtime.session.id, turnId});
+            }).finally(() => {
+                // Deduplicate in-flight RPCs only; a successful receipt may still need retry.
+                if (turn.interrupts.get(key) === pending) turn.interrupts.delete(key);
             });
             turn.interrupts.set(key, pending);
         }
@@ -1513,7 +1689,7 @@ export class CodexAgent {
         try {
             return await operation();
         } catch (error) {
-            if (error instanceof acp.RequestError) throw error;
+            if (error instanceof acp.RequestError || error instanceof TurnStartRejectedError) throw error;
             const exitCode = this.process?.exitCode() ?? null;
             if (exitCode !== null) {
                 const stderr = this.process?.recentStderr() ?? "";

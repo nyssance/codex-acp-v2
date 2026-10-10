@@ -10,7 +10,7 @@ export type ParsedCommand = {name: string; rest: string};
 export type CommandOutcome =
     | {kind: "prompt"}
     | {kind: "message"; text: string}
-    | {kind: "config"; configId: string; value: string}
+    | {kind: "config"; configId: string; value: string; promptText?: string}
     | {kind: "compact"}
     | {kind: "review"; target: ReviewTarget}
     | {kind: "logout"};
@@ -19,7 +19,7 @@ export type CommandTurn = {turnCompleted: TurnCompletedNotification};
 
 /** Slash commands handled by the adapter; anything else is sent to Codex verbatim. */
 export const BUILTIN_COMMANDS: acp.AvailableCommand[] = [
-    {name: "plan", description: "Toggle plan mode: Codex proposes a plan before making changes"},
+    {name: "plan", description: "Toggle plan mode, or plan a task", input: {type: "text", hint: "optional task to plan"}},
     {name: "review", description: "Review uncommitted changes, or review with custom instructions", input: {type: "text", hint: "optional review instructions"}},
     {name: "review-branch", description: "Review changes relative to a base branch", input: {type: "text", hint: "branch name"}},
     {name: "review-commit", description: "Review a specific commit", input: {type: "text", hint: "commit sha"}},
@@ -47,7 +47,8 @@ export function resolveCommand(command: ParsedCommand, session: Session): Comman
             return {
                 kind: "config",
                 configId: COLLABORATION_MODE_CONFIG_ID,
-                value: session.collaborationMode === PLAN_COLLABORATION_MODE ? DEFAULT_COLLABORATION_MODE : PLAN_COLLABORATION_MODE,
+                value: command.rest || session.collaborationMode !== PLAN_COLLABORATION_MODE ? PLAN_COLLABORATION_MODE : DEFAULT_COLLABORATION_MODE,
+                ...(command.rest ? {promptText: command.rest} : {}),
             };
         case "compact":
             return {kind: "compact"};

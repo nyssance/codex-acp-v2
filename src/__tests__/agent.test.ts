@@ -207,11 +207,12 @@ describe("session/prompt", () => {
         await t.settle();
         itemStarted(t.codex, {type: "userMessage", id: "u2", clientId: "host-receipt-2", content: [{type: "text", text: "hello", text_elements: []}]});
         await t.settle();
-        expect(t.client.updatesOf("user_message")).toMatchObject([{messageId: "host-receipt-2", _meta: meta}]);
+        expect(t.client.updatesOf("user_message")[0]).toMatchObject({messageId: "host-receipt-2", _meta: meta});
         // Codex may report the same item again (history snapshot); the metadata rides the live echo only.
         itemStarted(t.codex, {type: "userMessage", id: "u2", clientId: "host-receipt-2", content: [{type: "text", text: "hello", text_elements: []}]});
         await t.settle();
-        expect(t.client.updatesOf("user_message")[1]?._meta).not.toHaveProperty("board");
+        expect(t.client.updatesOf("user_message").filter(update => update._meta?.["board"])).toHaveLength(1);
+        expect(t.client.updatesOf("user_message").every(update => update.messageId === "host-receipt-2")).toBe(true);
         turnCompleted(t.codex);
         await t.settle();
     });
@@ -1059,6 +1060,7 @@ describe("remaining commands", () => {
         await t.settle();
         expect(t.codex.lastParams<{target: unknown; delivery: string}>("review/start")).toMatchObject({threadId: THREAD_ID, target: {type: "custom", instructions: "focus on tests"}, delivery: "inline"});
         expect(t.codex.calls("turn/start")).toHaveLength(0);
+        itemStarted(t.codex, {type: "userMessage", id: "native-review", clientId: null, content: [{type: "text", text: "focus on tests", text_elements: []}]}, "review-turn");
         t.codex.emit({method: "turn/completed", params: {threadId: THREAD_ID, turn: turn({id: "review-turn"})}});
         await t.settle();
         expect(t.client.states()).toEqual(["running", "idle"]);

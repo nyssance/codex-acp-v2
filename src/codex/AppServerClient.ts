@@ -1,4 +1,4 @@
-import {RequestType, type MessageConnection} from "vscode-jsonrpc/node";
+import {RequestType, ResponseError, type MessageConnection} from "vscode-jsonrpc/node";
 import type {ClientRequest, FuzzyFileSearchParams, FuzzyFileSearchResponse, InitializeParams, InitializeResponse, ServerNotification} from "../app-server";
 import type {
     CancelLoginAccountParams,
@@ -124,6 +124,13 @@ export interface ThreadSettingsUpdateParams {
 
 export type NotificationHandler = (notification: ServerNotification) => void;
 export type NotificationParams<M extends ServerNotification["method"]> = Extract<ServerNotification, {method: M}>["params"];
+
+/** A protocol rejection before any observed native work, not a transport/completion failure. */
+export class TurnStartRejectedError extends Error {
+    constructor(cause: ResponseError<unknown>) {
+        super(cause.message, {cause});
+    }
+}
 
 const CommandExecutionApprovalRequest = new RequestType<CommandExecutionRequestApprovalParams, CommandExecutionRequestApprovalResponse, void>("item/commandExecution/requestApproval");
 const FileChangeApprovalRequest = new RequestType<FileChangeRequestApprovalParams, FileChangeRequestApprovalResponse, void>("item/fileChange/requestApproval");
@@ -311,7 +318,7 @@ export class AppServerClient {
         this.startingThreads.set(params.threadId, (this.startingThreads.get(params.threadId) ?? 0) + 1);
         let completed: Promise<TurnCompletedNotification>;
         try {
-            const started = await this.turnStart(params);
+            const started = await this.startRequest(params.threadId, () => this.turnStart(params));
             onTurnStarted?.(started.turn.id);
             completed = this.awaitTurnCompleted(params.threadId, started.turn.id, signal);
         } finally {
@@ -327,7 +334,7 @@ export class AppServerClient {
         this.startingReviews += 1;
         let completed: Promise<TurnCompletedNotification>;
         try {
-            const started = await this.reviewStart(params);
+            const started = await this.startRequest(params.threadId, () => this.reviewStart(params));
             onTurnStarted?.(started.turn.id, started.reviewThreadId);
             completed = this.awaitTurnCompleted(started.reviewThreadId, started.turn.id, signal);
         } finally {
@@ -335,6 +342,26 @@ export class AppServerClient {
             this.pruneEarlyCompletions();
         }
         return await completed;
+    }
+
+    private async startRequest<T>(threadId: string, operation: () => Promise<T>): Promise<T> {
+        let observedWork = false;
+        const stop = this.observeNotifications(notification => {
+            if (threadIdOf(notification) === threadId && (notification.method === "turn/started" || notification.method === "turn/completed"
+                || notification.method === "item/started" || notification.method === "item/completed")) observedWork = true;
+        });
+        try {
+            return await operation();
+        } catch (error) {
+            // Only pre-execution protocol rejections prove the request did not create history.
+            // Internal/server errors and disconnected transports can follow partial execution.
+            if (!observedWork && error instanceof ResponseError && [-32600, -32601, -32602].includes(error.code)) {
+                throw new TurnStartRejectedError(error);
+            }
+            throw error;
+        } finally {
+            stop();
+        }
     }
 
     awaitTurnCompleted(threadId: string, turnId: string, signal?: AbortSignal): Promise<TurnCompletedNotification> {
