@@ -28,7 +28,7 @@ describe("gitPatch", () => {
 describe("prompt conversion", () => {
     it("escapes local image paths as native file URLs", () => {
         const file = path.resolve("images", "hello #🌍.png");
-        expect(fromUserInput({type: "localImage", path: file})).toEqual([{type: "text", text: expect.stringContaining(pathToFileURL(file).href)}]);
+        expect(fromUserInput({type: "localImage", path: file})).toEqual([{type: "resource_link", name: "Image", uri: pathToFileURL(file).href}]);
     });
 
     it("maps ACP content blocks to Codex user input", () => {
@@ -52,8 +52,8 @@ describe("prompt conversion", () => {
 
     it("renders Codex input back for history", () => {
         expect(fromUserInput({type: "text", text: "hello", text_elements: []})).toEqual([{type: "text", text: "hello"}]);
-        expect(fromUserInput({type: "localImage", path: "/p/i.png"})).toEqual([{type: "text", text: `[@i.png](${pathToFileURL("/p/i.png").href})`}]);
-        expect(fromUserInput({type: "mention", name: "doc", path: "/p/doc.md"})).toEqual([{type: "text", text: `[@doc](${pathToFileURL("/p/doc.md").href})`}]);
+        expect(fromUserInput({type: "localImage", path: "/p/i.png"})).toEqual([{type: "resource_link", name: "Image", uri: pathToFileURL("/p/i.png").href}]);
+        expect(fromUserInput({type: "mention", name: "doc", path: "/p/doc.md"})).toEqual([{type: "resource_link", name: "doc", uri: pathToFileURL("/p/doc.md").href}]);
     });
 
     it("derives a title from the first non-empty line", () => {

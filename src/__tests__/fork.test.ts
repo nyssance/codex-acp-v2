@@ -83,7 +83,7 @@ describe("chat branches", () => {
         expect(t.codex.lastParams("thread/fork")).toMatchObject({threadId: THREAD_ID, lastTurnId: TURN_ID});
         expect(fork._meta).toEqual({codex: {nativeSessionId: THREAD_ID, forkedFromId: THREAD_ID, forkedAtTurnId: null}});
         expect(t.client.updatesOf("agent_message")).toEqual([expect.objectContaining({
-            sessionId: "thread-fork", messageId: "answer", _meta: {codex: {phase: "final_answer", turnId: TURN_ID}},
+            sessionId: "thread-fork", messageId: "answer", _meta: {codex: {phase: "final_answer", turnId: TURN_ID, historyReplay: true}},
         })]);
         expect(t.codex.calls("thread/turns/list").some(call => (call.params as {threadId: string}).threadId === "thread-fork")).toBe(true);
     });
@@ -120,8 +120,8 @@ describe("chat branches", () => {
         itemStarted(t.codex, item);
         t.codex.emit({method: "item/agentMessage/delta", params: {threadId: THREAD_ID, turnId: TURN_ID, itemId: "answer", delta: "Hello"}});
         await t.settle();
-        expect(t.client.updatesOf("agent_message_chunk").at(-1)?._meta).toEqual({codex: {phase: "final_answer", turnId: TURN_ID, turnStartedAt: 1_790_000_000_000}});
-        expect(historyUpdates([turn({items: [item]})])[0]?._meta).toEqual({codex: {phase: "final_answer", turnId: TURN_ID}});
-        expect(historyUpdates([turn({items: [item], startedAt: 1_790_000_000})])[0]?._meta).toEqual({codex: {phase: "final_answer", turnId: TURN_ID, turnStartedAt: 1_790_000_000_000}});
+        expect(t.client.updatesOf("agent_message_chunk").at(-1)?._meta).toEqual({codex: {phase: "final_answer", turnId: TURN_ID, turnStartedAt: 1_790_000_000_000, workStartedAt: 1_790_000_000_000}});
+        expect(historyUpdates([turn({items: [item]})])[0]?._meta).toEqual({codex: {phase: "final_answer", turnId: TURN_ID, historyReplay: true}});
+        expect(historyUpdates([turn({items: [item], startedAt: 1_790_000_000})])[0]?._meta).toEqual({codex: {phase: "final_answer", turnId: TURN_ID, turnStartedAt: 1_790_000_000_000, historyReplay: true}});
     });
 });

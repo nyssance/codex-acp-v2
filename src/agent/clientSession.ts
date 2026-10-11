@@ -1,6 +1,7 @@
 import * as acp from "@agentclientprotocol/sdk/experimental/v2";
 import type {StopReason} from "./turnErrors";
 import {logger} from "../util/logger";
+import {hydrateUserImages} from "../codex/userImages";
 import {abortable} from "../util/abort";
 
 /** The subset of `AgentContext` the agent uses, so tests can substitute a recorder. */
@@ -35,6 +36,10 @@ export class ClientSession {
 
     async update(update: acp.SessionUpdate): Promise<void> {
         if (this.disposed) return;
+        if (acp.SessionUpdate.isUserMessage(update) && update.content) {
+            update = {...update, content: await hydrateUserImages(update.content, this.output.signal)};
+        }
+        this.output.signal.throwIfAborted();
         await abortable(this.link.notify(acp.methods.client.session.update, {sessionId: this.sessionId, update}), this.output.signal);
     }
 

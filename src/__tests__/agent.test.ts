@@ -1199,11 +1199,11 @@ describe("history inputs", () => {
         await t.initialize();
         await t.agent.resumeSession({sessionId: THREAD_ID, cwd: CWD, replayFrom: {type: "start"}});
         const user = t.client.updatesOf("user_message")[0];
-        expect(user?.content?.map(block => (block as {text: string}).text)).toEqual([
-            "look at",
-            `[@shot.png](${pathToFileURL("/p/shot.png").href})`,
-            `[@README](${pathToFileURL("/p/README.md").href})`,
-            "skill:deploy (/s/deploy)",
+        expect(user?.content).toEqual([
+            {type: "text", text: "look at"},
+            {type: "resource_link", name: "Image unavailable", uri: "codex-image:unavailable", _meta: {codex: {imageUnavailable: true}}},
+            {type: "resource_link", name: "README", uri: pathToFileURL("/p/README.md").href},
+            {type: "text", text: "skill:deploy (/s/deploy)"},
         ]);
         const kinds = t.client.updates().filter(update => update.sessionUpdate !== "available_commands_update").map(update => update.sessionUpdate);
         expect(kinds).toEqual(["session_info_update", "user_message", "terminal_update", "tool_call_update", "tool_call_update"]);
@@ -1410,4 +1410,23 @@ describe("thread name, account and file search pass-throughs", () => {
         expect(() => parseFuzzyFileSearchParams({query: "a", roots: "nope"})).toThrow("roots");
         expect(parseFuzzyFileSearchParams({query: "a", roots: [CWD]})).toEqual({query: "a", roots: [CWD], cancellationToken: null});
     });
+});
+
+it("retains a cancelled turn on its prompt before a subsequent turn starts", async () => {
+    const t = createTestAgent();
+    await t.initialize();
+    await t.openSession();
+    const receipt = await t.agent.prompt({sessionId: THREAD_ID, prompt: [{type: "text", text: "interrupt me"}]});
+    await t.settle();
+    t.codex.emit({method: "turn/started", params: {threadId: THREAD_ID, turn: turn({startedAt: 1_800_000_000})}});
+    itemStarted(t.codex, {type: "userMessage", id: "native-interrupted", clientId: receipt.messageId, content: [{type: "text", text: "interrupt me", text_elements: []}]});
+    turnCompleted(t.codex, {status: "interrupted"});
+    await t.settle();
+    expect(t.client.updates()).toContainEqual(expect.objectContaining({sessionUpdate: "user_message", messageId: receipt.messageId, _meta: expect.objectContaining({codex: expect.objectContaining({turnId: TURN_ID, turnInterrupted: true, turnStartedAt: 1_800_000_000_000})})}));
+    await t.agent.prompt({sessionId: THREAD_ID, prompt: [{type: "text", text: "continue"}]});
+    await t.settle();
+    const interrupted = t.client.updates().filter(update => update.sessionUpdate === "user_message" && (update._meta as {codex?: {turnInterrupted?: boolean}} | undefined)?.codex?.turnInterrupted === true);
+    expect(interrupted).toHaveLength(1);
+    turnCompleted(t.codex);
+    await t.settle();
 });

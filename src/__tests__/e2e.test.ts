@@ -2,6 +2,7 @@ import {execFileSync, spawn, type ChildProcess} from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import {pathToFileURL} from "node:url";
 import readline from "node:readline";
 import {afterAll, afterEach, beforeAll, describe, expect, it} from "vitest";
 import type {SessionHistoryResponse, SessionHistoryItemsResponse} from "../agent/sessionHistory";
@@ -167,6 +168,31 @@ describe.skipIf(!RUN)("live codex", {timeout: 240_000}, () => {
         expect(new Set(userMessages.map(update => update.messageId))).toEqual(new Set([receipt.messageId]));
         expect(client.text(mark, firstSessionId).toLowerCase()).toContain("pong");
         expect(frames.find(update => update.sessionUpdate === "session_info_update")?.title).toBe("Reply with exactly the single word: pong");
+    });
+
+    it("restores file cards and the prompt title through a fresh adapter process", async () => {
+        const name = "中文 space #1 (copy).txt";
+        const file = path.join(cwd, name);
+        fs.writeFileSync(file, "FILE_REFERENCE_TEST\n");
+        const reference = {type: "resource_link", name, uri: pathToFileURL(file).href};
+        const text = "QA-HISTORY-FILES: Reply with exactly FILE_REFERENCE_OK. Do not use tools.";
+        const {sessionId} = await client.call("session/new", {cwd, mcpServers: []});
+        const mark = client.mark();
+        await client.call("session/prompt", {sessionId, prompt: [reference, {type: "text", text}]});
+        expect((await client.idle(sessionId, TURN_TIMEOUT_MS, mark)).stopReason).toBe("end_turn");
+        await client.call("session/close", {sessionId});
+        const fresh = new StdioClient();
+        try {
+            await fresh.call("initialize", {protocolVersion: 2, info: {name: "file-replay", version: "0"}});
+            const listed = await fresh.call("session/list", {cwd});
+            expect(listed.sessions.find((row: any) => row.sessionId === sessionId)?.title).toBe(text);
+            const replayMark = fresh.mark();
+            await fresh.call("session/resume", {sessionId, cwd, replayFrom: {type: "start"}, mcpServers: []});
+            const frames = fresh.since(replayMark, sessionId);
+            expect(frames.find(update => update.sessionUpdate === "session_info_update")?.title).toBe(text);
+            expect(frames.find(update => update.sessionUpdate === "user_message")?.content).toEqual([reference, {type: "text", text}]);
+            await fresh.call("session/close", {sessionId});
+        } finally { fresh.close(); }
     });
 
     it("applies config options and answers /status locally", async () => {

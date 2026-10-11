@@ -2,7 +2,7 @@ import type * as acp from "@agentclientprotocol/sdk/experimental/v2";
 import type {ThreadItem} from "../app-server/v2";
 import {terminalSnapshot, usesTerminal} from "./terminal";
 import * as tool from "./toolCalls";
-import {fromUserInput} from "../codex/sessionConfig";
+import {fromUserMessage} from "../codex/sessionConfig";
 import {isInternalPlanMessageId, type CommandReceipt} from "../agent/commandReceipts";
 
 /** Complete standard ACP snapshots, shared by history replay and missed-start recovery. */
@@ -11,7 +11,7 @@ export function itemSnapshot(item: ThreadItem, command?: CommandReceipt): acp.Se
         case "userMessage": {
             if (isInternalPlanMessageId(item.clientId)) return [];
             if (command) return [{sessionUpdate: "user_message", messageId: command.messageId, content: command.content}];
-            const content = item.content.flatMap(fromUserInput);
+            const content = fromUserMessage(item.content);
             // The receipt id (`clientId`) wins so a replay names the message the client knows.
             return content.length > 0 ? [{sessionUpdate: "user_message", messageId: item.clientId ?? item.id, content}] : [];
         }

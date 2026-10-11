@@ -1,4 +1,4 @@
-import type * as acp from "@agentclientprotocol/sdk/experimental/v2";
+import * as acp from "@agentclientprotocol/sdk/experimental/v2";
 import type {ServerNotification} from "../app-server";
 import type {
     ErrorNotification,
@@ -15,7 +15,8 @@ import {terminalExited, terminalOutputChunk, terminalStarted, usesTerminal} from
 import * as tool from "./toolCalls";
 import {itemSnapshot} from "./itemSnapshot";
 import {isInternalPlanMessageId, type CommandReceipt} from "../agent/commandReceipts";
-import {fromUserInput} from "../codex/sessionConfig";
+import {fromUserMessage} from "../codex/sessionConfig";
+import {questionReplyContent} from "../codex/questionReplies";
 import {withTurnId} from "./turnMetadata";
 import {abortable} from "../util/abort";
 
@@ -40,6 +41,10 @@ export class EventBridge {
     private readonly insertedMessages = new Map<string, {content: acp.ContentBlock[]; meta: Record<string, unknown> | undefined}>();
     private readonly unannouncedItems = new Map<string, {item: ThreadItem; turnId: string}>();
     private turnTime: {id: string; startedAt: number | null} | null = null;
+    private readonly messageSentTimes = new Map<string, number>();
+    private workTiming: {id: string; startedAt: number; finalStartedAt?: number} | null = null;
+    private timingCarrier: {turnId: string; update: acp.SessionUpdate} | null = null;
+    private turnPrompt: {turnId: string; update: acp.SessionUpdate} | null = null;
 
     /** Tool calls reported as pending or in progress and not yet completed. */
     private readonly openToolCalls = new Set<string>();
@@ -71,9 +76,21 @@ export class EventBridge {
 
     /** Insertion is local and synchronous; native execution and durable retention may fail later. */
     async insertPrompt(messageId: string, content: acp.ContentBlock[]): Promise<void> {
-        const meta = this.promptMeta.get(messageId);
+        content = content.flatMap(block => acp.ContentBlock.isText(block) ? questionReplyContent(block.text) ?? [block] : [block]);
+        let meta = this.promptMeta.get(messageId);
+        // Clients retain optimistic content on receipt adoption, but merge message metadata.
+        if (content.some(block => acp.ContentBlock.isText(block) && block._meta?.["codex"] && typeof block._meta["codex"] === "object" && "questionReply" in block._meta["codex"])) {
+            const parts = content.flatMap(block => {
+                if (!acp.ContentBlock.isText(block)) return [];
+                const reply = (block._meta?.["codex"] as {questionReply?: {question: string; answer: string}} | undefined)?.questionReply;
+                return [reply ? {question: reply.question, text: reply.answer} : {text: block.text}];
+            });
+            meta = {...meta, codex: {...meta?.["codex"] as object, questionReplyParts: parts}};
+        }
         this.promptMeta.delete(messageId);
         this.insertedMessages.set(messageId, {content, meta});
+        const sentAt = promptSentAt(meta);
+        if (sentAt !== undefined) this.messageSentTimes.set(messageId, sentAt);
         await this.client.update({sessionUpdate: "user_message", messageId, content, ...(meta ? {_meta: meta} : {})});
     }
 
@@ -86,6 +103,11 @@ export class EventBridge {
 
     beginTurn(): void {
         this.commandEcho = null;
+        this.messageSentTimes.clear();
+        this.workTiming = null;
+        this.timingCarrier = null;
+        this.turnPrompt = null;
+        this.turnTime = null;
         this.restoredCommands.clear();
         this.unresolvedUserItems.clear();
         this.insertedMessages.clear();
@@ -152,6 +174,18 @@ export class EventBridge {
         if (notification.method === "turn/started" || notification.method === "turn/completed") {
             const {id, startedAt} = notification.params.turn;
             this.turnTime = {id, startedAt};
+            if (notification.method === "turn/started" && startedAt !== null) {
+                this.workTiming = {id, startedAt: startedAt * 1000};
+            }
+        }
+        if (notification.method === "item/started" && notification.params.item.type === "agentMessage"
+            && notification.params.item.phase === "final_answer" && notification.params.item.delivery !== "async"
+            && this.workTiming?.id === notification.params.turnId && this.workTiming.finalStartedAt === undefined) {
+            this.workTiming.finalStartedAt = notification.params.startedAtMs;
+            if (this.timingCarrier?.turnId === notification.params.turnId) {
+                const {turnId, update} = this.timingCarrier;
+                await this.client.update(this.withTiming(update, turnId));
+            }
         }
         let updates = await this.translate(notification);
         if (notification.method === "item/completed") {
@@ -164,8 +198,59 @@ export class EventBridge {
         for (const update of updates) {
             this.trackToolCall(update);
             const turnId = "turnId" in notification.params ? notification.params.turnId : null;
-            await this.client.update(typeof turnId === "string" ? withTurnId(update, turnId, this.turnTime?.id === turnId ? this.turnTime.startedAt : null) : update);
+            let tagged = typeof turnId === "string" ? this.withTiming(withTurnId(update, turnId, this.turnTime?.id === turnId ? this.turnTime.startedAt : null), turnId) : update;
+            if (update.sessionUpdate === "user_message" && typeof update.messageId === "string") {
+                const originalSentAt = promptSentAt(update._meta as Record<string, unknown> | undefined);
+                if (originalSentAt !== undefined) this.messageSentTimes.set(update.messageId, originalSentAt);
+                if (notification.method === "item/started" && !this.messageSentTimes.has(update.messageId)) {
+                    this.messageSentTimes.set(update.messageId, notification.params.startedAtMs);
+                }
+                const sentAt = this.messageSentTimes.get(update.messageId);
+                if (sentAt !== undefined) {
+                    if (this.workTiming?.id === turnId && this.turnPrompt?.turnId !== turnId &&
+                        (originalSentAt !== undefined || this.insertedMessages.has(update.messageId) && promptSentAt(this.insertedMessages.get(update.messageId)?.meta) !== undefined)) this.workTiming.startedAt = sentAt;
+                    tagged = timingMeta(typeof turnId === "string" ? this.withTiming(tagged, turnId) : tagged, {messageSentAt: sentAt});
+                }
+            }
+            if (notification.method === "item/completed" && update.sessionUpdate === "agent_message") {
+                tagged = timingMeta(tagged, {messageCompletedAt: notification.params.completedAtMs});
+            }
+            if (typeof turnId === "string" && (update.sessionUpdate === "user_message" || update.sessionUpdate === "agent_message")) {
+                this.timingCarrier = {turnId, update: tagged};
+            }
+            if (typeof turnId === "string" && update.sessionUpdate === "user_message") {
+                this.turnPrompt = {turnId, update: tagged};
+            }
+            await this.client.update(tagged);
         }
+        if (notification.method === "turn/completed") {
+            const turn = notification.params.turn;
+            const carrier = this.timingCarrier;
+            if (carrier?.turnId === turn.id) {
+                await this.client.update(timingMeta(this.withTiming(carrier.update, turn.id), {
+                    ...(turn.completedAt !== null ? {turnCompletedAt: turn.completedAt * 1000} : {}),
+                    ...(turn.durationMs !== null ? {turnDurationMs: turn.durationMs} : {}),
+                }));
+            }
+            if (this.turnPrompt?.turnId === turn.id && turn.status === "interrupted") {
+                await this.client.update(timingMeta(this.withTiming(this.turnPrompt.update, turn.id), {
+                    turnInterrupted: true,
+                    ...(turn.completedAt !== null ? {turnCompletedAt: turn.completedAt * 1000} : {}),
+                    ...(turn.durationMs !== null ? {turnDurationMs: turn.durationMs} : {}),
+                }));
+            }
+            this.turnPrompt = null;
+        }
+    }
+
+    private withTiming(update: acp.SessionUpdate, turnId: string): acp.SessionUpdate {
+        const timing = this.workTiming;
+        if (timing?.id !== turnId) return update;
+        const duration = timing.finalStartedAt === undefined ? undefined : timing.finalStartedAt - timing.startedAt;
+        return timingMeta(update, {
+            workStartedAt: timing.startedAt,
+            ...(duration !== undefined && duration >= 0 ? {workDurationMs: duration} : {}),
+        });
     }
 
     private rememberNativeCommand(item: Extract<ThreadItem, {type: "userMessage"}>): void {
@@ -433,7 +518,7 @@ export class EventBridge {
                 }
                 const inserted = item.clientId ? this.insertedMessages.get(item.clientId) : undefined;
                 if (inserted) return [{sessionUpdate: "user_message", messageId: item.clientId!, content: inserted.content}];
-                const content = item.content.flatMap(fromUserInput);
+                const content = fromUserMessage(item.content);
                 if (content.length === 0) return [];
                 const messageId = item.clientId ?? item.id;
                 const meta = this.promptMeta.get(messageId);
@@ -610,4 +695,17 @@ function turnPlan(params: TurnPlanUpdatedNotification): acp.SessionUpdate {
             ...(params.explanation ? {_meta: {codex: {explanation: params.explanation}}} : {}),
         },
     };
+}
+
+function timingMeta(update: acp.SessionUpdate, fields: Record<string, number | boolean>): acp.SessionUpdate {
+    const meta = update._meta as Record<string, unknown> | undefined;
+    const codex = meta?.["codex"] as Record<string, unknown> | undefined;
+    return {...update, _meta: {...meta, codex: {...codex, ...fields}}};
+}
+
+function promptSentAt(meta: Record<string, unknown> | undefined): number | undefined {
+    const codex = meta?.["codex"];
+    if (typeof codex !== "object" || codex === null) return undefined;
+    const value = (codex as Record<string, unknown>)["messageSentAt"];
+    return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 8.64e15 ? value : undefined;
 }

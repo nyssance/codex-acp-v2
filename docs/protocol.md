@@ -677,3 +677,85 @@ Fork/resume responses with history replay also include `_meta.codex.forkedAtTurn
 resolved from both native histories each time; it identifies where an inherited-history
 marker belongs even after the child continues and the adapter restarts. Null means
 there is no shared visible turn (for example an empty fork).
+
+### Interrupted history and inline images
+
+History replay updates from an interrupted Codex turn carry
+`_meta.codex.historyInterrupted: true`, preserving the turn ID and other metadata.
+This describes the persisted turn status; it does not synthesize missing output.
+Inline base64 image inputs replay as ACP image blocks. Remote image URLs and
+file IDs replay as resource links, without fetching their contents.
+
+### File-reference replay and fallback titles
+
+Standalone `[@name](file://...)` text blocks written by the adapter replay as ACP
+`resource_link` blocks, including existing histories. Inline Markdown links and
+embedded resource context remain text. Native mention inputs also replay as
+resource links. No sidecar transcript or file-content fetch is involved.
+Fallback titles prefer the user's text over file references; attachment-only
+prompts use the first resource name. Explicit Codex thread names are preserved.
+Session listing reads the first history page for unnamed attachment-prefixed
+previews, including truncated previews, so list and replay titles agree.
+
+Live interrupted turns upsert their last user message with
+`_meta.codex.turnInterrupted: true`. This remains attached to that prompt after
+another turn starts; it must not be inferred from the currently selected chat or
+from a later turn's stop reason. Native history replay continues to use
+`historyInterrupted` with its existing incomplete-history explanation.
+
+### Native image attachment replay
+
+Native `localImage` user inputs are replayed as inline ACP `image` blocks, including
+attachments outside the thread directory. Only native attachment references grant
+read access; Markdown links and client-supplied metadata do not. Reads are async,
+limited to regular raster image files up to 32 MiB per image, and do not create a
+second history store. Missing, oversized or unsupported files become a
+`resource_link` with URI `codex-image:unavailable` and
+`_meta.codex.imageUnavailable: true`; clients should show a non-interactive image
+placeholder without displaying local paths.
+
+A complete Desktop image attachment envelope is removed from display text only
+when every declared filename/path is well formed, all native local-image paths
+match, and the remaining entries match the number of native inline Base64 images.
+This normalization never reads a path mentioned only in the envelope. The
+text after `## My request:` becomes the user body. Ordinary text and incomplete or
+mismatched envelopes remain unchanged. Raw history export retains native input.
+
+History replay updates carry `_meta.codex.historyReplay: true`. When Codex provides
+`durationMs` (or both start and completion timestamps), updates also carry
+`_meta.codex.turnDurationMs` in milliseconds. Clients must not derive historical
+work duration from replay arrival times; when native timing is absent, show a
+non-numeric completed-work label.
+
+
+### Message clocks and work duration
+
+Live user-message upserts preserve the client-recorded `_meta.codex.messageSentAt`
+from the prompt request; clients without it use the native item's `startedAtMs`. Final assistant snapshots carry `messageCompletedAt` from the native
+item's `completedAtMs`. `turnCompletedAt` is the native turn completion in Unix
+milliseconds, used for restored replies when item-level completion is unavailable.
+The opening historical user message uses the native turn submission/start time;
+subsequent user messages in the same historical turn omit a timestamp because the
+history API does not expose their individual send times.
+
+Live `workStartedAt` uses the opening prompt's recorded send time when provided,
+otherwise the native turn start. The first synchronous final-answer
+item start seals `workDurationMs`; streaming the final answer does not extend it.
+These fields are routed by turn ID and retained on normal message upserts.
+Native history does not expose this work boundary, so it only carries
+`turnDurationMs`. Clients label that value as total time, never as work time.
+Missing timing remains absent; replay arrival times are not substitutes.
+
+### Desktop questionnaire replies
+
+A complete `send_user_message_question_reply` envelope containing a non-empty
+array of `{questionItemId, question, answer}` strings is replayed as ordered ACP
+text blocks. Each block contains readable `question\nanswer` text and
+`_meta.codex.questionReply: {questionItemId, question, answer}`. Clients may render
+this metadata as a single-line question summary above the literal answer. Copy
+and search retain readable text. Native history remains unchanged. Malformed,
+partial, or quoted envelopes remain ordinary text; no entries are silently lost.
+For locally submitted envelopes, message-level `_meta.codex.questionReplyParts`
+also contains ordered `{text, question?}` display parts. Receipt-adopting clients
+that retain optimistic prompt content use these parts for display and copying;
+this does not alter the original input sent to Codex.

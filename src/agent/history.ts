@@ -3,6 +3,7 @@ import type {Thread, Turn} from "../app-server/v2";
 import {itemSnapshot} from "../bridge/itemSnapshot";
 import {withTurnId} from "../bridge/turnMetadata";
 import type {CommandReceipt} from "./commandReceipts";
+import {fromUserMessage, promptTitle} from "../codex/sessionConfig";
 
 /**
  * Renders a loaded Codex thread as the session updates a client would have seen
@@ -12,9 +13,23 @@ import type {CommandReceipt} from "./commandReceipts";
 export function historyUpdates(turns: readonly Turn[], commandReceipts: ReadonlyMap<string, CommandReceipt> = new Map()): acp.SessionUpdate[] {
     const updates: acp.SessionUpdate[] = [];
     for (const turn of turns) {
+        const openingUser = turn.items.find(item => item.type === "userMessage");
         for (const item of turn.items) {
             const command = item.type === "userMessage" ? commandReceipts.get(item.id) : undefined;
-            updates.push(...itemSnapshot(item, command).map(update => withTurnId(update, turn.id, turn.startedAt)));
+            updates.push(...itemSnapshot(item, command).map(update => {
+                const replay = withTurnId(update, turn.id, turn.startedAt);
+                const meta = replay._meta as Record<string, unknown> | undefined;
+                const codex = meta?.["codex"] as Record<string, unknown> | undefined;
+                const duration = turn.durationMs ?? (turn.startedAt !== null && turn.completedAt !== null
+                    ? (turn.completedAt - turn.startedAt) * 1000 : null);
+                replay._meta = {...meta, codex: {...codex, historyReplay: true,
+                    ...(turn.completedAt !== null ? {turnCompletedAt: turn.completedAt * 1000} : {}),
+                    ...(item === openingUser && turn.startedAt !== null ? {messageSentAt: turn.startedAt * 1000} : {}),
+                    ...(duration !== null && Number.isFinite(duration) && duration >= 0 ? {turnDurationMs: duration} : {}),
+                    ...(turn.status === "interrupted" ? {historyInterrupted: true} : {}),
+                }};
+                return replay;
+            }));
         }
     }
     return updates;
@@ -27,11 +42,8 @@ export function historyTitle(thread: Pick<Thread, "name" | "preview">, turns: re
     for (const turn of turns) {
         for (const item of turn.items) {
             if (item.type !== "userMessage") continue;
-            const text = item.content
-                .filter((input): input is Extract<typeof input, {type: "text"}> => input.type === "text")
-                .map(input => input.text.trim())
-                .find(part => part.length > 0);
-            if (text) return firstLine(text);
+            const title = promptTitle(fromUserMessage(item.content));
+            if (title) return title;
         }
     }
     const preview = thread.preview.trim();

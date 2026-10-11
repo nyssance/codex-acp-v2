@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.7.10 — 2026-10-11
+
+### Fixed
+
+- Restore image attachments, file references, and readable conversation titles in
+  history instead of exposing serialized attachment wrappers or Markdown links.
+- Load native local image attachments with bounded reads and preserve unavailable
+  image placeholders when clipboard files have expired.
+- Parse single and multiple questionnaire replies into question and answer metadata
+  for both live messages and history, preserving malformed input as ordinary text.
+- Report user send times, assistant completion times, and live work duration through
+  message metadata; keep native historical total duration distinct from work duration.
+- Preserve interruption metadata when replaying history and when live turns stop.
+
 ## 0.7.9 — 2026-10-10
 
 ### Added

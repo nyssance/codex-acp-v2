@@ -847,13 +847,17 @@ export class CodexAgent {
             response.data.push(...missing.values());
         }
         return {
-            sessions: response.data.map(thread => ({
+            sessions: await Promise.all(response.data.map(async thread => ({
                 sessionId: thread.id,
                 cwd: thread.cwd,
-                title: thread.name?.trim() || thread.preview.trim() || null,
+                // Native previews can start with a serialized attachment, or cut it
+                // halfway through a URI. Read the first page only for those rows.
+                title: !thread.name?.trim() && /^(?:\[@|# Files mentioned by the user:|<send_user_message_question_reply>)/.test(thread.preview.trimStart())
+                    ? historyTitle(thread, (await this.turnPage(thread.id, null)).data)
+                    : thread.name?.trim() || thread.preview.trim() || null,
                 updatedAt: new Date(thread.updatedAt * 1000).toISOString(),
                 _meta: {codex: {archived, ...threadLineage(thread)}},
-            })),
+            }))),
             nextCursor: response.nextCursor,
         };
     }
