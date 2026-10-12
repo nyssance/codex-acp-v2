@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.7.11 — 2026-10-12
+
+### Added
+
+- `_codex/session_list` returns all non-archived sessions across projects when called
+  without params, walking native pages and deduplicating session IDs. Requests with
+  defined params retain the filtering and pagination behavior of `session/list`.
+
+### Fixed
+
+- Suppress duplicate review results in live updates and full-turn history when the
+  review exit repeats the assistant's answer, while preserving standalone or different
+  review results regardless of native event order.
+
 ## 0.7.10 — 2026-10-11
 
 ### Fixed
