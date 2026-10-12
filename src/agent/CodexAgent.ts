@@ -234,7 +234,7 @@ export class CodexAgent {
                 // pass-through surface for a host that manages Codex's catalogs itself.
                 // rename / account / fuzzyFileSearch: `_codex/session_rename`, `_codex/account_read`,
                 // `_codex/rate_limits` (+ `_codex/rate_limits_updated`) and `_codex/fuzzy_file_search`.
-                _meta: {alwith: {tools: {version: 1}, turns: {version: 2}}, codex: {forkAtTurn: true, sessionLineage: true, archive: true, sessionHistory: {version: 2, items: true, modes: ["browse", "export"]}, seedHistory: true, skills: true, plugins: true, providerCatalog: true, rename: true, account: true, fuzzyFileSearch: true}},
+                _meta: {alwith: {tools: {version: 1}, turns: {version: 2}}, codex: {forkAtTurn: true, sessionLineage: true, archive: true, sessionList: {version: 1}, sessionHistory: {version: 2, items: true, modes: ["browse", "export"]}, seedHistory: true, skills: true, plugins: true, providerCatalog: true, rename: true, account: true, fuzzyFileSearch: true}},
             },
             authMethods: authMethods(this.capabilities, this.env),
         };
@@ -811,10 +811,21 @@ export class CodexAgent {
 
     async listSessions(params: acp.ListSessionsRequest): Promise<acp.ListSessionsResponse> {
         this.requireInitialized("session/list");
+        return this.readSessionList(params, false);
+    }
+
+    async sessionList(params: acp.ListSessionsRequest = {}): Promise<acp.ListSessionsResponse> {
+        this.requireInitialized("_codex/session_list");
+        if (Object.values(params).some(value => value !== undefined)) return this.listSessions(params);
+        return this.readSessionList({}, true);
+    }
+
+    private async readSessionList(params: acp.ListSessionsRequest, all: boolean): Promise<acp.ListSessionsResponse> {
         const cwd = params.cwd?.trim() || null;
         const archived = archivedFilter(params._meta);
         const list = (cursor: string | null) => this.withCodex(() => this.codex.threadList({
             cursor,
+            ...(all ? {limit: 100} : {}),
             ...(cwd ? {cwd} : {}),
             sourceKinds: ["cli", "vscode", "exec", "appServer", "unknown"],
             // Omitting this lets Codex hide threads created through another gateway.
@@ -823,6 +834,19 @@ export class CodexAgent {
             ...(archived ? {archived: true} : {}),
         }));
         const response = await list(params.cursor ?? null);
+        if (all) {
+            const threads = new Map(response.data.map(thread => [thread.id, thread]));
+            const cursors = new Set<string>();
+            while (response.nextCursor !== null) {
+                const cursor = response.nextCursor;
+                if (cursors.has(cursor)) throw acp.RequestError.internalError(undefined, "Codex thread list repeated a cursor");
+                cursors.add(cursor);
+                const page = await list(cursor);
+                for (const thread of page.data) threads.set(thread.id, thread);
+                response.nextCursor = page.nextCursor;
+            }
+            response.data = [...threads.values()];
+        }
         const home = this.codexHome;
         if (home === null) throw acp.RequestError.internalError(undefined, "Codex home is unavailable after initialize");
         const forks = await this.withCodex(() => nativeForks(home, archived, cwd,
@@ -846,8 +870,11 @@ export class CodexAgent {
             }
             response.data.push(...missing.values());
         }
-        return {
-            sessions: await Promise.all(response.data.map(async thread => ({
+        const sessions: acp.SessionInfo[] = [];
+        // Full listings can need many title repairs; bound their history reads.
+        const batchSize = all ? 8 : response.data.length;
+        for (let offset = 0; offset < response.data.length; offset += batchSize) {
+            sessions.push(...await Promise.all(response.data.slice(offset, offset + batchSize).map(async thread => ({
                 sessionId: thread.id,
                 cwd: thread.cwd,
                 // Native previews can start with a serialized attachment, or cut it
@@ -857,9 +884,9 @@ export class CodexAgent {
                     : thread.name?.trim() || thread.preview.trim() || null,
                 updatedAt: new Date(thread.updatedAt * 1000).toISOString(),
                 _meta: {codex: {archived, ...threadLineage(thread)}},
-            }))),
-            nextCursor: response.nextCursor,
-        };
+            }))));
+        }
+        return all ? {sessions} : {sessions, nextCursor: response.nextCursor};
     }
 
     async closeSession(params: acp.CloseSessionRequest): Promise<acp.CloseSessionResponse> {
@@ -1802,6 +1829,21 @@ export interface FuzzyFileSearchRequest {
     query: string;
     roots: string[];
     cancellationToken: string | null;
+}
+
+export function parseSessionListParams(raw: unknown): acp.ListSessionsRequest {
+    const params = objectParams<Record<string, unknown>>()(raw);
+    for (const key of ["cwd", "cursor"]) {
+        const value = params[key];
+        if (value !== undefined && value !== null && typeof value !== "string") {
+            throw acp.RequestError.invalidParams({[key]: value}, `${key} must be a string when given`);
+        }
+    }
+    const meta = params["_meta"];
+    if (meta !== undefined && meta !== null && (typeof meta !== "object" || Array.isArray(meta))) {
+        throw acp.RequestError.invalidParams({_meta: meta}, "_meta must be an object when given");
+    }
+    return params as acp.ListSessionsRequest;
 }
 
 export function parseSessionRenameParams(raw: unknown): SessionRenameParams {

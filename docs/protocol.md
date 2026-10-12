@@ -104,6 +104,7 @@ clients), and every session's `model` option becomes one group per source: `chat
 | `session/resume` | `replayFrom: {type: "start"}` replays the transcript as `session/update` frames before the response, paged through Codex `thread/turns/list` in pages of 50 turns; `null` or omitted restores context only. Other cursors are rejected. When Codex answers "already has an active writer" (its writer lock is a file lock across the Codex home: the thread is open in another Codex client — ChatGPT app, CLI, another app-server — and nothing here can release it) the session opens for viewing instead, the way Codex's TUI does: `thread/read` in place of `thread/resume`, history through the same `thread/turns/list` path, the response carries `_meta: {codex: {readOnly: true, reason: "active_writer"}}`. On such a session `session/prompt` and `session/set_config_option` fail with `-32600` "Thread is open in another Codex client" and `data: {codex: {readOnly: true}}`; `session/cancel` is a notification and is ignored. Resuming the same id again retries the real resume and, when the other client has let go, replaces the viewing session. |
 | `session/fork` | Forks the Codex thread and replays the copied transcript under the new session id. The source session remains open, including any running turn. |
 | `session/list` | `cwd` filters by exact Codex thread cwd; `cursor` pages. |
+| `_codex/session_list` | Without params, returns all non-archived sessions across projects in one response. With params, delegates to `session/list`. Advertised as `capabilities._meta.codex.sessionList: {version: 1}`. |
 | `session/close` | Detaches locally within a single 5-second budget, subject to event-loop scheduling. At most half is spent waiting for an interrupted turn; the remainder is reserved for unsubscribe. Stalled client writes do not prevent cleanup. A late start is interrupted when its id becomes known. |
 | `session/delete` | Close plus `thread/delete` (permanent deletion). |
 | `_codex/session_history` | Read-only turn metadata or full ACP history without opening or subscribing to the session. See the contract below. Advertised as `capabilities._meta.codex.sessionHistory: {version: 2, items: true, modes: ["browse", "export"]}`. |
@@ -119,6 +120,21 @@ the stored canonical path exactly (use the path returned by Codex, especially on
 platforms where temporary directories have symlink aliases).
 The default is the non-archived list; each returned session includes
 `_meta.codex.archived`.
+
+`_codex/session_list` accepts the same request fields and returns the same session
+entries as `session/list`. Omitted params, `null`, `{}`, or an object containing
+only `undefined` values select the full-list mode. Any defined property (including
+`cwd`, `cursor`, or `_meta`, even when null) selects normal single-page behavior.
+For example, `{_meta: {codex: {archived: true}}}` returns one archive page;
+`{cwd: "/project"}` returns one project page. Standard `session/list` is unchanged.
+
+Full-list mode walks native pages of 100 sessions, deduplicates by session ID,
+then supplements native forks once. Title repair reads are limited to 8 at a time.
+It returns `{sessions}` without `nextCursor`, only after every page succeeds.
+A failed page or repeated cursor rejects the request instead of returning a partial
+list. It uses the same source-kind and model-provider filters as `session/list`;
+"all" does not include archived threads or excluded internal subagent sources.
+There is no persistent cache or atomic snapshot guarantee across native pages.
 
 `session/new` accepts `_meta.codex.seedHistory: [{role, text}]`, with `role` equal
 to `"user"` or `"assistant"`. These entries are injected into the new thread as

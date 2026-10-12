@@ -11,7 +11,7 @@ import type {
     SkillsConfigWriteParams,
     SkillsListParams,
 } from "../app-server/v2";
-import {CodexAgent, type CodexAgentOptions, objectParams, parseFuzzyFileSearchParams, parseSessionIdParams, parseSessionRenameParams} from "./CodexAgent";
+import {CodexAgent, type CodexAgentOptions, objectParams, parseSessionListParams, parseFuzzyFileSearchParams, parseSessionIdParams, parseSessionRenameParams} from "./CodexAgent";
 import {parseSessionHistoryParams, parseSessionHistoryItemsParams} from "./sessionHistory";
 
 /**
@@ -38,6 +38,7 @@ export function createAgentApp(options: CodexAgentOptions): acp.AgentApp {
         .onRequest(acp.methods.agent.session.resume, ctx => current().resumeSession(ctx.params, ctx.signal))
         .onRequest(acp.methods.agent.session.fork, ctx => current().forkSession(ctx.params, ctx.signal))
         .onRequest(acp.methods.agent.session.list, ctx => current().listSessions(ctx.params))
+        .onRequest("_codex/session_list", {parse: parseSessionListParams}, ctx => current().sessionList(ctx.params))
         .onRequest(acp.methods.agent.session.close, ctx => current().closeSession(ctx.params))
         .onRequest(acp.methods.agent.session.delete, ctx => current().deleteSession(ctx.params))
         .onRequest("_codex/session_history", {parse: parseSessionHistoryParams}, ctx => current().sessionHistory(ctx.params, ctx.signal))
