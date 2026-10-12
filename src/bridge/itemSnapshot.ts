@@ -70,3 +70,11 @@ export function itemSnapshot(item: ThreadItem, command?: CommandReceipt): acp.Se
             return [];
     }
 }
+
+/** Review exit repeats the final answer on recent Codex versions; older versions emit only the exit. */
+export function isDuplicateReview(item: ThreadItem, items: Iterable<ThreadItem>): boolean {
+    if (item.type !== "exitedReviewMode") return false;
+    const text = item.review.trim();
+    return text.length > 0 && Array.from(items).some(candidate => candidate.type === "agentMessage"
+        && candidate.phase !== "commentary" && candidate.text.trim() === text);
+}

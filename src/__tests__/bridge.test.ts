@@ -1,6 +1,6 @@
 import path from "node:path";
 import {describe, expect, it} from "vitest";
-import {createTestAgent, CWD, itemCompleted, itemStarted, THREAD_ID, TURN_ID} from "./harness";
+import {createTestAgent, CWD, itemCompleted, itemStarted, THREAD_ID, TURN_ID, turnCompleted} from "./harness";
 
 async function openPrompting() {
     const t = createTestAgent();
@@ -259,13 +259,14 @@ describe("remaining item and notification mappings", () => {
         t.codex.emit({method: "error", params: {threadId: THREAD_ID, turnId: TURN_ID, willRetry: true, error: {message: "reconnecting", codexErrorInfo: null, additionalDetails: null, misalignment: null}}});
         itemCompleted(t.codex, {type: "exitedReviewMode", id: "rv", review: "Looks fine."});
         itemCompleted(t.codex, {type: "enteredReviewMode", id: "rv0", review: "x"});
+        turnCompleted(t.codex);
         await t.settle();
         const chunks = t.client.updatesOf("agent_message_chunk");
         expect((chunks[0]?.content as {text: string}).text).toBe("bad key\n\nline 3\n\n");
         expect((chunks[1]?.content as {text: string}).text).toBe("old flag\n\n");
         expect(t.client.updatesOf("session_info_update")[0]).toMatchObject({_meta: {codex: {retry: {message: "reconnecting", turnId: TURN_ID}}}});
-        expect(chunks[2]).toMatchObject({messageId: "rv", content: {text: "Looks fine."}});
-        expect(chunks).toHaveLength(3);
+        expect(t.client.updatesOf("agent_message")).toMatchObject([{messageId: "rv", content: [{text: "Looks fine."}]}]);
+        expect(chunks).toHaveLength(2);
     });
 
     it("reports a non-retry error even when Codex then completes the turn", async () => {

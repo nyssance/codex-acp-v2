@@ -759,3 +759,9 @@ For locally submitted envelopes, message-level `_meta.codex.questionReplyParts`
 also contains ordered `{text, question?}` display parts. Receipt-adopting clients
 that retain optimistic prompt content use these parts for display and copying;
 this does not alter the original input sent to Codex.
+
+Review results: when `exitedReviewMode.review` repeats a non-commentary agent message
+in the same turn, live updates and full-turn history omit the duplicate exit message.
+Review exits are buffered until the terminal drain to cover either native event order.
+A standalone or different review result remains visible. Item-level history retains
+its per-item projection because the matching answer may be outside the requested page.
