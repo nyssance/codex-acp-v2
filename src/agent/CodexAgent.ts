@@ -47,6 +47,7 @@ import {
     modelSupportsImages,
     PLAN_COLLABORATION_MODE,
     resolveModelSelection,
+    supportedEfforts,
 } from "../codex/models";
 import {
     buildThreadConfig,
@@ -1390,7 +1391,9 @@ export class CodexAgent {
             case "config":
                 await this.setSessionConfigOption({sessionId: session.id, configId: outcome.configId, type: "id", value: outcome.value});
                 if (outcome.promptText) {
-                    completed = await this.runCodexTurn(runtime, turn, [{type: "text", text: outcome.promptText}, ...params.prompt.slice(1)]);
+                    const promptText = outcome.promptText;
+                    const commandText = params.prompt.find(acp.ContentBlock.isText);
+                    completed = await this.runCodexTurn(runtime, turn, params.prompt.map(block => block === commandText ? {...block, type: "text", text: promptText} : block));
                 } else {
                     await client.update(agentMessage(`command:${turn.clientUserMessageId}`, `Plan mode ${outcome.value === PLAN_COLLABORATION_MODE ? "enabled" : "disabled"}.`));
                 }
@@ -1437,7 +1440,7 @@ export class CodexAgent {
                     approvalsReviewer: session.mode.approvalsReviewer,
                     sandboxPolicy: withWritableRoots(session.mode.sandboxPolicy, session.additionalDirectories),
                     model: this.providers.upstreamModel(session.model.model),
-                    effort: session.model.effort,
+                    effort: supportedEfforts(model).length > 0 ? session.model.effort : null,
                     summary: disableSummary ? "none" : "auto",
                     serviceTier: session.fastMode ? FAST_SERVICE_TIER : null,
                 }, (turnId) => {

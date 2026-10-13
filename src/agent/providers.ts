@@ -298,11 +298,11 @@ export class ProviderRouting {
         if (first === null) return codexCatalog;
         if (first.mode === "route") {
             if (first.models.length === 0) return codexCatalog;
-            return first.models.map((model, index) => gatewayModel(model, index === 0, codexCatalog[0], first.catalogEntries.get(model.id)));
+            return first.models.map((model, index) => gatewayModel(model, index === 0, codexCatalog.find(entry => entry.model === model.id), first.catalogEntries.get(model.id)));
         }
         const own: Model[] = [];
         for (const gateway of this.gateways.values()) {
-            for (const model of gateway.models) own.push({...gatewayModel(model, false, codexCatalog[0], gateway.catalogEntries.get(model.id)), id: gatewayModelId(gateway.id, model.id)});
+            for (const model of gateway.models) own.push({...gatewayModel(model, false, codexCatalog.find(entry => entry.model === model.id), gateway.catalogEntries.get(model.id)), id: gatewayModelId(gateway.id, model.id)});
         }
         return [...codexCatalog, ...own];
     }
@@ -423,7 +423,7 @@ function readCatalogFile(catalogPath: string): Map<string, CatalogEntry> {
 
 /** Synthesizes a Codex `Model` for a gateway model so the session catalog stays one shape. */
 function gatewayModel(model: GatewayModel, isDefault: boolean, template: Model | undefined, entry: CatalogEntry | undefined): Model {
-    const efforts = entry && entry.efforts.length > 0 ? entry.efforts : template?.supportedReasoningEfforts ?? [];
+    const efforts = entry ? entry.efforts : template?.supportedReasoningEfforts ?? [];
     const defaultEffort = (entry?.defaultEffort ?? template?.defaultReasoningEffort ?? "medium") as Model["defaultReasoningEffort"];
     return {
         id: model.id,
