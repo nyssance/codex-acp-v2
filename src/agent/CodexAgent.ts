@@ -36,6 +36,7 @@ import {EventBridge, type CompletedPlan} from "../bridge/EventBridge";
 import {mcpStartupFailed, ToolName} from "../bridge/toolCalls";
 import {TurnStartRejectedError, type AppServerClient} from "../codex/AppServerClient";
 import type {CodexProcess} from "../codex/process";
+import {setRemotePluginEnabled} from "../codex/remotePluginEnablement";
 import {findAgentMode, initialAgentMode, withWritableRoots} from "../codex/modes";
 import {
     DEFAULT_COLLABORATION_MODE,
@@ -234,7 +235,7 @@ export class CodexAgent {
                 // pass-through surface for a host that manages Codex's catalogs itself.
                 // rename / account / fuzzyFileSearch: `_codex/session_rename`, `_codex/account_read`,
                 // `_codex/rate_limits` (+ `_codex/rate_limits_updated`) and `_codex/fuzzy_file_search`.
-                _meta: {alwith: {tools: {version: 1}, turns: {version: 2}}, codex: {forkAtTurn: true, sessionLineage: true, archive: true, sessionList: {version: 1}, sessionHistory: {version: 2, items: true, modes: ["browse", "export"]}, seedHistory: true, skills: true, plugins: true, providerCatalog: true, rename: true, account: true, fuzzyFileSearch: true}},
+                _meta: {alwith: {tools: {version: 1}, turns: {version: 2}}, codex: {forkAtTurn: true, sessionLineage: true, archive: true, sessionList: {version: 1}, sessionHistory: {version: 2, items: true, modes: ["browse", "export"]}, seedHistory: true, skills: true, plugins: true, pluginEnable: true, providerCatalog: true, rename: true, account: true, fuzzyFileSearch: true}},
             },
             authMethods: authMethods(this.capabilities, this.env),
         };
@@ -966,6 +967,31 @@ export class CodexAgent {
         const response = await this.withCodex(() => this.codex.skillsConfigWrite(params));
         this.notifySkillsChanged();
         return response;
+    }
+
+    async pluginSetEnabled(params: PluginSetEnabledParams): Promise<{enabled: boolean}> {
+        this.requireInitialized("_codex/plugin_set_enabled");
+        if (params.remotePluginId !== undefined) {
+            await this.withCodex(async () => {
+                await setRemotePluginEnabled(this.codex, params.remotePluginId!, params.enabled);
+                await this.codex.pluginReconcile({reason: "plugin-enabled-changed"});
+                const installed = await this.codex.pluginInstalled({});
+                const plugin = installed.marketplaces.flatMap(market => market.plugins).find(plugin => plugin.remotePluginId === params.remotePluginId);
+                if (!plugin || plugin.enabled !== params.enabled) throw new Error("Remote plugin state could not be synchronized; refresh the plugin catalog");
+            });
+            this.notifySkillsChanged();
+            return {enabled: params.enabled};
+        }
+        const response = await this.withCodex(() => this.codex.configValueWrite({
+            keyPath: `plugins.${JSON.stringify(params.pluginId)}.enabled`,
+            value: params.enabled,
+            mergeStrategy: "upsert",
+        }));
+        this.notifySkillsChanged();
+        if (response.status === "okOverridden") {
+            throw acp.RequestError.invalidRequest(undefined, "Plugin enablement is overridden by a higher-priority configuration");
+        }
+        return {enabled: params.enabled};
     }
 
     async pluginList(params: PluginListParams): Promise<PluginListResponse> {
@@ -1999,4 +2025,20 @@ function forkTurnId(meta: acp.ForkSessionRequest["_meta"]): string | undefined {
         throw acp.RequestError.invalidParams(undefined, "lastTurnId must be a non-empty Codex turn id");
     }
     return value;
+}
+
+export type PluginSetEnabledParams = {pluginId: string; enabled: boolean; remotePluginId?: string};
+
+/** Validate the narrow plugin mutation before constructing a TOML key path. */
+export function parsePluginSetEnabledParams(value: unknown): PluginSetEnabledParams {
+    if (typeof value !== "object" || value === null) throw acp.RequestError.invalidParams(undefined, "Expected pluginId and enabled");
+    const params = value as Record<string, unknown>;
+    if (typeof params["pluginId"] !== "string" || !params["pluginId"].trim() || typeof params["enabled"] !== "boolean") {
+        throw acp.RequestError.invalidParams(undefined, "Expected a non-empty pluginId and boolean enabled");
+    }
+    const remotePluginId = params["remotePluginId"];
+    if (remotePluginId !== undefined && (typeof remotePluginId !== "string" || !remotePluginId.trim())) {
+        throw acp.RequestError.invalidParams(undefined, "Expected a non-empty remotePluginId");
+    }
+    return {pluginId: params["pluginId"], enabled: params["enabled"], ...(typeof remotePluginId === "string" ? {remotePluginId} : {})};
 }

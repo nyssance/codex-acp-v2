@@ -7,6 +7,8 @@ import type {
     CancelLoginAccountResponse,
     CommandExecutionRequestApprovalParams,
     CommandExecutionRequestApprovalResponse,
+    ConfigValueWriteParams,
+    ConfigWriteResponse,
     ConfigReadParams,
     ConfigReadResponse,
     FileChangeRequestApprovalParams,
@@ -91,6 +93,8 @@ import type {
 } from "../app-server/v2";
 import type {ModeKind} from "../app-server/ModeKind";
 import {logger} from "../util/logger";
+import type {GetAuthStatusParams, GetAuthStatusResponse} from "../app-server";
+import type {PluginReconcileParams, PluginReconcileResponse} from "../app-server/v2";
 import {abortable} from "../util/abort";
 
 export interface ApprovalHandler {
@@ -598,6 +602,18 @@ export class AppServerClient {
 
     skillsConfigWrite(params: SkillsConfigWriteParams): Promise<SkillsConfigWriteResponse> {
         return this.send({method: "skills/config/write", params});
+    }
+
+    configValueWrite(params: ConfigValueWriteParams): Promise<ConfigWriteResponse> {
+        return this.send({method: "config/value/write", params});
+    }
+
+    getAuthStatus(params: GetAuthStatusParams): Promise<GetAuthStatusResponse> {
+        return this.send({method: "getAuthStatus", params});
+    }
+
+    pluginReconcile(params: PluginReconcileParams): Promise<PluginReconcileResponse> {
+        return this.send({method: "plugin/reconcile", params});
     }
 
     pluginList(params: PluginListParams): Promise<PluginListResponse> {

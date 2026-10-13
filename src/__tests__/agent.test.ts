@@ -1430,3 +1430,31 @@ it("retains a cancelled turn on its prompt before a subsequent turn starts", asy
     turnCompleted(t.codex);
     await t.settle();
 });
+
+describe("plugin enablement", () => {
+    it("upserts a literal local plugin ID and invalidates skills", async () => {
+        const t = createTestAgent();
+        await t.initialize();
+        t.codex.respond("config/value/write", () => ({status: "ok"}));
+        expect(await t.agent.pluginSetEnabled({pluginId: "a.b@market", enabled: false})).toEqual({enabled: false});
+        expect(t.codex.lastParams("config/value/write")).toEqual({keyPath: 'plugins."a.b@market".enabled', value: false, mergeStrategy: "upsert"});
+        await t.settle();
+        expect(t.client.notifications.filter(entry => entry.method === "_codex/skills_changed")).toHaveLength(1);
+    });
+    it("reports overridden writes and propagates failures", async () => {
+        const t = createTestAgent();
+        await t.initialize();
+        t.codex.respond("config/value/write", () => ({status: "okOverridden"}));
+        await expect(t.agent.pluginSetEnabled({pluginId: "a@market", enabled: true})).rejects.toThrow("overridden");
+        t.codex.respond("config/value/write", () => { throw new Error("read-only"); });
+        await expect(t.agent.pluginSetEnabled({pluginId: "a@market", enabled: true})).rejects.toThrow("read-only");
+    });
+});
+
+it("validates plugin enablement at the extension boundary", async () => {
+    const {parsePluginSetEnabledParams} = await import("../agent/CodexAgent");
+    for (const value of [null, {}, {pluginId: "", enabled: true}, {pluginId: "a@market", enabled: "false"}, {pluginId: "a@market", enabled: false, remotePluginId: ""}]) {
+        expect(() => parsePluginSetEnabledParams(value)).toThrow();
+    }
+    expect(parsePluginSetEnabledParams({pluginId: "a@market", enabled: false, keyPath: "model"})).toEqual({pluginId: "a@market", enabled: false});
+});

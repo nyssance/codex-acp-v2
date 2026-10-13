@@ -332,6 +332,7 @@ Advertised as `capabilities._meta.codex.skills: true` and `capabilities._meta.co
 | `_codex/plugin_installed` | `plugin/installed` | `PluginInstalledParams` → `PluginInstalledResponse` |
 | `_codex/plugin_install` | `plugin/install` | `PluginInstallParams` → `PluginInstallResponse` |
 | `_codex/plugin_uninstall` | `plugin/uninstall` | `PluginUninstallParams` → `{}` |
+| `_codex/plugin_set_enabled` | Local: `config/value/write`; remote: plugin-service and `plugin/reconcile` | `{pluginId: string, enabled: boolean, remotePluginId?: string}` → `{enabled: boolean}` |
 | `_codex/plugin_read` | `plugin/read` | `PluginReadParams` → `PluginReadResponse` |
 | `_codex/marketplace_add` | `marketplace/add` | `MarketplaceAddParams` → `MarketplaceAddResponse` |
 | `_codex/marketplace_remove` | `marketplace/remove` | `MarketplaceRemoveParams` → `{}` |
@@ -339,7 +340,7 @@ Advertised as `capabilities._meta.codex.skills: true` and `capabilities._meta.co
 
 The agent sends the `_codex/skills_changed` notification (params `{}`) whenever Codex
 emits `skills/changed`, and after each successful `_codex/skills_config_write`,
-`_codex/plugin_install`, `_codex/plugin_uninstall` and `_codex/marketplace_*` request.
+`_codex/plugin_install`, `_codex/plugin_uninstall`, `_codex/plugin_set_enabled` and `_codex/marketplace_*` request.
 Plugins ship skills, so one signal covers both catalogs; a host refetches on it.
 The adapter's own skill snapshot and `available_commands_update` handling is unchanged.
 
@@ -781,3 +782,17 @@ in the same turn, live updates and full-turn history omit the duplicate exit mes
 Review exits are buffered until the terminal drain to cover either native event order.
 A standalone or different review result remains visible. Item-level history retains
 its per-item projection because the matching answer may be outside the requested page.
+
+### Plugin enablement
+
+`capabilities._meta.codex.pluginEnable: true` advertises `_codex/plugin_set_enabled`.
+For local plugins the adapter upserts only the requested plugin's `enabled` field
+through Codex's config API. For remote plugins clients must also pass the catalog's
+`remotePluginId`. The adapter calls ChatGPT plugin-service's enable/disable endpoint
+using credentials supplied by Codex, then calls `plugin/reconcile` and verifies
+the installed catalog. Remote state overrides local config in Codex. Credentials
+never cross the ACP boundary. It rejects malformed inputs and reports an
+error if a higher-priority configuration overrides a local write. It emits
+`_codex/skills_changed` after a saved change so clients can reload the effective catalog.
+Remote plugin read/install requests should pass the catalog's `remotePluginId`
+as `pluginName` when present; generated app aliases are not remote service IDs.

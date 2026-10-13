@@ -11,7 +11,7 @@ import type {
     SkillsConfigWriteParams,
     SkillsListParams,
 } from "../app-server/v2";
-import {CodexAgent, type CodexAgentOptions, objectParams, parseSessionListParams, parseFuzzyFileSearchParams, parseSessionIdParams, parseSessionRenameParams} from "./CodexAgent";
+import {CodexAgent, type CodexAgentOptions, objectParams, parseSessionListParams, parseFuzzyFileSearchParams, parseSessionIdParams, parseSessionRenameParams, parsePluginSetEnabledParams} from "./CodexAgent";
 import {parseSessionHistoryParams, parseSessionHistoryItemsParams} from "./sessionHistory";
 
 /**
@@ -51,6 +51,7 @@ export function createAgentApp(options: CodexAgentOptions): acp.AgentApp {
         .onRequest("_codex/plugin_installed", {parse: objectParams<PluginInstalledParams>()}, ctx => current().pluginInstalled(ctx.params))
         .onRequest("_codex/plugin_install", {parse: objectParams<PluginInstallParams>()}, ctx => current().pluginInstall(ctx.params))
         .onRequest("_codex/plugin_uninstall", {parse: objectParams<PluginUninstallParams>()}, ctx => current().pluginUninstall(ctx.params))
+        .onRequest("_codex/plugin_set_enabled", {parse: parsePluginSetEnabledParams}, ctx => current().pluginSetEnabled(ctx.params))
         .onRequest("_codex/plugin_read", {parse: objectParams<PluginReadParams>()}, ctx => current().pluginRead(ctx.params))
         .onRequest("_codex/marketplace_add", {parse: objectParams<MarketplaceAddParams>()}, ctx => current().marketplaceAdd(ctx.params))
         .onRequest("_codex/marketplace_remove", {parse: objectParams<MarketplaceRemoveParams>()}, ctx => current().marketplaceRemove(ctx.params))
