@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.7.13 — 2026-10-13
+
+### Fixed
+
+- Match gateway model capabilities by upstream model, including hidden native models,
+  and omit reasoning effort settings when the model declares no supported levels.
+- Normalize unsupported reasoning efforts when selecting a model.
+- Recognize local commands after leading file attachments and preserve attachments
+  when `/plan <task>` starts a turn.
+
 ## 0.7.12 — 2026-10-13
 
 ### Added
