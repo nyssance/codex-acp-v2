@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.7.12 — 2026-10-13
+
+### Added
+
+- `_codex/plugin_set_enabled` enables or disables local and remote plugins,
+  advertised through `capabilities._meta.codex.pluginEnable`. Successful changes
+  emit `_codex/skills_changed` so clients can refresh the effective catalog.
+- Remote plugin changes use ChatGPT plugin-service, reconcile installed plugins,
+  and verify the resulting state. Expired credentials are refreshed once without
+  exposing credentials over ACP; local changes report configuration overrides.
+
 ## 0.7.11 — 2026-10-12
 
 ### Added
