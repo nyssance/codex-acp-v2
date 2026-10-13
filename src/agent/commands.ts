@@ -1,7 +1,7 @@
-import type * as acp from "@agentclientprotocol/sdk/experimental/v2";
+import * as acp from "@agentclientprotocol/sdk/experimental/v2";
 import type {RateLimitSnapshot, ReviewTarget, SkillsListEntry, TurnCompletedNotification} from "../app-server/v2";
 import type {AppServerClient} from "../codex/AppServerClient";
-import {COLLABORATION_MODE_CONFIG_ID, DEFAULT_COLLABORATION_MODE, PLAN_COLLABORATION_MODE} from "../codex/models";
+import {COLLABORATION_MODE_CONFIG_ID, DEFAULT_COLLABORATION_MODE, PLAN_COLLABORATION_MODE, findModel, supportedEfforts} from "../codex/models";
 import {formatTokenCount} from "../util/tokens";
 import type {Session} from "./session";
 
@@ -31,7 +31,7 @@ export const BUILTIN_COMMANDS: acp.AvailableCommand[] = [
 ];
 
 export function parseCommand(prompt: readonly acp.ContentBlock[]): ParsedCommand | null {
-    const first = prompt[0];
+    const first = prompt.find(acp.ContentBlock.isText);
     if (!first || first.type !== "text") return null;
     const text = (first as {text: string}).text.trim();
     if (!text.startsWith("/")) return null;
@@ -119,7 +119,7 @@ export function statusMessage(session: Session, rateLimits: ReadonlyMap<string, 
         "**Session**",
         `**Session ID:** ${session.id}`,
         `**Working directory:** ${session.cwd}`,
-        `**Model:** ${session.model.model} (${session.model.effort})`,
+        `**Model:** ${session.model.model}${supportedEfforts(findModel(session.catalog, session.model.model)).length > 0 ? ` (${session.model.effort})` : ""}`,
         `**Mode:** ${session.mode.name}`,
         `**Collaboration:** ${session.collaborationMode}`,
         `**Fast mode:** ${session.fastMode ? "on" : "off"}`,

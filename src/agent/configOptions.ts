@@ -23,7 +23,7 @@ export function sessionConfigOptions(session: Session): acp.SessionConfigOption[
     const options = [
         modeConfigOption(session.mode),
         modelConfigOption(session.catalog, session.model.model, session.gatewayGroups),
-        effortConfigOption(supportedEfforts(model), session.model.effort),
+        ...(supportedEfforts(model).length > 0 ? [effortConfigOption(supportedEfforts(model), session.model.effort)] : []),
         collaborationModeConfigOption(session.collaborationMode),
     ];
     if (modelSupportsFast(model)) options.push(fastModeConfigOption(session.fastMode));
@@ -58,7 +58,7 @@ export async function applyConfigOption(
             const effort = stringValue(request);
             const model = findModel(session.catalog, session.model.model);
             const efforts = supportedEfforts(model);
-            if (efforts.length > 0 && !efforts.some(option => option.reasoningEffort === effort)) {
+            if (!efforts.some(option => option.reasoningEffort === effort)) {
                 throw acp.RequestError.invalidParams({configId: request.configId}, `Model ${session.model.model} does not support effort "${effort}"`);
             }
             session.model = {...session.model, effort};
@@ -81,7 +81,7 @@ export async function applyConfigOption(
                 threadId: session.id,
                 collaborationMode: {
                     mode,
-                    settings: {model: findModel(session.catalog, session.model.model)?.model ?? session.model.model, reasoning_effort: session.model.effort, developer_instructions: null},
+                    settings: {model: findModel(session.catalog, session.model.model)?.model ?? session.model.model, reasoning_effort: supportedEfforts(findModel(session.catalog, session.model.model)).length > 0 ? session.model.effort : null, developer_instructions: null},
                 },
             });
             session.collaborationMode = mode;

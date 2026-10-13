@@ -92,6 +92,8 @@ describe("models", () => {
     it("coerces efforts and detects fast tiers", () => {
         const m = model({supportedReasoningEfforts: [{reasoningEffort: "low", description: ""}], defaultReasoningEffort: "low"});
         expect(coerceEffort(m, "high")).toBe("low");
+        expect(resolveModelSelection([m], m.id, "ultra").effort).toBe("low");
+        expect(resolveModelSelection([m], null, "ultra").effort).toBe("low");
         expect(coerceEffort(undefined, "high")).toBe("high");
         expect(modelSupportsFast(model())).toBe(true);
         expect(modelSupportsFast(model({serviceTiers: [], additionalSpeedTiers: ["fast"]}))).toBe(true);

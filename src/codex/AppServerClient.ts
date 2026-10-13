@@ -577,7 +577,7 @@ export class AppServerClient {
         const cursors = new Set<string>();
         let cursor: string | null = null;
         do {
-            const page: ModelListResponse = await this.modelList({cursor, limit: null});
+            const page: ModelListResponse = await this.modelList({cursor, limit: null, includeHidden: true});
             models.push(...page.data);
             cursor = page.nextCursor;
             if (cursor) {

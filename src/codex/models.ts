@@ -24,11 +24,11 @@ export interface ModelSelection {
  */
 export function resolveModelSelection(catalog: readonly Model[], modelId: string | null, effort: string | null): ModelSelection {
     const listed = modelId === null ? undefined : catalog.find(model => model.id === modelId);
-    if (listed) return {model: listed.id, effort: effort ?? listed.defaultReasoningEffort};
+    if (listed) return {model: listed.id, effort: coerceEffort(listed, effort ?? listed.defaultReasoningEffort)};
     if (modelId) return {model: modelId, effort: effort ?? DEFAULT_EFFORT};
     const fallback = catalog.find(model => model.isDefault) ?? catalog[0];
     if (!fallback) throw new Error("Codex did not return any models");
-    return {model: fallback.id, effort: effort ?? fallback.defaultReasoningEffort};
+    return {model: fallback.id, effort: coerceEffort(fallback, effort ?? fallback.defaultReasoningEffort)};
 }
 
 export function findModel(catalog: readonly Model[], modelId: string): Model | undefined {
