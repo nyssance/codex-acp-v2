@@ -2,6 +2,7 @@ import type * as acp from "@agentclientprotocol/sdk/experimental/v2";
 import type {
     AdditionalPermissionProfile,
     CommandAction,
+    CommandExecutionRequestApprovalParams,
     FileChangeRequestApprovalParams,
     RequestPermissionProfile,
     ThreadItem,
@@ -9,7 +10,6 @@ import type {
 import {commandActionPaths, ToolName} from "../bridge/toolCalls";
 import {changePaths, diffContent} from "../bridge/diff";
 import {stripShellPrefix} from "../util/shell";
-import type {CommandApprovalParams} from "./commandDecisions";
 
 export const COMMAND_TITLE = "Run command?";
 export const NETWORK_TITLE = "Allow network access?";
@@ -17,7 +17,7 @@ export const FILE_CHANGE_TITLE = "Make edits?";
 export const PERMISSIONS_TITLE = "Grant permissions?";
 
 /** The tool call under review. It reuses the Codex item id so clients patch the rendered call. */
-export function commandSubject(params: CommandApprovalParams): acp.ToolCallUpdate {
+export function commandSubject(params: CommandExecutionRequestApprovalParams): acp.ToolCallUpdate {
     const network = params.networkApprovalContext;
     const rawInput = {
         ...(params.command ? {command: stripShellPrefix(params.command)} : {}),

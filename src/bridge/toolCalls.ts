@@ -384,8 +384,8 @@ export function subAgentActivity(item: Item<"subAgentActivity">, status: acp.Too
         toolCallId: item.id,
         ...(create ? {name: ToolName.SubAgent, title: titles[item.kind], kind: "other"} : {}),
         status,
-        rawInput: {agentThreadId: item.agentThreadId, agentPath: item.agentPath, activity: item.kind},
-        _meta: {codex: {subagent: {threadId: item.agentThreadId, path: item.agentPath, activity: item.kind}}},
+        rawInput: {model: item.model, reasoningEffort: item.reasoningEffort, agentThreadId: item.agentThreadId, agentPath: item.agentPath, activity: item.kind},
+        _meta: {codex: {subagent: {model: item.model, reasoningEffort: item.reasoningEffort, threadId: item.agentThreadId, path: item.agentPath, activity: item.kind}}},
     });
 }
 

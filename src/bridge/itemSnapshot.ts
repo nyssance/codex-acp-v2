@@ -59,22 +59,12 @@ export function itemSnapshot(item: ThreadItem, command?: CommandReceipt): acp.Se
         case "contextCompaction":
             return [tool.compactionUpdate(item.id, "completed")];
         case "enteredReviewMode":
+        // Codex follows every review exit with an assistant message carrying the same conclusion.
+        case "exitedReviewMode":
             return [];
-        case "exitedReviewMode": {
-            const text = item.review.trim();
-            return text.length > 0 ? [{sessionUpdate: "agent_message", messageId: item.id, content: [{type: "text", text}]}] : [];
-        }
         case "hookPrompt":
         case "functionCallOutput":
         case "sleep":
             return [];
     }
-}
-
-/** Review exit repeats the final answer on recent Codex versions; older versions emit only the exit. */
-export function isDuplicateReview(item: ThreadItem, items: Iterable<ThreadItem>): boolean {
-    if (item.type !== "exitedReviewMode") return false;
-    const text = item.review.trim();
-    return text.length > 0 && Array.from(items).some(candidate => candidate.type === "agentMessage"
-        && candidate.phase !== "commentary" && candidate.text.trim() === text);
 }

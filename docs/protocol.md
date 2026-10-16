@@ -490,7 +490,7 @@ to status `cancelled`, and a cancelled turn marks every still-open tool call
 | `web_search` | `fetch` | web search |
 | `view_image` | `read` | image view |
 | `image_generation` | `other` | image generation; result as image content |
-| `subagent`, `collab` | `other` | sub-agent activity and collaboration calls; `_meta.codex.subagent` / `_meta.codex.collaboration` |
+| `subagent`, `collab` | `other` | sub-agent activity and collaboration calls; `_meta.codex.subagent` (`model`, `reasoningEffort`, `threadId`, `path`, `activity`) / `_meta.codex.collaboration` |
 | `fuzzy_file_search` | `search` | Codex fuzzy file search sessions |
 | `guardian_review` | `think` | auto-approval reviews |
 | `mcp_startup` | `other` | failed MCP server startups (status `failed`) |
@@ -505,7 +505,7 @@ unknown ids, and transport errors fail closed.
 
 | Title | Options (`optionId` → Codex decision) |
 | --- | --- |
-| `Run command?` / `Allow network access?` | `allow_once` → accept, `allow_for_session` → acceptForSession, `accept_execpolicy_amendment` → acceptWithExecpolicyAmendment, `apply_network_policy_amendment:<n>` → applyNetworkPolicyAmendment, `decline`, `cancel`. When Codex sends `availableDecisions` that list is authoritative. |
+| `Run command?` / `Allow network access?` | `allow_once` → accept, `allow_for_session` → acceptForSession, `accept_execpolicy_amendment` → acceptWithExecpolicyAmendment, `apply_network_policy_amendment:<n>` → applyNetworkPolicyAmendment, `decline`, `cancel`. Codex always sends `availableDecisions` and that list is authoritative; a missing list, or one naming an amendment Codex did not propose, fails closed with `cancel`. |
 | `Make edits?` | `allow_once` → accept, `allow_for_session` → acceptForSession, `cancel` |
 | `Grant permissions?` | `allow_permissions_turn`, `allow_permissions_turn_strict_auto_review`, `allow_permissions_session`, `reject_permissions` |
 | MCP approvals | `allow_once` / `accept`, `allow_session`, `allow_always` (only when Codex advertises `persist`), `decline`, `cancel` |
@@ -777,11 +777,9 @@ also contains ordered `{text, question?}` display parts. Receipt-adopting client
 that retain optimistic prompt content use these parts for display and copying;
 this does not alter the original input sent to Codex.
 
-Review results: when `exitedReviewMode.review` repeats a non-commentary agent message
-in the same turn, live updates and full-turn history omit the duplicate exit message.
-Review exits are buffered until the terminal drain to cover either native event order.
-A standalone or different review result remains visible. Item-level history retains
-its per-item projection because the matching answer may be outside the requested page.
+Review results: Codex follows every `exitedReviewMode` item with an assistant message
+carrying the same conclusion, including the notice for an interrupted review. The adapter
+maps only that message; review entry and exit markers produce no updates, live or in history.
 
 ### Plugin enablement
 

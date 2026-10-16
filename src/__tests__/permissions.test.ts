@@ -33,6 +33,7 @@ function commandParams(overrides: Partial<CommandExecutionRequestApprovalParams>
         cwd: CWD,
         commandActions: [{type: "unknown", command: "rm -rf build"}],
         reason: "Cleans the build directory",
+        availableDecisions: ["accept", "acceptForSession", "decline", "cancel"],
         ...overrides,
     };
 }
@@ -41,7 +42,10 @@ describe("command approvals", () => {
     it("presents the command as a v2 permission request and returns the selected decision", async () => {
         const t = await openPrompting();
         t.client.permissionResponder = () => ({outcome: {outcome: "selected", optionId: "allow_for_session"}});
-        const response = await t.codex.serverRequest<CommandExecutionRequestApprovalResponse>("item/commandExecution/requestApproval", commandParams({proposedExecpolicyAmendment: ["rm", "-rf"]}));
+        const response = await t.codex.serverRequest<CommandExecutionRequestApprovalResponse>("item/commandExecution/requestApproval", commandParams({
+            proposedExecpolicyAmendment: ["rm", "-rf"],
+            availableDecisions: ["accept", "acceptForSession", {acceptWithExecpolicyAmendment: {execpolicy_amendment: ["rm", "-rf"]}}, "decline", "cancel"],
+        }));
         expect(response).toEqual({decision: "acceptForSession"});
         const request = t.client.permissionRequests()[0]!;
         expect(request).toMatchObject({
@@ -87,7 +91,7 @@ describe("command approvals", () => {
         expect(await t.codex.serverRequest("item/commandExecution/requestApproval", commandParams())).toEqual({decision: "cancel"});
     });
 
-    it("honours an authoritative availableDecisions list and rejects malformed ones", async () => {
+    it("honours the advertised availableDecisions and rejects missing or malformed ones", async () => {
         const t = await openPrompting();
         t.client.permissionResponder = () => ({outcome: {outcome: "selected", optionId: "allow_once"}});
         const params = {...commandParams(), availableDecisions: ["accept", "cancel"]};
@@ -95,6 +99,7 @@ describe("command approvals", () => {
         expect(t.client.permissionRequests()[0]?.options.map(option => option.optionId)).toEqual(["allow_once", "cancel"]);
         const malformed = {...commandParams(), availableDecisions: [{acceptWithExecpolicyAmendment: {execpolicy_amendment: ["ls"]}}]};
         expect(await t.codex.serverRequest("item/commandExecution/requestApproval", malformed)).toEqual({decision: "cancel"});
+        expect(await t.codex.serverRequest("item/commandExecution/requestApproval", {...commandParams(), availableDecisions: null})).toEqual({decision: "cancel"});
         expect(t.client.permissionRequests()).toHaveLength(1);
     });
 
@@ -104,6 +109,7 @@ describe("command approvals", () => {
         const response = await t.codex.serverRequest("item/commandExecution/requestApproval", commandParams({
             networkApprovalContext: {host: "api.example.com", protocol: "https"},
             proposedNetworkPolicyAmendments: [{host: "api.example.com", action: "allow"}],
+            availableDecisions: ["accept", "acceptForSession", {applyNetworkPolicyAmendment: {network_policy_amendment: {host: "api.example.com", action: "allow"}}}, "cancel"],
         }));
         expect(response).toEqual({decision: {applyNetworkPolicyAmendment: {network_policy_amendment: {host: "api.example.com", action: "allow"}}}});
         const request = t.client.permissionRequests()[0]!;

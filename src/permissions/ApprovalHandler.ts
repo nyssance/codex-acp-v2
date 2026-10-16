@@ -12,7 +12,6 @@ import type {
 import type {ApprovalHandler} from "../codex/AppServerClient";
 import type {ClientSession} from "../agent/clientSession";
 import {logger} from "../util/logger";
-import type {CommandApprovalParams} from "./commandDecisions";
 import {commandDecisionOptions, fileChangeDecisionOptions, OptionId, permissionProfileOptions, selectedDecision} from "./options";
 import {commandSubject, COMMAND_TITLE, FILE_CHANGE_TITLE, fileChangeSubject, NETWORK_TITLE, PERMISSIONS_TITLE, permissionsSubject} from "./presentation";
 import type {TurnContext} from "./turnContext";
@@ -30,8 +29,7 @@ export class CodexApprovalHandler implements ApprovalHandler {
     ) {}
 
     async handleCommandExecution(params: CommandExecutionRequestApprovalParams): Promise<CommandExecutionRequestApprovalResponse> {
-        const approvalParams = params as CommandApprovalParams;
-        const decisions = commandDecisionOptions(approvalParams);
+        const decisions = commandDecisionOptions(params);
         if (!decisions) {
             logger.log("cancelling command approval: no complete decision set", {itemId: params.itemId});
             return {decision: "cancel"};
@@ -40,7 +38,7 @@ export class CodexApprovalHandler implements ApprovalHandler {
             const response = await this.client.requestPermission({
                 title: params.networkApprovalContext ? NETWORK_TITLE : COMMAND_TITLE,
                 description: nonBlank(params.reason),
-                subject: {type: "tool_call", toolCall: commandSubject(approvalParams)},
+                subject: {type: "tool_call", toolCall: commandSubject(params)},
                 options: decisions.map(({option}) => option),
             }, this.signal());
             return {decision: selectedDecision(response, decisions) ?? "cancel"};

@@ -48,9 +48,7 @@ export function coerceEffort(model: Model | undefined, effort: string): string {
 }
 
 export function modelSupportsFast(model: Model | undefined): boolean {
-    if (!model) return false;
-    return model.serviceTiers.some(tier => tier.id === FAST_SERVICE_TIER)
-        || model.additionalSpeedTiers.includes(FAST_SERVICE_TIER);
+    return model?.serviceTiers.some(tier => tier.id === FAST_SERVICE_TIER) ?? false;
 }
 
 export function modelSupportsImages(model: Model | undefined): boolean {

@@ -1,6 +1,6 @@
 import type * as acp from "@agentclientprotocol/sdk/experimental/v2";
-import type {CommandExecutionApprovalDecision, FileChangeApprovalDecision} from "../app-server/v2";
-import {availableCommandDecisions, renderExecPolicyPrefix, type CommandApprovalParams} from "./commandDecisions";
+import type {CommandExecutionApprovalDecision, CommandExecutionRequestApprovalParams, FileChangeApprovalDecision} from "../app-server/v2";
+import {availableCommandDecisions, renderExecPolicyPrefix} from "./commandDecisions";
 
 export const OptionId = {
     AllowOnce: "allow_once",
@@ -17,7 +17,7 @@ export const OptionId = {
 
 export type DecisionOption<T> = {option: acp.PermissionOption; decision: T};
 
-export function commandDecisionOptions(params: CommandApprovalParams): DecisionOption<CommandExecutionApprovalDecision>[] | undefined {
+export function commandDecisionOptions(params: CommandExecutionRequestApprovalParams): DecisionOption<CommandExecutionApprovalDecision>[] | undefined {
     const decisions = availableCommandDecisions(params);
     if (!decisions) return undefined;
     const options: DecisionOption<CommandExecutionApprovalDecision>[] = [];

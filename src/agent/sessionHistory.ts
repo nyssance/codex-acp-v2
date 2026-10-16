@@ -2,7 +2,6 @@ import type * as acp from "@agentclientprotocol/sdk/experimental/v2";
 import type {ThreadItem, Turn} from "../app-server/v2";
 import type {AppServerClient} from "../codex/AppServerClient";
 import {HistoryRead, historyError, parseSessionHistoryParams, parseSessionHistoryItemsParams, type HistoryPage, type SessionHistoryParams, type SessionHistoryItemsParams} from "./historyProtocol";
-import {isDuplicateReview} from "../bridge/itemSnapshot";
 import {projectHistoryItem, type HistoryOmission} from "./historyProjection";
 import {assertCommandHistory, type CommandReceipts} from "./commandReceipts";
 export {parseSessionHistoryParams, parseSessionHistoryItemsParams, type SessionHistoryParams, type SessionHistoryItemsParams} from "./historyProtocol";
@@ -41,7 +40,7 @@ export async function readSessionHistory(codex: AppServerClient, raw: SessionHis
     if (view === "full" && page.data.some(turn => turn.itemsView !== "full")) throw historyError("history_incomplete", "Codex did not return full history items; update Codex and retry", false, {}, -32603);
     if (view === "full") await read.call(() => assertCommandHistory(codex, start.thread, commandReceipts, signal));
     const turns = await read.call(() => Promise.all(page.data.map(async turn => {
-        const projections = view === "full" ? await Promise.all(turn.items.filter(item => !isDuplicateReview(item, turn.items)).map(async item =>
+        const projections = view === "full" ? await Promise.all(turn.items.map(async item =>
             projectHistoryItem(item, turn.id, turn.startedAt, item.type === "userMessage" ? await commandReceipts?.read(item.id) : null))) : [];
         return {turnId: turn.id, status: turn.status, error: turn.error, startedAt: turn.startedAt, completedAt: turn.completedAt, durationMs: turn.durationMs,
             itemsView: view === "summary" ? "summary" as const : turn.itemsView,

@@ -395,6 +395,7 @@ export class AppServerClient {
             threadId,
             turn: {
                 id: turnId,
+                rootTurnId: null,
                 items: [],
                 itemsView: "notLoaded",
                 status: "interrupted",
@@ -410,7 +411,7 @@ export class AppServerClient {
     failTurn(threadId: string, turnId: string, error: TurnError): void {
         this.recordTurnCompleted({
             threadId,
-            turn: {id: turnId, items: [], itemsView: "notLoaded", status: "failed", error, startedAt: null, completedAt: null, durationMs: null},
+            turn: {id: turnId, rootTurnId: null, items: [], itemsView: "notLoaded", status: "failed", error, startedAt: null, completedAt: null, durationMs: null},
         });
     }
 

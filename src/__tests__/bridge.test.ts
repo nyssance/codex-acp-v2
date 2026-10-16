@@ -143,8 +143,8 @@ describe("other tools", () => {
         itemStarted(t.codex, {type: "imageView", id: "i1", path: "/tmp/pic.png"});
         itemStarted(t.codex, {type: "contextCompaction", id: "k1"});
         itemCompleted(t.codex, {type: "contextCompaction", id: "k1"});
-        itemStarted(t.codex, {type: "subAgentActivity", id: "s1", kind: "started", agentThreadId: "t9", agentPath: "root/worker"});
-        itemCompleted(t.codex, {type: "subAgentActivity", id: "s1", kind: "started", agentThreadId: "t9", agentPath: "root/worker"});
+        itemStarted(t.codex, {type: "subAgentActivity", model: "gpt-6.1", reasoningEffort: "high", id: "s1", kind: "started", agentThreadId: "t9", agentPath: "root/worker"});
+        itemCompleted(t.codex, {type: "subAgentActivity", model: "gpt-6.1", reasoningEffort: "high", id: "s1", kind: "started", agentThreadId: "t9", agentPath: "root/worker"});
         await t.settle();
         const updates = t.client.updatesOf("tool_call_update");
         expect(updates[0]).toMatchObject({name: "mcp", title: "srv.lookup", kind: "execute", rawInput: {server: "srv", tool: "lookup", arguments: {q: 1}}});
@@ -153,7 +153,7 @@ describe("other tools", () => {
         expect(updates[3]).toMatchObject({name: "web_search", kind: "fetch", title: "Web search: acp spec", status: "in_progress"});
         expect(updates[4]).toMatchObject({toolCallId: "w1", title: "Open page: https://x", status: "completed", rawOutput: {results: [{url: "https://x"}]}});
         expect(updates[5]).toMatchObject({name: "view_image", kind: "read", status: "completed", locations: [{path: "/tmp/pic.png"}]});
-        expect(updates[6]).toMatchObject({name: "subagent", title: "Start subagent worker", status: "in_progress"});
+        expect(updates[6]).toMatchObject({name: "subagent", title: "Start subagent worker", status: "in_progress", rawInput: {model: "gpt-6.1", reasoningEffort: "high"}});
         expect(updates[7]).toMatchObject({toolCallId: "s1", status: "completed"});
         expect((updates[7] as {name?: string}).name).toBeUndefined();
         // compaction is its own ACP v2 update, not a tool call
@@ -252,7 +252,7 @@ describe("remaining item and notification mappings", () => {
         expect(t.client.updatesOf("agent_thought_chunk")[0]).toMatchObject({messageId: "r9", content: {text: "raw"}});
     });
 
-    it("turns config warnings, deprecation notices, retries, and review exits into frames", async () => {
+    it("turns config warnings, deprecation notices, and retries into frames and leaves review markers silent", async () => {
         const t = await openPrompting();
         t.codex.emit({method: "configWarning", params: {summary: "bad key", details: "line 3"}});
         t.codex.emit({method: "deprecationNotice", params: {summary: "old flag", details: null}});
@@ -265,14 +265,14 @@ describe("remaining item and notification mappings", () => {
         expect((chunks[0]?.content as {text: string}).text).toBe("bad key\n\nline 3\n\n");
         expect((chunks[1]?.content as {text: string}).text).toBe("old flag\n\n");
         expect(t.client.updatesOf("session_info_update")[0]).toMatchObject({_meta: {codex: {retry: {message: "reconnecting", turnId: TURN_ID}}}});
-        expect(t.client.updatesOf("agent_message")).toMatchObject([{messageId: "rv", content: [{text: "Looks fine."}]}]);
+        expect(t.client.updatesOf("agent_message")).toEqual([]);
         expect(chunks).toHaveLength(2);
     });
 
     it("reports a non-retry error even when Codex then completes the turn", async () => {
         const t = await openPrompting();
         t.codex.emit({method: "error", params: {threadId: THREAD_ID, turnId: TURN_ID, willRetry: false, error: {message: "stream broke", codexErrorInfo: "other", additionalDetails: "details", misalignment: null}}});
-        t.codex.emit({method: "turn/completed", params: {threadId: THREAD_ID, turn: {id: TURN_ID, items: [], itemsView: "full", status: "completed", error: null, startedAt: null, completedAt: null, durationMs: null}}});
+        t.codex.emit({method: "turn/completed", params: {threadId: THREAD_ID, turn: {id: TURN_ID, rootTurnId: null, items: [], itemsView: "full", status: "completed", error: null, startedAt: null, completedAt: null, durationMs: null}}});
         await t.settle();
         expect(t.client.updatesOf("agent_message_chunk").at(-1)?.content).toEqual({type: "text", text: "stream broke\n\ndetails"});
         expect(t.client.updatesOf("state_update").at(-1)).toMatchObject({state: "idle", stopReason: "error"});

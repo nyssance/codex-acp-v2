@@ -1836,7 +1836,7 @@ function usageOf(session: Session): acp.Usage | null {
 function interruptedTurn(threadId: string): TurnCompletedNotification {
     return {
         threadId,
-        turn: {id: "", items: [], itemsView: "notLoaded", status: "interrupted", error: null, startedAt: null, completedAt: null, durationMs: null},
+        turn: {id: "", rootTurnId: null, items: [], itemsView: "notLoaded", status: "interrupted", error: null, startedAt: null, completedAt: null, durationMs: null},
     };
 }
 

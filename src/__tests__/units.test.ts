@@ -96,7 +96,7 @@ describe("models", () => {
         expect(resolveModelSelection([m], null, "ultra").effort).toBe("low");
         expect(coerceEffort(undefined, "high")).toBe("high");
         expect(modelSupportsFast(model())).toBe(true);
-        expect(modelSupportsFast(model({serviceTiers: [], additionalSpeedTiers: ["fast"]}))).toBe(true);
+        expect(modelSupportsFast(model({serviceTiers: [], additionalSpeedTiers: ["fast"]}))).toBe(false);
         expect(modelSupportsFast(model({serviceTiers: []}))).toBe(false);
     });
 });

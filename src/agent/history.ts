@@ -1,6 +1,6 @@
 import type * as acp from "@agentclientprotocol/sdk/experimental/v2";
 import type {Thread, Turn} from "../app-server/v2";
-import {isDuplicateReview, itemSnapshot} from "../bridge/itemSnapshot";
+import {itemSnapshot} from "../bridge/itemSnapshot";
 import {withTurnId} from "../bridge/turnMetadata";
 import type {CommandReceipt} from "./commandReceipts";
 import {fromUserMessage, promptTitle} from "../codex/sessionConfig";
@@ -15,7 +15,6 @@ export function historyUpdates(turns: readonly Turn[], commandReceipts: Readonly
     for (const turn of turns) {
         const openingUser = turn.items.find(item => item.type === "userMessage");
         for (const item of turn.items) {
-            if (isDuplicateReview(item, turn.items)) continue;
             const command = item.type === "userMessage" ? commandReceipts.get(item.id) : undefined;
             updates.push(...itemSnapshot(item, command).map(update => {
                 const replay = withTurnId(update, turn.id, turn.startedAt);

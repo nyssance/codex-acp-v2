@@ -1,89 +1,25 @@
-import type {
-    AdditionalPermissionProfile,
-    CommandExecutionApprovalDecision,
-    CommandExecutionRequestApprovalParams,
-    NetworkPolicyAmendment,
-} from "../app-server/v2";
-import {isRecord} from "./json";
-
-/** Newer app-servers advertise the decision set; older ones rely on the native fallback. */
-export type CommandApprovalParams = CommandExecutionRequestApprovalParams & {
-    additionalPermissions?: AdditionalPermissionProfile | null;
-    availableDecisions?: unknown;
-};
+import type {CommandExecutionApprovalDecision, CommandExecutionRequestApprovalParams} from "../app-server/v2";
 
 /**
- * Returns the ordered decisions the user may pick for a command approval, or
- * undefined when the advertised set is malformed. A malformed set fails closed:
- * the adapter never invents choices Codex did not offer.
+ * Returns the ordered decisions Codex offers for a command approval, or undefined when the
+ * set is missing or names an amendment Codex did not propose. Codex always advertises the set;
+ * an incomplete one fails closed instead of inventing choices.
  */
-export function availableCommandDecisions(params: CommandApprovalParams): CommandExecutionApprovalDecision[] | undefined {
-    if (params.availableDecisions === undefined || params.availableDecisions === null) {
-        return defaultDecisions(params);
-    }
-    if (!Array.isArray(params.availableDecisions) || params.availableDecisions.length === 0) return undefined;
-    const decisions: CommandExecutionApprovalDecision[] = [];
-    for (const candidate of params.availableDecisions) {
-        const decision = parseDecision(candidate, params);
-        if (!decision) return undefined;
-        decisions.push(decision);
-    }
-    return decisions;
+export function availableCommandDecisions(params: CommandExecutionRequestApprovalParams): CommandExecutionApprovalDecision[] | undefined {
+    const decisions = params.availableDecisions;
+    if (!decisions || decisions.length === 0) return undefined;
+    return decisions.every(decision => proposed(decision, params)) ? decisions : undefined;
 }
 
-function defaultDecisions(params: CommandApprovalParams): CommandExecutionApprovalDecision[] {
-    if (params.networkApprovalContext) {
-        const decisions: CommandExecutionApprovalDecision[] = ["accept", "acceptForSession"];
-        for (const amendment of params.proposedNetworkPolicyAmendments ?? []) {
-            decisions.push({applyNetworkPolicyAmendment: {network_policy_amendment: amendment}});
-        }
-        decisions.push("decline", "cancel");
-        return decisions;
+function proposed(decision: CommandExecutionApprovalDecision, params: CommandExecutionRequestApprovalParams): boolean {
+    if (typeof decision === "string") return true;
+    if ("acceptWithExecpolicyAmendment" in decision) {
+        const amendment = decision.acceptWithExecpolicyAmendment.execpolicy_amendment;
+        return amendment.length > 0 && sameStrings(amendment, params.proposedExecpolicyAmendment);
     }
-    if (params.additionalPermissions) return ["accept", "cancel"];
-    const decisions: CommandExecutionApprovalDecision[] = ["accept", "acceptForSession"];
-    if (params.proposedExecpolicyAmendment && params.proposedExecpolicyAmendment.length > 0) {
-        decisions.push({acceptWithExecpolicyAmendment: {execpolicy_amendment: params.proposedExecpolicyAmendment}});
-    }
-    decisions.push("decline", "cancel");
-    return decisions;
-}
-
-function parseDecision(candidate: unknown, params: CommandExecutionRequestApprovalParams): CommandExecutionApprovalDecision | undefined {
-    if (candidate === "accept" || candidate === "acceptForSession" || candidate === "decline" || candidate === "cancel") {
-        return candidate;
-    }
-    if (!isRecord(candidate)) return undefined;
-    if ("acceptWithExecpolicyAmendment" in candidate) {
-        const value = candidate["acceptWithExecpolicyAmendment"];
-        if (!isRecord(value)) return undefined;
-        const amendment = value["execpolicy_amendment"];
-        if (!isStringArray(amendment) || amendment.length === 0) return undefined;
-        if (!sameStrings(amendment, params.proposedExecpolicyAmendment)) return undefined;
-        return {acceptWithExecpolicyAmendment: {execpolicy_amendment: [...amendment]}};
-    }
-    if ("applyNetworkPolicyAmendment" in candidate) {
-        const value = candidate["applyNetworkPolicyAmendment"];
-        if (!isRecord(value)) return undefined;
-        const amendment = parseNetworkAmendment(value["network_policy_amendment"]);
-        if (!amendment || !params.networkApprovalContext) return undefined;
-        if (amendment.host !== params.networkApprovalContext.host) return undefined;
-        const proposed = params.proposedNetworkPolicyAmendments ?? [];
-        if (!proposed.some(entry => entry.host === amendment.host && entry.action === amendment.action)) return undefined;
-        return {applyNetworkPolicyAmendment: {network_policy_amendment: amendment}};
-    }
-    return undefined;
-}
-
-function parseNetworkAmendment(value: unknown): NetworkPolicyAmendment | undefined {
-    if (!isRecord(value) || typeof value["host"] !== "string") return undefined;
-    const action = value["action"];
-    if (action !== "allow" && action !== "deny") return undefined;
-    return {host: value["host"], action};
-}
-
-function isStringArray(value: unknown): value is string[] {
-    return Array.isArray(value) && value.every(entry => typeof entry === "string");
+    const amendment = decision.applyNetworkPolicyAmendment.network_policy_amendment;
+    return amendment.host === params.networkApprovalContext?.host
+        && (params.proposedNetworkPolicyAmendments ?? []).some(entry => entry.host === amendment.host && entry.action === amendment.action);
 }
 
 function sameStrings(left: readonly string[], right?: readonly string[] | null): boolean {

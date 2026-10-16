@@ -154,7 +154,7 @@ export function fromUserInput(input: UserInput): acp.ContentBlock[] {
     }
 }
 
-/** Recover the standalone file-reference blocks written by older adapter versions.
+/** Recover the standalone file-reference blocks `toUserInput` writes for resource links.
  * Inline links and embedded context remain text; they are not attachment blocks.
  */
 function fileReference(text: string): acp.ContentBlock | null {

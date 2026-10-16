@@ -54,7 +54,7 @@ export function thread(overrides: Partial<Thread> = {}): Thread {
         status: {type: "idle"},
         path: null,
         cwd: CWD,
-        cliVersion: "0.159.2",
+        cliVersion: "0.163.0",
         source: "cli",
         threadSource: null,
         agentNickname: null,
@@ -69,6 +69,7 @@ export function thread(overrides: Partial<Thread> = {}): Thread {
 export function turn(overrides: Partial<Turn> = {}): Turn {
     return {
         id: TURN_ID,
+        rootTurnId: null,
         items: [],
         itemsView: "full",
         status: "completed",

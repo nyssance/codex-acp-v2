@@ -5,15 +5,15 @@ export type StopReason = Extract<acp.IdleStateUpdate, {stopReason: "end_turn" | 
 
 type Failure = {stopReason: StopReason; category: string; retryable: boolean};
 
+const CONNECTION_FAILURES = ["httpConnectionFailed", "responseStreamConnectionFailed", "responseStreamDisconnected", "responseTooManyFailedAttempts"] as const;
+
 export function classifyTurnError(info: CodexErrorInfo | null): Failure {
     const failure = (category: string, retryable = false, stopReason: StopReason = "error"): Failure => ({category, retryable, stopReason});
     if (info === null) return failure("unknown");
     if (typeof info === "object") {
         if ("activeTurnNotSteerable" in info) return failure("turn_not_steerable");
-        const status = "httpConnectionFailed" in info ? info.httpConnectionFailed.httpStatusCode
-            : "responseStreamConnectionFailed" in info ? info.responseStreamConnectionFailed.httpStatusCode
-            : "responseStreamDisconnected" in info ? info.responseStreamDisconnected.httpStatusCode
-            : info.responseTooManyFailedAttempts.httpStatusCode;
+        const status = connectionStatus(info);
+        if (status === undefined) return failure("unknown");
         return failure("connection", status === null || status === 408 || status === 429 || status >= 500);
     }
     switch (info) {
@@ -34,4 +34,14 @@ export function classifyTurnError(info: CodexErrorInfo | null): Failure {
         case "sandboxError": return failure("sandbox");
         case "other": return failure("unknown");
     }
+    // Codex serializes every variant it has no name for as "other"; the open string and object
+    // arms of the generated type exist only for its deserializer.
+    return failure("unknown");
+}
+
+function connectionStatus(info: object): number | null | undefined {
+    for (const key of CONNECTION_FAILURES) {
+        if (key in info) return (info as Record<typeof key, {httpStatusCode: number | null}>)[key].httpStatusCode;
+    }
+    return undefined;
 }

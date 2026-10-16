@@ -13,7 +13,7 @@ import {logger} from "../util/logger";
 import {toTokenCount} from "../util/tokens";
 import {terminalExited, terminalOutputChunk, terminalStarted, usesTerminal} from "./terminal";
 import * as tool from "./toolCalls";
-import {isDuplicateReview, itemSnapshot} from "./itemSnapshot";
+import {itemSnapshot} from "./itemSnapshot";
 import {isInternalPlanMessageId, type CommandReceipt} from "../agent/commandReceipts";
 import {fromUserMessage} from "../codex/sessionConfig";
 import {questionReplyContent} from "../codex/questionReplies";
@@ -49,8 +49,6 @@ export class EventBridge {
     /** Tool calls reported as pending or in progress and not yet completed. */
     private readonly openToolCalls = new Set<string>();
     private readonly announcedTools = new Set<string>();
-    private readonly pendingReviews = new Map<string, {item: ThreadItem; turnId: string}>();
-    private readonly reviewMessages = new Map<string, ThreadItem>();
     private readonly messagePhases = new Map<string, string | null>();
     /** `session/prompt` `_meta` by receipt id, echoed once on the `user_message` so the host's own
      *  metadata rides the session event log and survives replay. */
@@ -119,8 +117,6 @@ export class EventBridge {
         this.openToolCalls.clear();
         this.announcedTools.clear();
         this.messagePhases.clear();
-        this.reviewMessages.clear();
-        this.pendingReviews.clear();
         this.reasoningWithDeltas.clear();
         this.terminalItems.clear();
         this.imageGenerations.clear();
@@ -146,7 +142,6 @@ export class EventBridge {
         // A failed lookup must not let a later native echo invent a different receipt ID.
         for (const item of items) {
             if (item.type === "userMessage") this.unresolvedUserItems.add(item.id);
-            if (item.type === "agentMessage") this.reviewMessages.set(item.id, item);
             if (!replay && itemSnapshot(item).some(update => update.sessionUpdate === "tool_call_update")) {
                 this.unannouncedItems.set(item.id, {item, turnId});
             }
@@ -158,11 +153,7 @@ export class EventBridge {
             signal?.throwIfAborted();
             if (receipt) this.restoredCommands.set(item.id, receipt);
             this.unresolvedUserItems.delete(item.id);
-            if (!replay || isDuplicateReview(item, this.reviewMessages.values())) continue;
-            if (item.type === "exitedReviewMode") {
-                this.pendingReviews.set(item.id, {item, turnId});
-                continue;
-            }
+            if (!replay) continue;
             if (item.type === "commandExecution" && item.status === "inProgress" && usesTerminal(item)) this.terminalItems.add(item.id);
             for (const update of itemSnapshot(item, receipt ?? undefined)) {
                 signal?.throwIfAborted();
@@ -285,7 +276,6 @@ export class EventBridge {
 
     /** Reconcile missing item completions before ending the enclosing turn. */
     async finishOpenToolCalls(status: "cancelled" | "failed" | "completed"): Promise<void> {
-        await this.flushReviews();
         this.unannouncedItems.clear();
         const ids = [...this.openToolCalls];
         const terminals = [...this.terminalItems];
@@ -310,20 +300,6 @@ export class EventBridge {
 
     async flush(): Promise<void> {
         await this.flushPlans();
-        await this.flushReviews();
-    }
-
-    private async flushReviews(): Promise<void> {
-        // Codex may complete the review exit before the matching agent message.
-        // Wait for the terminal drain before choosing whether the exit is the only answer.
-        const pending = [...this.pendingReviews.values()];
-        this.pendingReviews.clear();
-        for (const {item, turnId} of pending) {
-            if (isDuplicateReview(item, this.reviewMessages.values())) continue;
-            for (const update of itemSnapshot(item)) {
-                await this.client.update(this.withTiming(withTurnId(update, turnId, this.turnTime?.startedAt), turnId));
-            }
-        }
     }
 
     dispose(): void {
@@ -442,6 +418,8 @@ export class EventBridge {
             case "thread/settings/updated":
             case "thread/goal/updated":
             case "thread/goal/cleared":
+            case "thread/readState/changed":
+            case "thread/prediction/updated":
             case "thread/project/updated":
             case "thread/environment/connected":
             case "thread/environment/disconnected":
@@ -563,7 +541,6 @@ export class EventBridge {
     private async itemCompleted(item: ThreadItem, turnId: string): Promise<acp.SessionUpdate[]> {
         switch (item.type) {
             case "agentMessage":
-                this.reviewMessages.set(item.id, item);
                 this.messagePhases.delete(item.id);
                 return itemSnapshot(item);
             case "reasoning": {
@@ -598,15 +575,13 @@ export class EventBridge {
                 return [tool.compactionUpdate(item.id, "completed")];
             case "plan":
                 return await this.planCompleted(item);
-            case "exitedReviewMode": {
-                this.pendingReviews.set(item.id, {item, turnId});
-                return [];
-            }
             case "userMessage":
             case "hookPrompt":
             case "functionCallOutput":
             case "sleep":
             case "enteredReviewMode":
+            // Codex follows every review exit with an assistant message carrying the same conclusion.
+            case "exitedReviewMode":
                 return [];
         }
     }
