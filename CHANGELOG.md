@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.7.14 — 2026-10-16
+
+### Added
+
+- Sub-agent activity carries `model` and `reasoningEffort` in `rawInput` and `_meta.codex.subagent`.
+
+### Changed
+
+- Generated against Codex 0.163.0 (`@openai/codex` ^0.163.0); the version floor follows.
+  `generate-types` clears `src/app-server` first, so types Codex removed no longer linger.
+- Command approvals offer exactly the `availableDecisions` Codex sends; a missing list, or one naming
+  an amendment Codex did not propose, is cancelled. The adapter no longer builds its own decision set.
+- Review exits produce no update: Codex follows every exit with an assistant message carrying the
+  conclusion, and the adapter maps that message. Exit buffering and deduplication are removed.
+- Fast mode availability reads `serviceTiers` only; the deprecated `additionalSpeedTiers` is ignored.
+- `codexErrorInfo` values Codex has no name for classify as `unknown`.
+
 ## 0.7.13 — 2026-10-13
 
 ### Fixed
