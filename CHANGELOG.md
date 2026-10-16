@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.7.15 — 2026-10-16
+
+### Added
+
+- Collaboration calls report the agents they address in `_meta.codex.collaboration.agents`: each
+  receiver's `threadId`, `nickname`, `role`, `model` and `reasoningEffort`, read from its own thread,
+  and its `state`. A thread that cannot be read yet is reported with null identity fields and read
+  again on its next frame.
+
 ## 0.7.14 — 2026-10-16
 
 ### Added
