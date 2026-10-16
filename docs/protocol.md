@@ -110,6 +110,7 @@ clients), and every session's `model` option becomes one group per source: `chat
 | `_codex/session_history` | Read-only turn metadata or full ACP history without opening or subscribing to the session. See the contract below. Advertised as `capabilities._meta.codex.sessionHistory: {version: 2, items: true, modes: ["browse", "export"]}`. |
 | `_codex/session_history_items` | Independent item pagination across a thread or within one turn; supports item anchors and optional native data. Part of the version 2 history capability. |
 | `_codex/session_archive` | `{sessionId}` closes and archives the thread (reversible hiding). Advertised as `capabilities._meta.codex.archive: true`. |
+| `_codex/session_read_state_update` | `{sessionId, operation: "read" \| "unread", expectedRevision}` sets Codex's durable read receipt for the thread and returns `{readState}`. `expectedRevision` is the `revision` the client last saw; a stale one is rejected by Codex. Changes arrive as `session_info_update` with `_meta.codex.readState = {firstUnread, revision}`. Advertised as `capabilities._meta.codex.readState: true`. |
 | `_codex/session_unarchive` | `{sessionId}` restores an archived thread's visibility. |
 | `_codex/session_rename` | `{sessionId, name}` → `thread/name/set`. A loaded thread then reports `thread/name/updated`, delivered as `session_info_update` with the new `title`; a thread that is not loaded gets no notification. Advertised as `capabilities._meta.codex.rename: true`. |
 | `session/set_config_option` | Returns and broadcasts the full option list. |

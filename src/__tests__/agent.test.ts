@@ -494,6 +494,21 @@ describe("resume, fork, list, close, delete", () => {
         expect(t.codex.lastParams<{threadId: string}>("thread/unarchive")).toEqual({threadId: THREAD_ID});
     });
 
+    it("forwards Codex's durable read state and lets the client update it", async () => {
+        const t = createTestAgent();
+        const init = await t.initialize();
+        expect((init.capabilities?._meta as {codex?: {readState?: boolean}})?.codex?.readState).toBe(true);
+        await t.openSession();
+        const readState = {firstUnread: {type: "turn" as const, turnId: TURN_ID}, revision: "r7"};
+        t.codex.emit({method: "thread/readState/changed", params: {threadId: THREAD_ID, readState}});
+        await t.settle();
+        expect(t.client.updatesOf("session_info_update").at(-1)).toMatchObject({sessionId: THREAD_ID, _meta: {codex: {readState}}});
+        t.codex.respond("thread/readState/update", () => ({readState: {firstUnread: null, revision: "r8"}}));
+        const response = await t.agent.updateSessionReadState({sessionId: THREAD_ID, operation: "read", expectedRevision: "r7"});
+        expect(t.codex.lastParams<unknown>("thread/readState/update")).toEqual({threadId: THREAD_ID, operation: {type: "read"}, expectedRevision: "r7"});
+        expect(response).toEqual({readState: {firstUnread: null, revision: "r8"}});
+    });
+
     it("session/new with _meta.codex.seedHistory injects the prior conversation before the first turn", async () => {
         const t = createTestAgent();
         const init = await t.initialize();

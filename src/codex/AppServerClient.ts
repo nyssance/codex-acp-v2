@@ -65,6 +65,8 @@ import type {
     ThreadListParams,
     ThreadListResponse,
     ThreadReadParams,
+    ThreadReadStateUpdateParams,
+    ThreadReadStateUpdateResponse,
     ThreadSetNameParams,
     ThreadSetNameResponse,
     ThreadReadResponse,
@@ -497,6 +499,10 @@ export class AppServerClient {
 
     threadFork(params: ThreadForkParams): Promise<ThreadForkResponse> {
         return this.send({method: "thread/fork", params});
+    }
+
+    threadReadStateUpdate(params: ThreadReadStateUpdateParams): Promise<ThreadReadStateUpdateResponse> {
+        return this.send({method: "thread/readState/update", params});
     }
 
     threadRead(params: ThreadReadParams): Promise<ThreadReadResponse> {

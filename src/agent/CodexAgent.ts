@@ -31,6 +31,7 @@ import type {
     Turn,
     TurnCompletedNotification,
     TurnError,
+    ThreadReadStateUpdateResponse,
 } from "../app-server/v2";
 import {EventBridge, type CompletedPlan} from "../bridge/EventBridge";
 import {mcpStartupFailed, ToolName} from "../bridge/toolCalls";
@@ -238,7 +239,7 @@ export class CodexAgent {
                 // pass-through surface for a host that manages Codex's catalogs itself.
                 // rename / account / fuzzyFileSearch: `_codex/session_rename`, `_codex/account_read`,
                 // `_codex/rate_limits` (+ `_codex/rate_limits_updated`) and `_codex/fuzzy_file_search`.
-                _meta: {alwith: {tools: {version: 1}, turns: {version: 2}}, codex: {forkAtTurn: true, sessionLineage: true, archive: true, sessionList: {version: 1}, sessionHistory: {version: 2, items: true, modes: ["browse", "export"]}, seedHistory: true, skills: true, plugins: true, pluginEnable: true, providerCatalog: true, rename: true, account: true, fuzzyFileSearch: true}},
+                _meta: {alwith: {tools: {version: 1}, turns: {version: 2}}, codex: {forkAtTurn: true, sessionLineage: true, archive: true, readState: true, sessionList: {version: 1}, sessionHistory: {version: 2, items: true, modes: ["browse", "export"]}, seedHistory: true, skills: true, plugins: true, pluginEnable: true, providerCatalog: true, rename: true, account: true, fuzzyFileSearch: true}},
             },
             authMethods: authMethods(this.capabilities, this.env),
         };
@@ -947,6 +948,12 @@ export class CodexAgent {
         await this.closeRuntime(params.sessionId);
         await this.withCodex(() => this.codex.threadArchive({threadId: params.sessionId}));
         return {};
+    }
+
+    /** Codex's durable read receipt; `expectedRevision` is the revision the client last saw. */
+    async updateSessionReadState(params: SessionReadStateUpdateParams): Promise<ThreadReadStateUpdateResponse> {
+        this.requireInitialized("_codex/session_read_state_update");
+        return await this.withCodex(() => this.codex.threadReadStateUpdate({threadId: params.sessionId, operation: {type: params.operation}, expectedRevision: params.expectedRevision}));
     }
 
     async unarchiveSession(params: SessionIdParams): Promise<Record<string, never>> {
@@ -1908,6 +1915,22 @@ export function objectParams<T extends object>(): (raw: unknown) => T {
         }
         return raw as T;
     };
+}
+
+/** `_codex/session_read_state_update` params. */
+export interface SessionReadStateUpdateParams {
+    sessionId: string;
+    operation: "read" | "unread";
+    expectedRevision: string;
+}
+
+export function parseSessionReadStateUpdateParams(raw: unknown): SessionReadStateUpdateParams {
+    const operation = isJsonObject(raw) ? raw["operation"] : undefined;
+    if (!isJsonObject(raw) || typeof raw["sessionId"] !== "string" || typeof raw["expectedRevision"] !== "string"
+        || (operation !== "read" && operation !== "unread")) {
+        throw acp.RequestError.invalidParams(undefined, "Expected {sessionId, operation: \"read\" | \"unread\", expectedRevision}");
+    }
+    return {sessionId: raw["sessionId"], operation, expectedRevision: raw["expectedRevision"]};
 }
 
 /** `_codex/session_archive` / `_codex/session_unarchive` params: `{sessionId}`. */

@@ -382,6 +382,9 @@ export class EventBridge {
                 this.session.titleIsExplicit = title !== null;
                 return [{sessionUpdate: "session_info_update", title}];
             }
+            case "thread/readState/changed":
+                // Codex's durable receipt for this thread; the client marks it with `_codex/session_read_state_update`.
+                return [{sessionUpdate: "session_info_update", _meta: {codex: {readState: notification.params.readState}}}];
             case "account/rateLimits/updated": {
                 const snapshot = notification.params.rateLimits;
                 this.rateLimits.set(snapshot.limitId ?? snapshot.limitName ?? "default", snapshot);
@@ -420,7 +423,6 @@ export class EventBridge {
             case "thread/settings/updated":
             case "thread/goal/updated":
             case "thread/goal/cleared":
-            case "thread/readState/changed":
             case "thread/prediction/updated":
             case "thread/project/updated":
             case "thread/environment/connected":

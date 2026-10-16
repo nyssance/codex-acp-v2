@@ -11,7 +11,7 @@ import type {
     SkillsConfigWriteParams,
     SkillsListParams,
 } from "../app-server/v2";
-import {CodexAgent, type CodexAgentOptions, objectParams, parseSessionListParams, parseFuzzyFileSearchParams, parseSessionIdParams, parseSessionRenameParams, parsePluginSetEnabledParams} from "./CodexAgent";
+import {CodexAgent, type CodexAgentOptions, objectParams, parseSessionListParams, parseFuzzyFileSearchParams, parseSessionIdParams, parseSessionReadStateUpdateParams, parseSessionRenameParams, parsePluginSetEnabledParams} from "./CodexAgent";
 import {parseSessionHistoryParams, parseSessionHistoryItemsParams} from "./sessionHistory";
 
 /**
@@ -45,6 +45,7 @@ export function createAgentApp(options: CodexAgentOptions): acp.AgentApp {
         .onRequest("_codex/session_history_items", {parse: parseSessionHistoryItemsParams}, ctx => current().sessionHistoryItems(ctx.params, ctx.signal))
         .onRequest("_codex/session_archive", {parse: parseSessionIdParams}, ctx => current().archiveSession(ctx.params))
         .onRequest("_codex/session_unarchive", {parse: parseSessionIdParams}, ctx => current().unarchiveSession(ctx.params))
+        .onRequest("_codex/session_read_state_update", {parse: parseSessionReadStateUpdateParams}, ctx => current().updateSessionReadState(ctx.params))
         .onRequest("_codex/skills_list", {parse: objectParams<SkillsListParams>()}, ctx => current().skillsList(ctx.params))
         .onRequest("_codex/skills_config_write", {parse: objectParams<SkillsConfigWriteParams>()}, ctx => current().skillsConfigWrite(ctx.params))
         .onRequest("_codex/plugin_list", {parse: objectParams<PluginListParams>()}, ctx => current().pluginList(ctx.params))
