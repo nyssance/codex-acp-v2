@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.16 — 2026-10-16
+
+### Added
+
+- Codex's durable read state: `thread/readState/changed` is forwarded as `session_info_update` with
+  `_meta.codex.readState`, and `_codex/session_read_state_update` marks a session read or unread
+  (`capabilities._meta.codex.readState: true`).
+
 ## 0.7.15 — 2026-10-16
 
 ### Added
