@@ -2,6 +2,7 @@ import type * as acp from "@agentclientprotocol/sdk/experimental/v2";
 import {pathToFileURL} from "node:url";
 import type {ThreadItem, UserInput} from "../app-server/v2";
 import {itemSnapshot} from "../bridge/itemSnapshot";
+import type {AgentDirectory} from "../bridge/agentDirectory";
 import {withTurnId} from "../bridge/turnMetadata";
 import {isInternalPlanMessageId, type CommandReceipt} from "./commandReceipts";
 
@@ -21,7 +22,7 @@ function inputBlock(input: UserInput): acp.ContentBlock {
 }
 
 /** A history-specific projection: live replay behavior is deliberately unchanged. */
-export function projectHistoryItem(item: ThreadItem, turnId: string, startedAt?: number | null, command?: CommandReceipt | null): HistoryProjection {
+export function projectHistoryItem(item: ThreadItem, agents: AgentDirectory, turnId: string, startedAt?: number | null, command?: CommandReceipt | null): HistoryProjection {
     const omissions: HistoryOmission[] = [];
     let updates: acp.SessionUpdate[];
     if (item.type === "userMessage") {
@@ -33,7 +34,7 @@ export function projectHistoryItem(item: ThreadItem, turnId: string, startedAt?:
                 content: command?.content ?? item.content.map(inputBlock)}];
         }
     } else {
-        updates = itemSnapshot(item);
+        updates = itemSnapshot(item, agents);
         if (!updates.length) omissions.push({itemId: item.id, field: "*", reason: "no_acp_representation"});
         if (item.type === "reasoning" && item.summary.length && item.content.length) omissions.push({itemId: item.id, field: "content", reason: "summary_selected"});
         if (item.type === "agentMessage") {

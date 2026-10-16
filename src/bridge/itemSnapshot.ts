@@ -2,11 +2,12 @@ import type * as acp from "@agentclientprotocol/sdk/experimental/v2";
 import type {ThreadItem} from "../app-server/v2";
 import {terminalSnapshot, usesTerminal} from "./terminal";
 import * as tool from "./toolCalls";
+import type {AgentDirectory} from "./agentDirectory";
 import {fromUserMessage} from "../codex/sessionConfig";
 import {isInternalPlanMessageId, type CommandReceipt} from "../agent/commandReceipts";
 
 /** Complete standard ACP snapshots, shared by history replay and missed-start recovery. */
-export function itemSnapshot(item: ThreadItem, command?: CommandReceipt): acp.SessionUpdate[] {
+export function itemSnapshot(item: ThreadItem, agents: AgentDirectory, command?: CommandReceipt): acp.SessionUpdate[] {
     switch (item.type) {
         case "userMessage": {
             if (isInternalPlanMessageId(item.clientId)) return [];
@@ -53,7 +54,7 @@ export function itemSnapshot(item: ThreadItem, command?: CommandReceipt): acp.Se
         case "imageGeneration":
             return [tool.imageGenerationSnapshot(item)];
         case "collabAgentToolCall":
-            return [tool.collabToolCall(item, true)];
+            return [tool.collabToolCall(item, true, agents.agents(item))];
         case "subAgentActivity":
             return [tool.subAgentActivity(item, "completed", true)];
         case "contextCompaction":

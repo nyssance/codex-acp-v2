@@ -2,6 +2,7 @@ import {writeFile} from "node:fs/promises";
 import * as acp from "@agentclientprotocol/sdk/experimental/v2";
 import {ClientSession, type ClientLink} from "../agent/clientSession";
 import type {Session} from "../agent/session";
+import {AgentDirectory} from "../bridge/agentDirectory";
 import {EventBridge} from "../bridge/EventBridge";
 import {initialAgentMode} from "../codex/modes";
 import {resolveModelSelection} from "../codex/models";
@@ -30,7 +31,7 @@ const link = {
     async request() {throw new Error("Unexpected client request in bridge soak");},
 } as ClientLink;
 const client = new ClientSession(session.id, link, {formElicitation: false, urlElicitation: false});
-const bridge = new EventBridge(client, session);
+const bridge = new EventBridge(client, session, new AgentDirectory(async () => {throw new Error("Unexpected thread read in bridge soak");}));
 const delta = "你好 🌍 café ".repeat(8);
 async function round(index: number) {
     oracle = new ProtocolOracle();

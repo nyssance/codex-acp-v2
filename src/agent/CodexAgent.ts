@@ -73,6 +73,7 @@ import {historyTitle, historyUpdates} from "./history";
 import {readSessionHistory, readSessionHistoryItems, type SessionHistoryItemsParams, type SessionHistoryItemsResponse, type SessionHistoryParams, type SessionHistoryResponse} from "./sessionHistory";
 import {historyError} from "./historyProtocol";
 import {nativeForks} from "./forkIndex";
+import {AgentDirectory} from "../bridge/agentDirectory";
 import {OPENAI_PROVIDER_ID, ProviderRouting} from "./providers";
 import {createActiveTurn, type ActiveTurn, type Session} from "./session";
 
@@ -156,6 +157,7 @@ export class CodexAgent {
     private readonly skillSnapshots = new Map<string, Awaited<ReturnType<AppServerClient["skillsList"]>>>();
     private skillsQueue: Promise<unknown> = Promise.resolve();
     private accountGeneration = 0;
+    private readonly agents = new AgentDirectory(async threadId => (await this.codex.threadRead({threadId, includeTurns: false})).thread);
 
     constructor(private readonly link: ClientLink, options: CodexAgentOptions) {
         this.codex = options.codex;
@@ -629,7 +631,7 @@ export class CodexAgent {
 
     private installRuntime(session: Session, capabilities: ClientCapabilitySet, config: JsonObject, modelProvider: string | null, lineage: SessionRuntime["lineage"], readOnly = false): SessionRuntime {
         const client = new ClientSession(session.id, this.link, capabilities);
-        const bridge = new EventBridge(client, session, (itemId, receipt) => {
+        const bridge = new EventBridge(client, session, this.agents, (itemId, receipt) => {
             const turn = session.activeTurn;
             const guard = turn ? this.commandGuards.get(turn) : undefined;
             const write = this.commandReceipts!.write(itemId, receipt).then(async () => {
@@ -769,7 +771,8 @@ export class CodexAgent {
                 const receipt = receipts[i];
                 if (receipt) commandReceipts.set(userItems[i]!.id, receipt);
             }
-            await client.updateAll(historyUpdates(page.data, commandReceipts));
+            await this.agents.load(page.data.flatMap(turn => turn.items));
+            await client.updateAll(historyUpdates(page.data, this.agents, commandReceipts));
             cursor = page.nextCursor;
             if (cursor !== null) {
                 if (cursors.has(cursor)) throw acp.RequestError.internalError({sessionId: session.id}, "Codex history pagination repeated a cursor; retry after restarting Codex");
@@ -915,7 +918,7 @@ export class CodexAgent {
     async sessionHistory(params: SessionHistoryParams, signal?: AbortSignal): Promise<SessionHistoryResponse> {
         this.requireInitialized("_codex/session_history");
         this.checkHistoryIdle(params);
-        const response = await readSessionHistory(this.codex, params, signal, this.commandReceipts);
+        const response = await readSessionHistory(this.codex, this.agents, params, signal, this.commandReceipts);
         this.checkHistoryIdle(params);
         return {...response, running: this.sessions.get(params.sessionId)?.session.activeTurn ? true : response.running};
     }
@@ -923,7 +926,7 @@ export class CodexAgent {
     async sessionHistoryItems(params: SessionHistoryItemsParams, signal?: AbortSignal): Promise<SessionHistoryItemsResponse> {
         this.requireInitialized("_codex/session_history_items");
         this.checkHistoryIdle(params);
-        const response = await readSessionHistoryItems(this.codex, params, signal, this.commandReceipts);
+        const response = await readSessionHistoryItems(this.codex, this.agents, params, signal, this.commandReceipts);
         this.checkHistoryIdle(params);
         return {...response, running: this.sessions.get(params.sessionId)?.session.activeTurn ? true : response.running};
     }

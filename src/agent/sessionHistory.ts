@@ -4,6 +4,7 @@ import type {AppServerClient} from "../codex/AppServerClient";
 import {HistoryRead, historyError, parseSessionHistoryParams, parseSessionHistoryItemsParams, type HistoryPage, type SessionHistoryParams, type SessionHistoryItemsParams} from "./historyProtocol";
 import {projectHistoryItem, type HistoryOmission} from "./historyProjection";
 import {assertCommandHistory, type CommandReceipts} from "./commandReceipts";
+import type {AgentDirectory} from "../bridge/agentDirectory";
 export {parseSessionHistoryParams, parseSessionHistoryItemsParams, type SessionHistoryParams, type SessionHistoryItemsParams} from "./historyProtocol";
 
 export interface SessionHistoryTurn {
@@ -30,7 +31,7 @@ export interface SessionHistoryItem {
 }
 export interface SessionHistoryItemsResponse extends HistoryPage { items: SessionHistoryItem[] }
 
-export async function readSessionHistory(codex: AppServerClient, raw: SessionHistoryParams, signal?: AbortSignal, commandReceipts?: CommandReceipts | null): Promise<SessionHistoryResponse> {
+export async function readSessionHistory(codex: AppServerClient, agents: AgentDirectory, raw: SessionHistoryParams, signal?: AbortSignal, commandReceipts?: CommandReceipts | null): Promise<SessionHistoryResponse> {
     const params = parseSessionHistoryParams(raw);
     const view = params.itemsView ?? "summary";
     const read = new HistoryRead(codex, params, {endpoint: "turns", itemsView: view}, signal);
@@ -39,9 +40,10 @@ export async function readSessionHistory(codex: AppServerClient, raw: SessionHis
     read.checkTurns(page.data);
     if (view === "full" && page.data.some(turn => turn.itemsView !== "full")) throw historyError("history_incomplete", "Codex did not return full history items; update Codex and retry", false, {}, -32603);
     if (view === "full") await read.call(() => assertCommandHistory(codex, start.thread, commandReceipts, signal));
+    if (view === "full") await read.call(() => agents.load(page.data.flatMap(turn => turn.items)));
     const turns = await read.call(() => Promise.all(page.data.map(async turn => {
         const projections = view === "full" ? await Promise.all(turn.items.map(async item =>
-            projectHistoryItem(item, turn.id, turn.startedAt, item.type === "userMessage" ? await commandReceipts?.read(item.id) : null))) : [];
+            projectHistoryItem(item, agents, turn.id, turn.startedAt, item.type === "userMessage" ? await commandReceipts?.read(item.id) : null))) : [];
         return {turnId: turn.id, status: turn.status, error: turn.error, startedAt: turn.startedAt, completedAt: turn.completedAt, durationMs: turn.durationMs,
             itemsView: view === "summary" ? "summary" as const : turn.itemsView,
             updates: projections.flatMap(p => p.updates), omissions: projections.flatMap(p => p.omissions),
@@ -51,16 +53,17 @@ export async function readSessionHistory(codex: AppServerClient, raw: SessionHis
     return read.bounded({...result, running: page.data.some(turn => turn.status === "inProgress") ? true : result.running, turns});
 }
 
-export async function readSessionHistoryItems(codex: AppServerClient, raw: SessionHistoryItemsParams, signal?: AbortSignal, commandReceipts?: CommandReceipts | null): Promise<SessionHistoryItemsResponse> {
+export async function readSessionHistoryItems(codex: AppServerClient, agents: AgentDirectory, raw: SessionHistoryItemsParams, signal?: AbortSignal, commandReceipts?: CommandReceipts | null): Promise<SessionHistoryItemsResponse> {
     const params = parseSessionHistoryItemsParams(raw);
     const read = new HistoryRead(codex, params, {endpoint: "items", turnId: params.turnId ?? null}, signal);
     const start = await read.start();
     const page = await read.call(() => codex.threadItemsList({threadId: params.sessionId, turnId: params.turnId ?? null,
         cursor: read.after ?? (params.anchorItemId ? {type: "item", itemId: params.anchorItemId} : null), limit: params.limit ?? 50, sortDirection: read.direction}));
     await read.call(() => assertCommandHistory(codex, start.thread, commandReceipts, signal));
+    await read.call(() => agents.load(page.data.map(entry => entry.item)));
     const items = await read.call(() => Promise.all(page.data.map(async entry => ({turnId: entry.turnId, itemId: entry.item.id,
         startedAtMs: entry.startedAtMs, completedAtMs: entry.completedAtMs,
-        ...projectHistoryItem(entry.item, entry.turnId, null, entry.item.type === "userMessage" ? await commandReceipts?.read(entry.item.id) : null),
+        ...projectHistoryItem(entry.item, agents, entry.turnId, null, entry.item.type === "userMessage" ? await commandReceipts?.read(entry.item.id) : null),
         ...(params.includeNative ? {_meta: {codex: {item: entry.item}}} : {})}))));
     const result = await read.finish(start, page.nextCursor, page.data.length);
     return read.bounded({...result, items});

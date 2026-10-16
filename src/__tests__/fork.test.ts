@@ -1,3 +1,4 @@
+import {noAgents} from "./fixtures";
 import {describe, expect, it} from "vitest";
 import {mkdtemp, mkdir, writeFile, rename, rm} from "node:fs/promises";
 import os from "node:os";
@@ -121,7 +122,7 @@ describe("chat branches", () => {
         t.codex.emit({method: "item/agentMessage/delta", params: {threadId: THREAD_ID, turnId: TURN_ID, itemId: "answer", delta: "Hello"}});
         await t.settle();
         expect(t.client.updatesOf("agent_message_chunk").at(-1)?._meta).toEqual({codex: {phase: "final_answer", turnId: TURN_ID, turnStartedAt: 1_790_000_000_000, workStartedAt: 1_790_000_000_000}});
-        expect(historyUpdates([turn({items: [item]})])[0]?._meta).toEqual({codex: {phase: "final_answer", turnId: TURN_ID, historyReplay: true}});
-        expect(historyUpdates([turn({items: [item], startedAt: 1_790_000_000})])[0]?._meta).toEqual({codex: {phase: "final_answer", turnId: TURN_ID, turnStartedAt: 1_790_000_000_000, historyReplay: true}});
+        expect(historyUpdates([turn({items: [item]})], noAgents)[0]?._meta).toEqual({codex: {phase: "final_answer", turnId: TURN_ID, historyReplay: true}});
+        expect(historyUpdates([turn({items: [item], startedAt: 1_790_000_000})], noAgents)[0]?._meta).toEqual({codex: {phase: "final_answer", turnId: TURN_ID, turnStartedAt: 1_790_000_000_000, historyReplay: true}});
     });
 });

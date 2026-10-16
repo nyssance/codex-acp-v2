@@ -1,3 +1,4 @@
+import {noAgents} from "./fixtures";
 import {describe, expect, it, vi} from "vitest";
 import {ResponseError} from "vscode-jsonrpc/node";
 import {mkdtemp} from "node:fs/promises";
@@ -124,7 +125,7 @@ describe("command history projection", () => {
             turn({id: "review-turn", items: [{type: "userMessage", id: "review-native", clientId: null, content: [{type: "text", text: "Review the current code changes", text_elements: []}]}]}),
             turn({id: "foreign-turn", items: [{type: "userMessage", id: "foreign-native", clientId: null, content: [{type: "text", text: "foreign prompt", text_elements: []}]}]}),
         ];
-        const updates = historyUpdates(inherited, new Map([["plan-native", plan], ["review-native", review]]));
+        const updates = historyUpdates(inherited, noAgents, new Map([["plan-native", plan], ["review-native", review]]));
         expect(updates.flatMap(update => update.sessionUpdate === "user_message" ? [{messageId: update.messageId, content: update.content}] : [])).toEqual([
             {messageId: "plan-receipt", content: [{type: "text", text: "/plan inspect files"}]},
             {messageId: "review-receipt", content: [{type: "text", text: "/review"}]},

@@ -1,6 +1,7 @@
 import path from "node:path";
 import {describe, expect, it} from "vitest";
 import {createTestAgent, CWD, itemCompleted, itemStarted, THREAD_ID, TURN_ID, turnCompleted} from "./harness";
+import {thread} from "./fixtures";
 
 async function openPrompting() {
     const t = createTestAgent();
@@ -217,6 +218,30 @@ describe("remaining item and notification mappings", () => {
         expect(updates[5]).toMatchObject({name: "collab", title: "spawnAgent", status: "in_progress", _meta: {codex: {collaboration: {tool: "spawnAgent", receiverThreadIds: ["t2"]}}}});
         expect(updates[6]).toMatchObject({toolCallId: "k1", status: "cancelled"});
         expect((updates[6] as {name?: string}).name).toBeUndefined();
+    });
+
+    it("names collaborating agents from their own threads and retries an unreadable one", async () => {
+        const t = await openPrompting();
+        let reads = 0;
+        t.codex.respond("thread/read", params => {
+            const threadId = (params as {threadId: string}).threadId;
+            if (threadId === "t3" && reads++ === 0) throw new Error("not loaded yet");
+            return {thread: thread({id: threadId, agentNickname: threadId === "t2" ? "@Bob" : null, agentRole: threadId === "t2" ? "default" : null, model: "gpt-6.1-sol", reasoningEffort: "high",
+                source: {subAgent: {thread_spawn: {parent_thread_id: THREAD_ID, depth: 1, agent_path: null, agent_nickname: "Ann", agent_role: "explorer"}}}})};
+        });
+        const collab = {type: "collabAgentToolCall" as const, id: "k2", tool: "spawnAgent" as const, status: "inProgress" as const, senderThreadId: THREAD_ID, receiverThreadIds: ["t3", "t2"], prompt: "help", model: null, reasoningEffort: null, agentsStates: {}};
+        itemStarted(t.codex, collab);
+        itemCompleted(t.codex, {...collab, status: "completed", agentsStates: {t2: {status: "running", message: null}}});
+        await t.settle();
+        const [started, completed] = t.client.updatesOf("tool_call_update").filter(update => update.toolCallId === "k2") as unknown as Array<{_meta: {codex: {collaboration: {agents: unknown}}}}>;
+        expect(started?._meta.codex.collaboration.agents).toEqual([
+            {threadId: "t2", nickname: "Bob", role: null, model: "gpt-6.1-sol", reasoningEffort: "high", state: null},
+            {threadId: "t3", nickname: null, role: null, model: null, reasoningEffort: null, state: null},
+        ]);
+        expect(completed?._meta.codex.collaboration.agents).toEqual([
+            {threadId: "t2", nickname: "Bob", role: null, model: "gpt-6.1-sol", reasoningEffort: "high", state: {status: "running", message: null}},
+            {threadId: "t3", nickname: "Ann", role: "explorer", model: "gpt-6.1-sol", reasoningEffort: "high", state: null},
+        ]);
     });
 
     it("maps guardian reviews and fuzzy file searches as create-then-patch", async () => {

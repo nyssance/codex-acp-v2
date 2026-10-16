@@ -1,4 +1,5 @@
 import type {Model, Thread, Turn} from "../app-server/v2";
+import {AgentDirectory} from "../bridge/agentDirectory";
 
 export const THREAD_ID = "thread-1";
 export const TURN_ID = "turn-1";
@@ -104,3 +105,8 @@ export function threadResponse(overrides: Partial<Thread> = {}) {
         itemsBackwardsCursor: null,
     };
 }
+
+/** For history projections whose turns name no collaborating agents. */
+export const noAgents = new AgentDirectory(async threadId => {
+    throw new Error(`Unexpected thread read for ${threadId}`);
+});

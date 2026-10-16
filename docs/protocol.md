@@ -490,7 +490,7 @@ to status `cancelled`, and a cancelled turn marks every still-open tool call
 | `web_search` | `fetch` | web search |
 | `view_image` | `read` | image view |
 | `image_generation` | `other` | image generation; result as image content |
-| `subagent`, `collab` | `other` | sub-agent activity and collaboration calls; `_meta.codex.subagent` (`model`, `reasoningEffort`, `threadId`, `path`, `activity`) / `_meta.codex.collaboration` |
+| `subagent`, `collab` | `other` | sub-agent activity and collaboration calls; `_meta.codex.subagent` (`model`, `reasoningEffort`, `threadId`, `path`, `activity`) / `_meta.codex.collaboration` (`tool`, `senderThreadId`, `receiverThreadIds`, `agents`: per receiver `threadId`, `nickname`, `role`, `model`, `reasoningEffort` read from its thread, and its `state`; identity fields are null while the thread cannot be read) |
 | `fuzzy_file_search` | `search` | Codex fuzzy file search sessions |
 | `guardian_review` | `think` | auto-approval reviews |
 | `mcp_startup` | `other` | failed MCP server startups (status `failed`) |

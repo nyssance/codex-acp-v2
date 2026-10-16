@@ -14,6 +14,7 @@ import {toTokenCount} from "../util/tokens";
 import {terminalExited, terminalOutputChunk, terminalStarted, usesTerminal} from "./terminal";
 import * as tool from "./toolCalls";
 import {itemSnapshot} from "./itemSnapshot";
+import type {AgentDirectory} from "./agentDirectory";
 import {isInternalPlanMessageId, type CommandReceipt} from "../agent/commandReceipts";
 import {fromUserMessage} from "../codex/sessionConfig";
 import {questionReplyContent} from "../codex/questionReplies";
@@ -65,7 +66,7 @@ export class EventBridge {
     private planTimer: ReturnType<typeof setTimeout> | null = null;
     private planChain: Promise<void> = Promise.resolve();
 
-    constructor(private readonly client: ClientSession, private readonly session: Session,
+    constructor(private readonly client: ClientSession, private readonly session: Session, private readonly agents: AgentDirectory,
         private readonly onNativeCommand?: (itemId: string, receipt: CommandReceipt) => void,
         private readonly readCommandReceipt?: (itemId: string) => Promise<CommandReceipt | null>) {}
 
@@ -139,10 +140,11 @@ export class EventBridge {
     }
 
     async restore(items: readonly ThreadItem[], turnId: string, signal?: AbortSignal, replay = true): Promise<void> {
+        await this.agents.load(items);
         // A failed lookup must not let a later native echo invent a different receipt ID.
         for (const item of items) {
             if (item.type === "userMessage") this.unresolvedUserItems.add(item.id);
-            if (!replay && itemSnapshot(item).some(update => update.sessionUpdate === "tool_call_update")) {
+            if (!replay && itemSnapshot(item, this.agents).some(update => update.sessionUpdate === "tool_call_update")) {
                 this.unannouncedItems.set(item.id, {item, turnId});
             }
         }
@@ -155,7 +157,7 @@ export class EventBridge {
             this.unresolvedUserItems.delete(item.id);
             if (!replay) continue;
             if (item.type === "commandExecution" && item.status === "inProgress" && usesTerminal(item)) this.terminalItems.add(item.id);
-            for (const update of itemSnapshot(item, receipt ?? undefined)) {
+            for (const update of itemSnapshot(item, this.agents, receipt ?? undefined)) {
                 signal?.throwIfAborted();
                 this.trackToolCall(update);
                 await this.client.update(withTurnId(update, turnId));
@@ -189,7 +191,7 @@ export class EventBridge {
         }
         let updates = await this.translate(notification);
         if (notification.method === "item/completed") {
-            const snapshots = itemSnapshot(notification.params.item);
+            const snapshots = itemSnapshot(notification.params.item, this.agents);
             const first = snapshots.find(update => update.sessionUpdate === "tool_call_update");
             if (first?.sessionUpdate === "tool_call_update" && !this.announcedTools.has((first as acp.ToolCallUpdate).toolCallId)) {
                 updates = snapshots;
@@ -268,7 +270,7 @@ export class EventBridge {
         this.unannouncedItems.delete(itemId);
         const {item, turnId} = restored;
         if (item.type === "commandExecution" && item.status === "inProgress" && usesTerminal(item)) this.terminalItems.add(item.id);
-        for (const update of itemSnapshot(item)) {
+        for (const update of itemSnapshot(item, this.agents)) {
             this.trackToolCall(update);
             await this.client.update(withTurnId(update, turnId));
         }
@@ -471,7 +473,7 @@ export class EventBridge {
 
     // ---- items --------------------------------------------------------------
 
-    private itemStarted(item: ThreadItem): acp.SessionUpdate[] {
+    private async itemStarted(item: ThreadItem): Promise<acp.SessionUpdate[]> {
         switch (item.type) {
             case "agentMessage":
                 this.messagePhases.set(item.id, item.phase);
@@ -496,7 +498,8 @@ export class EventBridge {
                 this.imageGenerations.add(item.id);
                 return [tool.imageGenerationStarted(item)];
             case "collabAgentToolCall":
-                return [tool.collabToolCall(item, true)];
+                await this.agents.load([item]);
+                return [tool.collabToolCall(item, true, this.agents.agents(item))];
             case "subAgentActivity":
                 this.subAgentActivities.add(item.id);
                 return [tool.subAgentActivity(item, "in_progress", true)];
@@ -542,7 +545,7 @@ export class EventBridge {
         switch (item.type) {
             case "agentMessage":
                 this.messagePhases.delete(item.id);
-                return itemSnapshot(item);
+                return itemSnapshot(item, this.agents);
             case "reasoning": {
                 if (this.reasoningWithDeltas.delete(item.id)) return [];
                 const parts = item.summary.length > 0 ? item.summary : item.content;
@@ -568,7 +571,8 @@ export class EventBridge {
             case "imageGeneration":
                 return [this.imageGenerations.delete(item.id) ? tool.imageGenerationCompleted(item) : tool.imageGenerationSnapshot(item)];
             case "collabAgentToolCall":
-                return [tool.collabToolCall(item, false)];
+                await this.agents.load([item]);
+                return [tool.collabToolCall(item, false, this.agents.agents(item))];
             case "subAgentActivity":
                 return [tool.subAgentActivity(item, "completed", !this.subAgentActivities.delete(item.id))];
             case "contextCompaction":

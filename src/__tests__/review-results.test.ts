@@ -1,6 +1,6 @@
 import {expect, it} from "vitest";
 import {createTestAgent, itemCompleted, THREAD_ID, turnCompleted} from "./harness";
-import {turn} from "./fixtures";
+import {turn, noAgents} from "./fixtures";
 import {historyUpdates} from "../agent/history";
 import type {ThreadItem} from "../app-server/v2";
 
@@ -24,7 +24,7 @@ it("emits the review conclusion from the assistant message Codex sends after the
 });
 
 it("replays and exports review turns without the exit marker", async () => {
-    expect(historyUpdates([turn({items: [review, answer]})])).toMatchObject([{sessionUpdate: "agent_message", messageId: "answer"}]);
+    expect(historyUpdates([turn({items: [review, answer]})], noAgents)).toMatchObject([{sessionUpdate: "agent_message", messageId: "answer"}]);
     const t = createTestAgent();
     await t.initialize();
     t.codex.respond("thread/turns/list", () => ({data: [turn({items: [review, answer]})], nextCursor: null, backwardsCursor: null}));

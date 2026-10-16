@@ -1,6 +1,7 @@
 import type * as acp from "@agentclientprotocol/sdk/experimental/v2";
 import type {Thread, Turn} from "../app-server/v2";
 import {itemSnapshot} from "../bridge/itemSnapshot";
+import type {AgentDirectory} from "../bridge/agentDirectory";
 import {withTurnId} from "../bridge/turnMetadata";
 import type {CommandReceipt} from "./commandReceipts";
 import {fromUserMessage, promptTitle} from "../codex/sessionConfig";
@@ -10,13 +11,13 @@ import {fromUserMessage, promptTitle} from "../codex/sessionConfig";
  * live, so `session/resume` with `replayFrom: start` and `session/fork` restore
  * the transcript before the response resolves.
  */
-export function historyUpdates(turns: readonly Turn[], commandReceipts: ReadonlyMap<string, CommandReceipt> = new Map()): acp.SessionUpdate[] {
+export function historyUpdates(turns: readonly Turn[], agents: AgentDirectory, commandReceipts: ReadonlyMap<string, CommandReceipt> = new Map()): acp.SessionUpdate[] {
     const updates: acp.SessionUpdate[] = [];
     for (const turn of turns) {
         const openingUser = turn.items.find(item => item.type === "userMessage");
         for (const item of turn.items) {
             const command = item.type === "userMessage" ? commandReceipts.get(item.id) : undefined;
-            updates.push(...itemSnapshot(item, command).map(update => {
+            updates.push(...itemSnapshot(item, agents, command).map(update => {
                 const replay = withTurnId(update, turn.id, turn.startedAt);
                 const meta = replay._meta as Record<string, unknown> | undefined;
                 const codex = meta?.["codex"] as Record<string, unknown> | undefined;

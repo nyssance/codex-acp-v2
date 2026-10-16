@@ -24,6 +24,7 @@ import type {
 import {changePaths, diffContent} from "./diff";
 import {usesTerminal} from "./terminal";
 import {stripShellPrefix} from "../util/shell";
+import type {CollabAgent} from "./agentDirectory";
 
 type Item<T extends ThreadItem["type"]> = ThreadItem & {type: T};
 type CodexStatus = CommandExecutionStatus | PatchApplyStatus | McpToolCallStatus | DynamicToolCallStatus | CollabAgentToolCallStatus;
@@ -389,7 +390,7 @@ export function subAgentActivity(item: Item<"subAgentActivity">, status: acp.Too
     });
 }
 
-export function collabToolCall(item: Item<"collabAgentToolCall">, create: boolean): ToolCallFrame {
+export function collabToolCall(item: Item<"collabAgentToolCall">, create: boolean, agents: CollabAgent[]): ToolCallFrame {
     return frame({
         toolCallId: item.id,
         ...(create ? {name: ToolName.Collab, title: item.tool, kind: "other"} : {}),
@@ -402,7 +403,7 @@ export function collabToolCall(item: Item<"collabAgentToolCall">, create: boolea
             model: item.model,
             reasoningEffort: item.reasoningEffort,
         },
-        _meta: {codex: {collaboration: {tool: item.tool, senderThreadId: item.senderThreadId, receiverThreadIds: item.receiverThreadIds}}},
+        _meta: {codex: {collaboration: {tool: item.tool, senderThreadId: item.senderThreadId, receiverThreadIds: item.receiverThreadIds, agents}}},
     });
 }
 
