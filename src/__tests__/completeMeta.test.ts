@@ -34,4 +34,16 @@ describe("CompleteMeta", () => {
         const plain = {sessionUpdate: "tool_call_update", toolCallId: "t"} as const;
         expect(ledger.complete(plain)).toBe(plain);
     });
+
+    it("keeps only the most recently touched entities up to its limit", () => {
+        const ledger = new CompleteMeta(2);
+        ledger.complete({sessionUpdate: "tool_call_update", toolCallId: "a", _meta: {codex: {a: 1}}});
+        ledger.complete({sessionUpdate: "tool_call_update", toolCallId: "b", _meta: {codex: {b: 1}}});
+        ledger.complete({sessionUpdate: "tool_call_update", toolCallId: "a", _meta: {codex: {a2: 1}}});
+        ledger.complete({sessionUpdate: "tool_call_update", toolCallId: "c", _meta: {codex: {c: 1}}});
+        expect(ledger.complete({sessionUpdate: "tool_call_update", toolCallId: "a", _meta: {codex: {a3: 1}}})._meta)
+            .toEqual({codex: {a: 1, a2: 1, a3: 1}});
+        expect(ledger.complete({sessionUpdate: "tool_call_update", toolCallId: "b", _meta: {codex: {b2: 1}}})._meta)
+            .toEqual({codex: {b2: 1}});
+    });
 });

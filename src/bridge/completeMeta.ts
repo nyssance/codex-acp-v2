@@ -8,10 +8,14 @@ import type * as acp from "@agentclientprotocol/sdk/experimental/v2";
  * keys an outgoing frame names; keys it omits stay unchanged on the client and are not resent.
  *
  * Chunk metadata is chunk-scoped in the protocol; our clients fold it into the message, so chunks
- * are completed the same way. `null` for a key forgets it; `_meta: null` forgets the entity.
+ * are completed the same way. `null` for a key forgets it; `_meta: null` forgets the entity. The ledger
+ * keeps the most recently touched entities up to `limit` (a session's live frames only ever concern
+ * its newest items), so a long session does not grow it without bound.
  */
 export class CompleteMeta {
     private readonly entities = new Map<string, Record<string, unknown>>();
+
+    constructor(private readonly limit = 4096) {}
 
     complete(update: acp.SessionUpdate): acp.SessionUpdate {
         const key = entityKey(update);
@@ -21,6 +25,7 @@ export class CompleteMeta {
             return update;
         }
         const remembered = this.entities.get(key) ?? {};
+        this.entities.delete(key);
         const completed: Record<string, unknown> = {};
         for (const [name, value] of Object.entries(update._meta as Record<string, unknown>)) {
             if (value === null) {
@@ -33,6 +38,10 @@ export class CompleteMeta {
             }
         }
         this.entities.set(key, remembered);
+        if (this.entities.size > this.limit) {
+            const oldest = this.entities.keys().next().value;
+            if (oldest !== undefined) this.entities.delete(oldest);
+        }
         return {...update, _meta: completed};
     }
 }
