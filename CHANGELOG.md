@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.7.17 — 2026-10-19
+
+### Changed
+
+- Built against `@agentclientprotocol/sdk` 1.9.0 (schemas v1.26.0 / v2.0.0-alpha.9; v2 protocol
+  version negotiation and session updates decoupled from prompt completion).
+
 ## 0.7.16 — 2026-10-16
 
 ### Added
