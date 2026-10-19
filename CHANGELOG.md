@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.21 — 2026-10-19
+
+### Added
+
+- Composer predictions run in ephemeral Codex forks and return draft suggestions through
+  `_meta.codex.prediction`, without creating chat turns or adding conversation history.
+  Advertised as `capabilities._meta.codex.composerPredictions: true`.
+
 ## 0.7.20 — 2026-10-19
 
 ### Added
