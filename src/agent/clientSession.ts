@@ -3,6 +3,7 @@ import type {StopReason} from "./turnErrors";
 import {logger} from "../util/logger";
 import {hydrateUserImages} from "../codex/userImages";
 import {abortable} from "../util/abort";
+import {CompleteMeta} from "../bridge/completeMeta";
 
 /** The subset of `AgentContext` the agent uses, so tests can substitute a recorder. */
 export type ClientLink = Pick<acp.AgentContext, "notify" | "request">;
@@ -26,6 +27,7 @@ export class ClientSession {
     private terminalAttempted = false;
     /** Receipt id of the prompt that owns the current turn; foreign turns have none. */
     private messageId: string | undefined;
+    private readonly meta = new CompleteMeta();
     get signal(): AbortSignal { return this.output.signal; }
 
     constructor(
@@ -40,6 +42,7 @@ export class ClientSession {
             update = {...update, content: await hydrateUserImages(update.content, this.output.signal)};
         }
         this.output.signal.throwIfAborted();
+        update = this.meta.complete(update);
         await abortable(this.link.notify(acp.methods.client.session.update, {sessionId: this.sessionId, update}), this.output.signal);
     }
 
