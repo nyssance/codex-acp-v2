@@ -795,3 +795,32 @@ error if a higher-priority configuration overrides a local write. It emits
 `_codex/skills_changed` after a saved change so clients can reload the effective catalog.
 Remote plugin read/install requests should pass the catalog's `remotePluginId`
 as `pluginName` when present; generated app aliases are not remote service IDs.
+
+## Composer predictions
+
+Advertised as `capabilities._meta.codex.composerPredictions: true`.
+`_codex/session_prediction_request` takes `{sessionId, sourceTurnId}`. The source
+must be an open, writable, idle OpenAI session outside plan mode, and the turn must
+be its latest completed turn. The empty response acknowledges work, not completion.
+
+On public Codex 0.163.0 this uses `thread/fork` with
+`experimentalPredictionMode: true`, `ephemeral: true`, `excludeTurns: true`, and
+`threadSource: "composer_predictions"`, followed by `turn/start` with
+`turnTrigger: "composer_predictions"` and source thread/turn metadata. It does not
+use the unimplemented `thread/prediction/request` endpoint. The adapter supplies
+its own short prediction prompt; availability and billing remain provider-owned.
+Clients control whether and when suggestions are shown.
+
+Temporary forks are never registered as ACP sessions. Their messages and run
+states are not forwarded. They are unsubscribed on completion or failure, and
+cancelled when the parent closes, starts another prompt, changes configuration,
+or disconnects. Generation has a 60-second timeout. Invalid output reports failure.
+The public binary omits ephemeral forks from persistent session lists, including
+after restart. No additional conversation store is created.
+
+Results arrive as standard `session_info_update` frames on the owning session with
+`_meta.codex.prediction = {sourceTurnId, result}`. The result is
+`{type: "completed", text: string | null}` or `{type: "failed"}`; null means no suggestion.
+Clients must match the source turn, hide stale results after new input or a new turn,
+and accept suggestions only as editable drafts. Predictions do not start a chat turn
+or change its run state. These transient results are not replayed as conversation history.

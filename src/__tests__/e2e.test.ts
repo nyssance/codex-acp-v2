@@ -167,7 +167,7 @@ describe.skipIf(!RUN)("live codex", {timeout: 240_000}, () => {
         expect(userMessages.some(update => update.messageId === receipt.messageId && typeof update._meta?.codex?.turnId === "string")).toBe(true);
         expect(new Set(userMessages.map(update => update.messageId))).toEqual(new Set([receipt.messageId]));
         expect(client.text(mark, firstSessionId).toLowerCase()).toContain("pong");
-        expect(frames.find(update => update.sessionUpdate === "session_info_update")?.title).toBe("Reply with exactly the single word: pong");
+        expect(frames.find(update => update.sessionUpdate === "session_info_update" && update.title !== undefined)?.title).toBe("Reply with exactly the single word: pong");
     });
 
     it("restores file cards and the prompt title through a fresh adapter process", async () => {
@@ -189,7 +189,7 @@ describe.skipIf(!RUN)("live codex", {timeout: 240_000}, () => {
             const replayMark = fresh.mark();
             await fresh.call("session/resume", {sessionId, cwd, replayFrom: {type: "start"}, mcpServers: []});
             const frames = fresh.since(replayMark, sessionId);
-            expect(frames.find(update => update.sessionUpdate === "session_info_update")?.title).toBe(text);
+            expect(frames.find(update => update.sessionUpdate === "session_info_update" && update.title !== undefined)?.title).toBe(text);
             expect(frames.find(update => update.sessionUpdate === "user_message")?.content).toEqual([reference, {type: "text", text}]);
             await fresh.call("session/close", {sessionId});
         } finally { fresh.close(); }
