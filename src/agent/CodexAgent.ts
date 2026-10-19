@@ -109,6 +109,18 @@ interface SessionRuntime {
     lifetime: AbortController;
     /** Serializes notification handling so frames reach the client in Codex order. */
     queue: Promise<void>;
+    /** Config revision: one more every time the session's config options change; a prompt may bind to it. */
+    configRevision: number;
+}
+
+/** The next `config_option_update` for a session: its options at a new revision, with any Codex-side meta beside it. */
+function configOptionsFrame(runtime: SessionRuntime, codex?: Record<string, unknown>): acp.SessionUpdate {
+    runtime.configRevision += 1;
+    return {
+        sessionUpdate: "config_option_update",
+        configOptions: sessionConfigOptions(runtime.session),
+        _meta: {alwith: {configRevision: runtime.configRevision}, ...(codex ? {codex} : {})},
+    };
 }
 
 type OpenRequest =
@@ -239,7 +251,7 @@ export class CodexAgent {
                 // pass-through surface for a host that manages Codex's catalogs itself.
                 // rename / account / fuzzyFileSearch: `_codex/session_rename`, `_codex/account_read`,
                 // `_codex/rate_limits` (+ `_codex/rate_limits_updated`) and `_codex/fuzzy_file_search`.
-                _meta: {alwith: {tools: {version: 1}, turns: {version: 2}}, codex: {forkAtTurn: true, sessionLineage: true, archive: true, readState: true, sessionList: {version: 1}, sessionHistory: {version: 2, items: true, modes: ["browse", "export"]}, seedHistory: true, skills: true, plugins: true, pluginEnable: true, providerCatalog: true, rename: true, account: true, fuzzyFileSearch: true}},
+                _meta: {alwith: {tools: {version: 1}, turns: {version: 2}, configRevision: {version: 1}}, codex: {forkAtTurn: true, sessionLineage: true, archive: true, readState: true, sessionList: {version: 1}, sessionHistory: {version: 2, items: true, modes: ["browse", "export"]}, seedHistory: true, skills: true, plugins: true, pluginEnable: true, providerCatalog: true, rename: true, account: true, fuzzyFileSearch: true}},
             },
             authMethods: authMethods(this.capabilities, this.env),
         };
@@ -394,7 +406,7 @@ export class CodexAgent {
                     runtime.session.gatewayGroups = candidate.gatewayGroups();
                     if (!next && !unavailable.has(runtime)) runtime.session.model = resolveModelSelection(nextCatalog, findModel(nextCatalog, runtime.session.model.model) ? runtime.session.model.model : null, runtime.session.model.effort);
                     // Notification delivery cannot roll back an already committed routing transaction.
-                    void runtime.client.update({sessionUpdate: "config_option_update", configOptions: sessionConfigOptions(runtime.session), _meta: {codex: {routing: {stale: false}}}}).catch(error => logger.error("Provider config notification failed", error));
+                    void runtime.client.update(configOptionsFrame(runtime, {routing: {stale: false}})).catch(error => logger.error("Provider config notification failed", error));
                 }
             } catch (error) {
                 if (attempted.length === 0 && error instanceof acp.RequestError) throw error;
@@ -408,7 +420,7 @@ export class CodexAgent {
                         runtime.stale = true;
                         staleSessions.push(runtime.session.id);
                         logger.error("Provider rollback failed", rollbackError, {sessionId: runtime.session.id});
-                        void runtime.client.update({sessionUpdate: "config_option_update", configOptions: sessionConfigOptions(runtime.session), _meta: {codex: {routing: {stale: true}}}}).catch(() => {});
+                        void runtime.client.update(configOptionsFrame(runtime, {routing: {stale: true}})).catch(() => {});
                     }
                 }
                 throw acp.RequestError.internalError({staleSessions, attemptedSessions: attempted.map(runtime => runtime.session.id)},
@@ -423,18 +435,18 @@ export class CodexAgent {
 
     async newSession(params: acp.NewSessionRequest, signal?: AbortSignal): Promise<acp.NewSessionResponse> {
         const runtime = await this.openSession({kind: "new", request: params}, signal);
-        return {sessionId: runtime.session.id, configOptions: sessionConfigOptions(runtime.session), _meta: {codex: runtime.lineage}};
+        return {sessionId: runtime.session.id, configOptions: sessionConfigOptions(runtime.session), _meta: {alwith: {configRevision: runtime.configRevision}, codex: runtime.lineage}};
     }
 
     async resumeSession(params: acp.ResumeSessionRequest, signal?: AbortSignal): Promise<acp.ResumeSessionResponse> {
         const runtime = await this.openSession({kind: "resume", request: params}, signal);
         const configOptions = sessionConfigOptions(runtime.session);
-        return {configOptions, _meta: {codex: {...runtime.lineage, ...(runtime.readOnly ? {readOnly: true, reason: "active_writer"} : {})}}};
+        return {configOptions, _meta: {alwith: {configRevision: runtime.configRevision}, codex: {...runtime.lineage, ...(runtime.readOnly ? {readOnly: true, reason: "active_writer"} : {})}}};
     }
 
     async forkSession(params: acp.ForkSessionRequest, signal?: AbortSignal): Promise<acp.ForkSessionResponse> {
         const runtime = await this.openSession({kind: "fork", request: params}, signal);
-        return {sessionId: runtime.session.id, configOptions: sessionConfigOptions(runtime.session), _meta: {codex: runtime.lineage}};
+        return {sessionId: runtime.session.id, configOptions: sessionConfigOptions(runtime.session), _meta: {alwith: {configRevision: runtime.configRevision}, codex: runtime.lineage}};
     }
 
     private async openSession(open: OpenRequest, signal?: AbortSignal): Promise<SessionRuntime> {
@@ -650,7 +662,7 @@ export class CodexAgent {
         };
         const approval = new CodexApprovalHandler(client, turnContext, signal);
         const elicitation = new CodexElicitationHandler(client, turnContext, signal);
-        const runtime: SessionRuntime = {lineage, config, modelProvider, stale: false, readOnly, session, client, bridge, turnContext, elicitation, lifetime: new AbortController(), queue: Promise.resolve()};
+        const runtime: SessionRuntime = {lineage, config, modelProvider, stale: false, readOnly, session, client, bridge, turnContext, elicitation, lifetime: new AbortController(), queue: Promise.resolve(), configRevision: 0};
         const tools = new ClientTools(session, client, AbortSignal.any([runtime.lifetime.signal, this.codex.disconnectSignal]));
         // Frames already queued (e.g. the tool call under review) must reach the client before its prompt.
         const drained = <P, T>(operation: (params: P) => Promise<T>) => async (params: P): Promise<T> => {
@@ -1082,6 +1094,12 @@ export class CodexAgent {
         return {};
     }
 
+    /** `_alwith/config_snapshot`: the session's options at their current revision. */
+    configSnapshot(params: {sessionId: string}): {configRevision: number; configOptions: acp.SessionConfigOption[]} {
+        const runtime = this.runtime(params.sessionId, "_alwith/config_snapshot");
+        return {configRevision: runtime.configRevision, configOptions: sessionConfigOptions(runtime.session)};
+    }
+
     async accountRead(): Promise<GetAccountResponse> {
         this.requireInitialized("_codex/account_read");
         return await this.withCodex(() => this.codex.accountRead({refreshToken: false}));
@@ -1162,9 +1180,8 @@ export class CodexAgent {
             if (destination !== runtime.modelProvider) await this.rerouteSession(runtime, target, params.value);
         }
         await this.withCodex(() => applyConfigOption(runtime.session, this.codex, params));
-        const configOptions = sessionConfigOptions(runtime.session);
-        await runtime.client.update({sessionUpdate: "config_option_update", configOptions});
-        return {configOptions};
+        await runtime.client.update(configOptionsFrame(runtime));
+        return {configOptions: sessionConfigOptions(runtime.session), _meta: {alwith: {configRevision: runtime.configRevision}}};
     }
 
     /**
@@ -1230,6 +1247,15 @@ export class CodexAgent {
         if (runtime.stale) throw acp.RequestError.invalidRequest({sessionId: params.sessionId, _meta: {codex: {routing: {stale: true}}}}, "Session routing is stale; resume the session or successfully change providers before prompting");
         if (!Array.isArray(params.prompt) || params.prompt.length === 0) {
             throw acp.RequestError.invalidParams(undefined, "prompt must contain at least one content block");
+        }
+        // The client binds the prompt to the config revision it saw; a mismatch is refused here, in the same
+        // step that admits the prompt, with the actual options beside the refusal.
+        const expectedConfigRevision = expectedConfigRevisionOf(params._meta);
+        if (expectedConfigRevision !== null && expectedConfigRevision !== runtime.configRevision) {
+            throw acp.RequestError.invalidParams(
+                {alwith: {configStale: {expected: expectedConfigRevision, actual: runtime.configRevision, configOptions: sessionConfigOptions(runtime.session)}}},
+                "config/stale",
+            );
         }
         const {session} = runtime;
         if (params._meta && typeof params._meta === "object") runtime.bridge.rememberPromptMeta(messageId, params._meta as Record<string, unknown>);
@@ -1820,6 +1846,17 @@ export class CodexAgent {
 
 function mcpServerNames(servers: readonly acp.McpServer[]): string[] {
     return servers.flatMap(server => typeof server.name === "string" ? [sanitizeMcpServerName(server.name)] : []);
+}
+
+/** `_meta.alwith.expectedConfigRevision` of a prompt, or null when the client did not bind it. */
+function expectedConfigRevisionOf(meta: acp.PromptRequest["_meta"]): number | null {
+    const alwith = (meta as Record<string, unknown> | null | undefined)?.["alwith"] as {expectedConfigRevision?: unknown} | undefined;
+    const expected = alwith?.expectedConfigRevision;
+    if (expected === undefined) return null;
+    if (typeof expected !== "number" || !Number.isInteger(expected)) {
+        throw acp.RequestError.invalidParams({_meta: meta}, "_meta.alwith.expectedConfigRevision must be an integer");
+    }
+    return expected;
 }
 
 /**

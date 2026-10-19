@@ -82,7 +82,7 @@ describe("chat branches", () => {
         ]})] : [], nextCursor: null, backwardsCursor: null}));
         const fork = await t.agent.forkSession({sessionId: THREAD_ID, cwd: CWD, _meta: {codex: {lastTurnId: TURN_ID}}});
         expect(t.codex.lastParams("thread/fork")).toMatchObject({threadId: THREAD_ID, lastTurnId: TURN_ID});
-        expect(fork._meta).toEqual({codex: {nativeSessionId: THREAD_ID, forkedFromId: THREAD_ID, forkedAtTurnId: null}});
+        expect(fork._meta).toEqual({alwith: {configRevision: 0}, codex: {nativeSessionId: THREAD_ID, forkedFromId: THREAD_ID, forkedAtTurnId: null}});
         expect(t.client.updatesOf("agent_message")).toEqual([expect.objectContaining({
             sessionId: "thread-fork", messageId: "answer", _meta: {codex: {phase: "final_answer", turnId: TURN_ID, historyReplay: true}},
         })]);
@@ -107,7 +107,7 @@ describe("chat branches", () => {
         t.codex.respond("thread/resume", () => threadResponse(child));
         await t.initialize();
         expect((await t.agent.listSessions({})).sessions[0]?._meta).toEqual({codex: {archived: false, nativeSessionId: "tree", forkedFromId: "parent"}});
-        expect((await t.agent.resumeSession({sessionId: "child", cwd: CWD}))._meta).toEqual({codex: {nativeSessionId: "tree", forkedFromId: "parent"}});
+        expect((await t.agent.resumeSession({sessionId: "child", cwd: CWD}))._meta).toEqual({alwith: {configRevision: 0}, codex: {nativeSessionId: "tree", forkedFromId: "parent"}});
     });
 
     it("carries the same turn identity on live messages and restored history", async () => {

@@ -1053,7 +1053,7 @@ describe("providers", () => {
         expect(t.codex.calls("turn/start")).toHaveLength(0);
         // The other client let go: a second resume takes the writer and replaces the viewing session.
         const again = await t.agent.resumeSession({sessionId: THREAD_ID, cwd: CWD});
-        expect(again._meta).toEqual({codex: {nativeSessionId: THREAD_ID, forkedFromId: null}});
+        expect(again._meta).toEqual({alwith: {configRevision: 0}, codex: {nativeSessionId: THREAD_ID, forkedFromId: null}});
         expect(attempts).toBe(2);
         expect(t.codex.calls("thread/unsubscribe")).toHaveLength(0);
         await t.agent.prompt({sessionId: THREAD_ID, prompt: [{type: "text", text: "hi"}]});
