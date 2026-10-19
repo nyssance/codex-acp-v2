@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.7.19 — 2026-10-19
+
+### Changed
+
+- The outgoing `_meta` ledger keeps only the most recently touched entities (4096 per session), so a
+  long session no longer grows it without bound.
+
 ## 0.7.18 — 2026-10-19
 
 ### Changed
