@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.7.18 — 2026-10-19
+
+### Changed
+
+- Outgoing `_meta` follows the ACP v2 patch rule: clients replace each named top-level key whole, so
+  every frame now carries the keys it names complete (`codex.turnId` from a message's first chunk
+  survives the final frame's `codex.phase`; a reconciled tool keeps its `codex.subagent`). Keys a
+  frame does not name are left alone.
+
 ## 0.7.17 — 2026-10-19
 
 ### Changed
