@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.7.20 — 2026-10-19
+
+### Added
+
+- Config revision binding: every `config_option_update` and every `session/new`, `session/resume`, `session/fork`
+  and `session/set_config_option` response carries `_meta.alwith.configRevision`; a prompt may carry
+  `_meta.alwith.expectedConfigRevision` and is refused with `config/stale` (invalid params, the actual options in
+  `data.alwith.configStale`) when the session's config moved past it. `_alwith/config_snapshot` reads the current
+  options and revision. Capability `_meta.alwith.configRevision: { version: 1 }`.
+
 ## 0.7.19 — 2026-10-19
 
 ### Changed
