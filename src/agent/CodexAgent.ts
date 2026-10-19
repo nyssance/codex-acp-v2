@@ -1,3 +1,4 @@
+import {ComposerPredictions} from "./composerPredictions";
 import type {ThreadItem} from "../app-server/v2";
 import {clientToolsOf, dynamicTools, ClientTools} from "./clientTools";
 import {classifyTurnError, type StopReason} from "./turnErrors";
@@ -152,6 +153,7 @@ export class CodexAgent {
     private readonly terminalTurns = new WeakSet<ActiveTurn>();
     private readonly completedTurns = new WeakMap<ActiveTurn, string>();
     private skillRoots: string[] = [];
+    private readonly predictions: ComposerPredictions;
     private skillsGeneration = 0;
     private changingSkillRoots = false;
     private readonly publishedSkills = new WeakMap<SessionRuntime, Awaited<ReturnType<AppServerClient["skillsList"]>>>();
@@ -162,6 +164,7 @@ export class CodexAgent {
 
     constructor(private readonly link: ClientLink, options: CodexAgentOptions) {
         this.codex = options.codex;
+        this.predictions = new ComposerPredictions(this.codex);
         this.process = options.process ?? null;
         this.providers = new ProviderRouting(options.config ?? {}, options.modelProvider ?? null);
         this.info = options.info;
@@ -239,7 +242,7 @@ export class CodexAgent {
                 // pass-through surface for a host that manages Codex's catalogs itself.
                 // rename / account / fuzzyFileSearch: `_codex/session_rename`, `_codex/account_read`,
                 // `_codex/rate_limits` (+ `_codex/rate_limits_updated`) and `_codex/fuzzy_file_search`.
-                _meta: {alwith: {tools: {version: 1}, turns: {version: 2}}, codex: {forkAtTurn: true, sessionLineage: true, archive: true, readState: true, sessionList: {version: 1}, sessionHistory: {version: 2, items: true, modes: ["browse", "export"]}, seedHistory: true, skills: true, plugins: true, pluginEnable: true, providerCatalog: true, rename: true, account: true, fuzzyFileSearch: true}},
+                _meta: {alwith: {tools: {version: 1}, turns: {version: 2}}, codex: {forkAtTurn: true, sessionLineage: true, archive: true, readState: true, sessionList: {version: 1}, sessionHistory: {version: 2, items: true, modes: ["browse", "export"]}, seedHistory: true, skills: true, plugins: true, pluginEnable: true, providerCatalog: true, rename: true, account: true, fuzzyFileSearch: true, composerPredictions: true}},
             },
             authMethods: authMethods(this.capabilities, this.env),
         };
@@ -939,6 +942,23 @@ export class CodexAgent {
         }
     }
 
+    async requestPrediction(params: {sessionId: string; sourceTurnId: string}): Promise<Record<string, never>> {
+        return await this.admission(() => this.requestPredictionInternal(params), params.sessionId);
+    }
+
+    private async requestPredictionInternal(params: {sessionId: string; sourceTurnId: string}): Promise<Record<string, never>> {
+        const runtime = this.runtime(params.sessionId, "_codex/session_prediction_request");
+        assertWritable(runtime);
+        if (runtime.session.activeTurn) throw acp.RequestError.invalidRequest(undefined, "Wait for the current turn to finish before requesting a prediction");
+        if (runtime.modelProvider !== OPENAI_PROVIDER_ID || runtime.session.collaborationMode === PLAN_COLLABORATION_MODE) throw acp.RequestError.invalidRequest(undefined, "Predictions require an OpenAI session outside plan mode");
+        const latest = await this.withCodex(() => this.codex.threadTurnsList({threadId: params.sessionId, limit: 1, sortDirection: "desc"}));
+        if (latest.data[0]?.id !== params.sourceTurnId || latest.data[0].status !== "completed") throw acp.RequestError.invalidRequest(undefined, "Predictions require the latest completed turn");
+        if (runtime.session.activeTurn || runtime.lifetime.signal.aborted) throw acp.RequestError.invalidRequest(undefined, "The source session changed; retry after it finishes");
+        const lowEffort = supportedEfforts(findModel(runtime.session.catalog, runtime.session.model.model)).some(option => option.reasoningEffort === "low");
+        this.predictions.start(params.sessionId, params.sourceTurnId, runtime.client, runtime.lifetime.signal, lowEffort ? "low" : undefined);
+        return {};
+    }
+
     async archiveSession(params: SessionIdParams): Promise<Record<string, never>> {
         return await this.admission(() => this.archiveSessionInternal(params), params.sessionId);
     }
@@ -1099,6 +1119,7 @@ export class CodexAgent {
     }
 
     private async closeRuntime(sessionId: string): Promise<acp.CloseSessionResponse> {
+        this.predictions.cancel(sessionId);
         const deadline = performance.now() + this.closeGraceMs;
         const runtime = this.sessions.get(sessionId);
         if (!runtime) return {};
@@ -1153,6 +1174,7 @@ export class CodexAgent {
     }
 
     private async setSessionConfigOptionInternal(params: acp.SetSessionConfigOptionRequest): Promise<acp.SetSessionConfigOptionResponse> {
+        this.predictions.cancel(params.sessionId);
         const runtime = this.runtime(params.sessionId, "session/set_config_option");
         assertWritable(runtime);
         if (params.configId === MODEL_CONFIG_ID && (this.providers.mode === "catalog" || runtime.session.model.model.startsWith("gateway:")) && typeof params.value === "string") {
@@ -1223,6 +1245,7 @@ export class CodexAgent {
      * (`userMessage.clientId`) claims the same id. Steering keeps the id it was minted with.
      */
     private async promptInternal(params: acp.PromptRequest, allowReentry: boolean, messageId: string): Promise<acp.PromptResponse> {
+        this.predictions.cancel(params.sessionId);
         this.assertRoutingAvailable();
         if (!allowReentry && this.sessionMutations.has(params.sessionId)) throw acp.RequestError.invalidRequest({sessionId: params.sessionId}, "Session lifecycle or configuration work is in progress; retry when it finishes");
         const runtime = this.runtime(params.sessionId, "session/prompt");
@@ -1931,6 +1954,15 @@ export function parseSessionReadStateUpdateParams(raw: unknown): SessionReadStat
         throw acp.RequestError.invalidParams(undefined, "Expected {sessionId, operation: \"read\" | \"unread\", expectedRevision}");
     }
     return {sessionId: raw["sessionId"], operation, expectedRevision: raw["expectedRevision"]};
+}
+
+export function parsePredictionParams(raw: unknown): {sessionId: string; sourceTurnId: string} {
+    const {sessionId} = parseSessionIdParams(raw);
+    const sourceTurnId = (raw as {sourceTurnId?: unknown}).sourceTurnId;
+    if (typeof sourceTurnId !== "string" || sourceTurnId.length === 0) {
+        throw acp.RequestError.invalidParams(undefined, "Expected {sessionId, sourceTurnId: string}");
+    }
+    return {sessionId, sourceTurnId};
 }
 
 /** `_codex/session_archive` / `_codex/session_unarchive` params: `{sessionId}`. */
