@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.25 — 2026-10-20
+
+### Fixed
+
+- Restore fork-boundary metadata on context-only resume using turn summaries, and limit title discovery to the first full turn when no explicit title exists.
+- Apply native image hydration and Desktop attachment-envelope cleanup to both paginated history endpoints, preserving inline images and input metadata and marking expired local images unavailable.
+- Propagate cancellation to image hydration when reading paginated history.
+
 ## 0.7.24
 
 - Normalize native Responses requests when resuming conversations containing foreign plaintext reasoning, including reasoning with foreign encrypted envelopes.

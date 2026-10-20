@@ -92,7 +92,8 @@ export async function readSessionHistory(
                     agents,
                     turn.id,
                     turn.startedAt,
-                    item.type === "userMessage" ? await commandReceipts?.read(item.id) : null
+                    item.type === "userMessage" ? await commandReceipts?.read(item.id) : null,
+                    signal
                   )
                 )
               )
@@ -148,13 +149,14 @@ export async function readSessionHistoryItems(
         itemId: entry.item.id,
         startedAtMs: entry.startedAtMs,
         completedAtMs: entry.completedAtMs,
-        ...projectHistoryItem(
+        ...(await projectHistoryItem(
           entry.item,
           agents,
           entry.turnId,
           null,
-          entry.item.type === "userMessage" ? await commandReceipts?.read(entry.item.id) : null
-        ),
+          entry.item.type === "userMessage" ? await commandReceipts?.read(entry.item.id) : null,
+          signal
+        )),
         ...(params.includeNative ? { _meta: { codex: { item: entry.item } } } : {})
       }))
     )

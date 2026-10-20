@@ -6,6 +6,8 @@ import type { ThreadItem, UserInput } from "../app-server/v2"
 import type { AgentDirectory } from "../bridge/agentDirectory"
 import { itemSnapshot } from "../bridge/itemSnapshot"
 import { withTurnId } from "../bridge/turnMetadata"
+import { fromUserInput, fromUserMessage } from "../codex/sessionConfig"
+import { hydrateUserImages, localImageContent } from "../codex/userImages"
 import { type CommandReceipt, isInternalPlanMessageId } from "./commandReceipts"
 
 export interface HistoryOmission {
@@ -28,9 +30,7 @@ function inputBlock(input: UserInput): acp.ContentBlock {
       }
     case "image":
       return {
-        type: "resource_link",
-        name: "Image",
-        uri: "url" in input ? input.url : `codex-file:${encodeURIComponent(input.fileId)}`,
+        ...fromUserInput(input)[0]!,
         _meta: {
           codex: {
             inputType: input.type,
@@ -41,15 +41,17 @@ function inputBlock(input: UserInput): acp.ContentBlock {
       }
     case "audio":
       return { type: "resource_link", name: "Audio", uri: input.url, _meta: { codex: { inputType: input.type } } }
-    case "localImage":
+    case "localImage": {
+      const block = localImageContent(input.path)
+      block._meta = { codex: { inputType: input.type, ...(input.detail ? { detail: input.detail } : {}) } }
+      return block
+    }
     case "localAudio":
       return {
         type: "resource_link",
-        name: input.type === "localImage" ? "Image" : "Audio",
+        name: "Audio",
         uri: input.path.startsWith("file://") ? input.path : pathToFileURL(input.path).href,
-        _meta: {
-          codex: { inputType: input.type, ...("detail" in input && input.detail ? { detail: input.detail } : {}) }
-        }
+        _meta: { codex: { inputType: input.type } }
       }
     case "skill":
     case "mention":
@@ -63,13 +65,14 @@ function inputBlock(input: UserInput): acp.ContentBlock {
 }
 
 /** A history-specific projection: live replay behavior is deliberately unchanged. */
-export function projectHistoryItem(
+export async function projectHistoryItem(
   item: ThreadItem,
   agents: AgentDirectory,
   turnId: string,
   startedAt?: number | null,
-  command?: CommandReceipt | null
-): HistoryProjection {
+  command?: CommandReceipt | null,
+  signal: AbortSignal = new AbortController().signal
+): Promise<HistoryProjection> {
   const omissions: HistoryOmission[] = []
   let updates: acp.SessionUpdate[]
   if (item.type === "userMessage") {
@@ -81,7 +84,12 @@ export function projectHistoryItem(
         {
           sessionUpdate: "user_message",
           messageId: command?.messageId ?? item.clientId ?? item.id,
-          content: command?.content ?? item.content.map(inputBlock)
+          content:
+            command?.content ??
+            (await hydrateUserImages(
+              fromUserMessage(item.content, (input) => [inputBlock(input)]),
+              signal
+            ))
         }
       ]
     }

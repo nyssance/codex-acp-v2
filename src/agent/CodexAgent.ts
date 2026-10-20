@@ -1035,11 +1035,6 @@ export class CodexAgent {
       session.titleIsExplicit = !!thread.name?.trim()
       if (title) await client.update({ sessionUpdate: "session_info_update", title })
     }
-    if (!replay) {
-      const firstPage = thread.name?.trim() ? { data: [] as Turn[] } : await this.turnPage(session.id, null)
-      await publishTitle(firstPage.data)
-      return
-    }
     // Native turn IDs are preserved by fork. Comparing the two native histories locates
     // the inherited boundary again after restart, without a second provenance store.
     const parentTurns = new Set<string>()
@@ -1065,6 +1060,39 @@ export class CodexAgent {
         }
       } while (parentCursor !== null && !session.closed)
       runtime.lineage.forkedAtTurnId = null
+    }
+    if (!replay) {
+      // Fork provenance is metadata and must survive context-only resume as well.
+      // Read summaries rather than materializing or publishing inherited tool output.
+      if (thread.forkedFromId !== null) {
+        let cursor: string | null = null
+        const seen = new Set<string>()
+        do {
+          const page = await this.withCodex(() =>
+            this.codex.threadTurnsList({
+              threadId: session.id,
+              cursor,
+              limit: HISTORY_PAGE_SIZE,
+              sortDirection: "asc",
+              itemsView: "summary"
+            })
+          )
+          for (const turn of page.data) if (parentTurns.has(turn.id)) runtime.lineage.forkedAtTurnId = turn.id
+          cursor = page.nextCursor
+          if (cursor !== null) {
+            if (seen.has(cursor))
+              throw acp.RequestError.internalError(undefined, "Codex child history repeated a cursor")
+            seen.add(cursor)
+          }
+        } while (cursor !== null && !session.closed)
+      }
+      const firstPage = thread.name?.trim()
+        ? { data: [] as Turn[] }
+        : await this.withCodex(() =>
+            this.codex.threadTurnsList({ threadId: session.id, limit: 1, sortDirection: "asc", itemsView: "full" })
+          )
+      await publishTitle(firstPage.data)
+      return
     }
     const cursors = new Set<string>()
     let cursor: string | null = null

@@ -27,7 +27,27 @@ export async function hydrateUserImages(
   for (const block of content) {
     signal.throwIfAborted()
     const path = nativeImages.get(block)
-    result.push(path === undefined ? block : await readImage(path))
+    if (path === undefined) result.push(block)
+    else {
+      const image = await readImage(path)
+      if (
+        acp.ContentBlock.isResourceLink(block) &&
+        block._meta &&
+        (acp.ContentBlock.isImage(image) || acp.ContentBlock.isResourceLink(image))
+      ) {
+        const original = block._meta["codex"]
+        const hydrated = image._meta?.["codex"]
+        image._meta = {
+          ...block._meta,
+          ...image._meta,
+          codex: {
+            ...(original && typeof original === "object" ? original : {}),
+            ...(hydrated && typeof hydrated === "object" ? hydrated : {})
+          }
+        }
+      }
+      result.push(image)
+    }
   }
   signal.throwIfAborted()
   return result

@@ -122,7 +122,7 @@ describe("general-purpose read-only history", () => {
     ])
   })
 
-  it("preserves mixed media as typed resource references without silent losses", async () => {
+  it("preserves mixed media and marks expired native images unavailable", async () => {
     const t = await setup()
     const page = await t.agent.sessionHistory({ sessionId: THREAD_ID, itemsView: "full", includeNative: true })
     expect(page.turns[0]?.updates).toEqual([
@@ -137,8 +137,8 @@ describe("general-purpose read-only history", () => {
           }),
           expect.objectContaining({
             type: "resource_link",
-            uri: process.platform === "win32" ? "file:///C:/tmp/image.png" : "file:///tmp/image.png",
-            _meta: { codex: { inputType: "localImage" } }
+            uri: "codex-image:unavailable",
+            _meta: { codex: { inputType: "localImage", imageUnavailable: true } }
           })
         ]
       })

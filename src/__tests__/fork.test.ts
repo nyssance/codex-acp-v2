@@ -67,20 +67,39 @@ describe("chat branches", () => {
     ])
   })
 
-  it("restores the inherited boundary after a child has its own turns", async () => {
-    const t = createTestAgent()
-    t.codex.respond("thread/resume", () => threadResponse(thread({ id: "child", forkedFromId: "parent" })))
-    t.codex.respond("thread/turns/list", (params) => ({
-      data: (params.threadId === "parent" ? ["t1", "t2", "later-parent"] : ["t1", "t2", "child-turn"]).map((id) =>
-        turn({ id })
-      ),
-      nextCursor: null,
-      backwardsCursor: null
-    }))
-    await t.initialize()
-    const response = await t.agent.resumeSession({ sessionId: "child", cwd: CWD, replayFrom: { type: "start" } })
-    expect(response._meta).toMatchObject({ codex: { forkedFromId: "parent", forkedAtTurnId: "t2" } })
-  })
+  it.each([true, false])(
+    "restores the inherited boundary after a child has its own turns (replay: %s)",
+    async (replay) => {
+      const t = createTestAgent()
+      t.codex.respond("thread/resume", () => threadResponse(thread({ id: "child", forkedFromId: "parent" })))
+      t.codex.respond("thread/turns/list", (params) => ({
+        data: (params.threadId === "parent" ? ["t1", "t2", "later-parent"] : ["t1", "t2", "child-turn"]).map((id) =>
+          turn({ id })
+        ),
+        nextCursor: null,
+        backwardsCursor: null
+      }))
+      await t.initialize()
+      const response = await t.agent.resumeSession({
+        sessionId: "child",
+        cwd: CWD,
+        ...(replay ? { replayFrom: { type: "start" as const } } : {})
+      })
+      expect(response._meta).toMatchObject({ codex: { forkedFromId: "parent", forkedAtTurnId: "t2" } })
+      if (!replay) {
+        expect(t.client.updatesOf("user_message")).toHaveLength(0)
+        expect(
+          t.codex.requests
+            .filter((request) => request.method === "thread/turns/list")
+            .every(
+              (request) =>
+                (request.params as { itemsView: string }).itemsView === "summary" ||
+                (request.params as { limit: number }).limit === 1
+            )
+        ).toBe(true)
+      }
+    }
+  )
 
   it("rediscovers empty-preview native forks after restart, with archive and project filters", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "fork-index-"))
@@ -231,7 +250,7 @@ describe("chat branches", () => {
     })
     expect((await t.agent.resumeSession({ sessionId: "child", cwd: CWD }))._meta).toEqual({
       alwith: { configRevision: 0 },
-      codex: { nativeSessionId: "tree", forkedFromId: "parent" }
+      codex: { nativeSessionId: "tree", forkedFromId: "parent", forkedAtTurnId: null }
     })
   })
 

@@ -417,6 +417,8 @@ completion reports the history error; confirmed cancellation still reports
 `idle` / `cancelled`.
 When `replayFrom` is omitted or `null`, restoring the active turn only rebuilds internal
 state; it emits no stored message or tool snapshots, before or after the resume response.
+Context-only resume also restores fork-boundary metadata from turn summaries, independently
+of transcript replay. Title discovery reads at most the first full turn when the thread has no explicit name.
 New live tool activity announces any required initial tool/terminal state before its
 updates. Tools never announced to the client are not manufactured merely to finalize
 them. Explicit `replayFrom: {type: "start"}` still replays retained history.
@@ -722,6 +724,10 @@ from a later turn's stop reason. Native history replay continues to use
 `historyInterrupted` with its existing incomplete-history explanation.
 
 ### Native image attachment replay
+
+Both paginated history endpoints use this image projection as well as session
+replay. Inline image data never becomes a file-resource URI, and local native
+images retain their input metadata after hydration or expiry.
 
 Native `localImage` user inputs are replayed as inline ACP `image` blocks, including
 attachments outside the thread directory. Only native attachment references grant

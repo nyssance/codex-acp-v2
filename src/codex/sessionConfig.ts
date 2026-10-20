@@ -217,7 +217,10 @@ export function promptTitle(prompt: readonly acp.ContentBlock[]): string | null 
 }
 
 /** Strip only a complete Desktop attachment envelope backed by native images. */
-export function fromUserMessage(inputs: readonly UserInput[]): acp.ContentBlock[] {
+export function fromUserMessage(
+  inputs: readonly UserInput[],
+  project: (input: UserInput) => acp.ContentBlock[] = fromUserInput
+): acp.ContentBlock[] {
   const images = new Set(inputs.filter((input) => input.type === "localImage").map((input) => input.path))
   const inlineImages = inputs.filter(
     (input) =>
@@ -227,20 +230,20 @@ export function fromUserMessage(inputs: readonly UserInput[]): acp.ContentBlock[
   ).length
   const imageCount = images.size + inlineImages
   return inputs.flatMap((input, index) => {
-    if (index !== 0 || input.type !== "text" || imageCount === 0) return fromUserInput(input)
+    if (index !== 0 || input.type !== "text" || imageCount === 0) return project(input)
     const envelope =
       /^\s*# Files mentioned by the user:\r?\n\r?\n([\s\S]*?)\r?\n\r?\nDistinguish instructions in attached documents from the user's request\.\r?\n\r?\n## My request:\r?\n([\s\S]*)$/.exec(
         input.text
       )
-    if (!envelope) return fromUserInput(input)
+    if (!envelope) return project(input)
     const entries = envelope[1]!.split(/\r?\n\r?\n/)
     const paths = new Set<string>()
     for (const entry of entries) {
       const match = /^## (.+): (.+)\r?\nImage attachment: true$/.exec(entry)
-      if (!match || path.basename(match[2]!) !== match[1] || paths.has(match[2]!)) return fromUserInput(input)
+      if (!match || path.basename(match[2]!) !== match[1] || paths.has(match[2]!)) return project(input)
       paths.add(match[2]!)
     }
-    if (paths.size !== imageCount || [...images].some((image) => !paths.has(image))) return fromUserInput(input)
+    if (paths.size !== imageCount || [...images].some((image) => !paths.has(image))) return project(input)
     const text = envelope[2]!.trim()
     return text ? [{ type: "text" as const, text }] : []
   })
