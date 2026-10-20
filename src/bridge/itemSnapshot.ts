@@ -69,8 +69,8 @@ export function itemSnapshot(item: ThreadItem, agents: AgentDirectory, command?:
     case "contextCompaction":
       return [tool.compactionUpdate(item.id, "completed")]
     case "enteredReviewMode":
-    // Codex follows every review exit with an assistant message carrying the same conclusion.
     case "exitedReviewMode":
+      // Codex follows every review exit with an assistant message carrying the same conclusion.
       return []
     case "hookPrompt":
     case "functionCallOutput":

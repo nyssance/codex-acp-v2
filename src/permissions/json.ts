@@ -20,7 +20,7 @@ export function normalizeJsonValue(value: unknown): JsonValue {
         .map(([key, nested]) => [key, normalizeJsonValue(nested)])
     )
   }
-  return String(value)
+  throw new Error(`Unsupported JSON value: ${typeof value}`)
 }
 
 export function normalizeJsonObject(value: Record<string, unknown>): Record<string, JsonValue> {

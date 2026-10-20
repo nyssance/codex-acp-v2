@@ -91,7 +91,7 @@ export function parseClaudeTranscript(text: string): ClaudeTranscriptLine[] {
     } catch (error) {
       // Only the final line may be a partial write in progress.
       if (index === raw.length - 1 || (index === raw.length - 2 && raw[raw.length - 1] === "")) continue
-      throw new Error(`Claude transcript line ${index + 1} is not JSON: ${String(error)}`)
+      throw new Error(`Claude transcript line ${index + 1} is not JSON: ${String(error)}`, { cause: error })
     }
     if (parsed.type === "acpDelivery" && parsed.status === "sent" && parsed.messageUuid) sent.add(parsed.messageUuid)
     if (parsed.type !== "user" && parsed.type !== "assistant") continue
@@ -115,11 +115,13 @@ function toolResultText(content: unknown): string {
   if (typeof content === "string") return content
   if (Array.isArray(content)) {
     return content
-      .map((block) =>
-        typeof block === "object" && block !== null && (block as { type?: unknown }).type === "text"
-          ? String((block as { text?: unknown }).text ?? "")
-          : JSON.stringify(block)
-      )
+      .map((block) => {
+        const text =
+          typeof block === "object" && block !== null && (block as { type?: unknown }).type === "text"
+            ? (block as { text?: unknown }).text
+            : undefined
+        return typeof text === "string" ? text : JSON.stringify(block)
+      })
       .join("\n")
   }
   if (content === undefined || content === null) return ""

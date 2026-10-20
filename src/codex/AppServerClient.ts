@@ -107,6 +107,7 @@ import type {
   TurnSteerResponse
 } from "../app-server/v2"
 import { abortable } from "../util/abort"
+import { asError } from "../util/errors"
 import { logger } from "../util/logger"
 
 export interface ApprovalHandler {
@@ -453,10 +454,10 @@ export class AppServerClient {
       }
       const aborted = () => {
         cleanup()
-        reject(lifetime.reason)
+        reject(asError(lifetime.reason))
       }
       if (lifetime.aborted) {
-        reject(lifetime.reason)
+        reject(asError(lifetime.reason))
         return
       }
       lifetime.addEventListener("abort", aborted, { once: true })

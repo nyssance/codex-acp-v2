@@ -90,7 +90,9 @@ export function resolveCodexLauncher(codexPath: string | undefined): {
     let vendor = path.resolve(path.dirname(launcher), "..", "vendor")
     try {
       vendor = path.join(path.dirname(platformRequire.resolve(`@openai/codex-${platform}/package.json`)), "vendor")
-    } catch {}
+    } catch {
+      /* empty */
+    }
     const command = path.join(vendor, target, "bin", process.platform === "win32" ? "codex.exe" : "codex")
     if (!existsSync(command)) throw new Error(`Missing Codex platform binary: ${command}`)
     // A compiled adapter's execPath is itself, not a JS runtime. Spawn the native binary directly.
@@ -98,7 +100,8 @@ export function resolveCodexLauncher(codexPath: string | undefined): {
   } catch (error) {
     throw new Error(
       "No Codex CLI: set CODEX_PATH to an installed Codex executable, or install the optional " +
-        `@openai/codex dependency (${String(error)})`
+        `@openai/codex dependency (${String(error)})`,
+      { cause: error }
     )
   }
 }
@@ -141,12 +144,16 @@ export function startCodexProcess(codexPath?: string, env: NodeJS.ProcessEnv = p
   connection.listen()
   void drained.then(() => connection.dispose())
   const exited = new Promise<number | null>((resolve) => {
-    child.on("close", async (code, signal) => {
-      logger.log("codex exited", { code, signal })
-      await drained
-      connection.dispose()
-      resolve(code)
-    })
+    child.on(
+      "close",
+      (code, signal) =>
+        void (async () => {
+          logger.log("codex exited", { code, signal })
+          await drained
+          connection.dispose()
+          resolve(code)
+        })()
+    )
   })
 
   return {

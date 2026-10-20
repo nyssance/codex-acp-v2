@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 
-import { Readable, Writable } from "node:stream"
+import { Writable } from "node:stream"
 
 import * as acp from "@agentclientprotocol/sdk/experimental/v2/unstable"
 
@@ -66,10 +66,7 @@ function startAgent(): void {
     }, CODEX_EXIT_GRACE_MS).unref()
   })
 
-  const stream = acp.ndJsonStream(
-    Writable.toWeb(process.stdout),
-    Readable.toWeb(process.stdin) as ReadableStream<Uint8Array>
-  )
+  const stream = acp.ndJsonStream(Writable.toWeb(process.stdout), Bun.stdin.stream())
   const app = createAgentApp({
     codex,
     process: codexProcess,

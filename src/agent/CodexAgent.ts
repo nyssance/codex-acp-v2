@@ -1077,7 +1077,8 @@ export class CodexAgent {
       await publishTitle(page.data)
       const commandReceipts = new Map<string, CommandReceipt>()
       const userItems = page.data.flatMap((turn) => turn.items.filter((item) => item.type === "userMessage"))
-      const receipts = await Promise.all(userItems.map((item) => this.commandReceipts?.read(item.id)))
+      const store = this.commandReceipts
+      const receipts = store === null ? [] : await Promise.all(userItems.map((item) => store.read(item.id)))
       for (let i = 0; i < userItems.length; i++) {
         const receipt = receipts[i]
         if (receipt) commandReceipts.set(userItems[i]!.id, receipt)

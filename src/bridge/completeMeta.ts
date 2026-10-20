@@ -46,6 +46,12 @@ export class CompleteMeta {
   }
 }
 
+/** Ids are strings on every known update; the SDK types them unknown only through its unknown-variant member. */
+function protocolId(value: unknown): string {
+  if (typeof value !== "string") throw new Error(`Protocol id is not a string: ${JSON.stringify(value)}`)
+  return value
+}
+
 function entityKey(update: acp.SessionUpdate): string | null {
   switch (update.sessionUpdate) {
     case "user_message":
@@ -54,18 +60,18 @@ function entityKey(update: acp.SessionUpdate): string | null {
     case "agent_message_chunk":
     case "agent_thought":
     case "agent_thought_chunk":
-      return `message:${update.messageId}`
+      return `message:${protocolId(update.messageId)}`
     case "tool_call_update":
     case "tool_call_content_chunk":
-      return `tool:${update.toolCallId}`
+      return `tool:${protocolId(update.toolCallId)}`
     case "terminal_update":
     case "terminal_output_chunk":
-      return `terminal:${update.terminalId}`
+      return `terminal:${protocolId(update.terminalId)}`
     case "plan_update":
       return `plan:${(update as acp.PlanUpdate).plan.planId}`
     case "compaction_update":
     case "compaction_summary_chunk":
-      return `compaction:${update.compactionId}`
+      return `compaction:${protocolId(update.compactionId)}`
     case "session_info_update":
       return "session"
     default:

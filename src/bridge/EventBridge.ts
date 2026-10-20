@@ -403,7 +403,7 @@ export class EventBridge {
       case "item/started":
         return this.itemStarted(notification.params.item)
       case "item/completed":
-        return this.itemCompleted(notification.params.item, notification.params.turnId)
+        return this.itemCompleted(notification.params.item)
       case "item/commandExecution/outputDelta": {
         const { itemId, delta } = notification.params
         return this.terminalItems.has(itemId) && delta.length > 0 ? [terminalOutputChunk(itemId, delta)] : []
@@ -641,7 +641,7 @@ export class EventBridge {
     }
   }
 
-  private async itemCompleted(item: ThreadItem, turnId: string): Promise<acp.SessionUpdate[]> {
+  private async itemCompleted(item: ThreadItem): Promise<acp.SessionUpdate[]> {
     switch (item.type) {
       case "agentMessage":
         this.messagePhases.delete(item.id)
@@ -688,8 +688,8 @@ export class EventBridge {
       case "functionCallOutput":
       case "sleep":
       case "enteredReviewMode":
-      // Codex follows every review exit with an assistant message carrying the same conclusion.
       case "exitedReviewMode":
+        // Codex follows every review exit with an assistant message carrying the same conclusion.
         return []
     }
   }
