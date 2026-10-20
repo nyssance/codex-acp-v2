@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.22 — 2026-10-20
+
+### Changed
+
+- Host instructions arrive through ACP v2 alpha.9's standard `systemPrompt { mode: "append", content }` on
+  `session/new`, `session/resume` and `session/fork`; the agent advertises `capabilities.session.systemPrompt`
+  and rejects other modes or non-text blocks with `-32602`. The private `_meta.alwith.appendSystemPrompt` is gone.
+
 ## 0.7.21 — 2026-10-19
 
 ### Added

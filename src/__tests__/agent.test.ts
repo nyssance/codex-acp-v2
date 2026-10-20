@@ -11,13 +11,19 @@ describe("host session options", () => {
     it("passes host instructions and the explicit permission preset to new and resumed threads", async () => {
         const t = createTestAgent();
         await t.initialize();
-        const meta = {alwith: {appendSystemPrompt: "Only edit through Board tools."}, codex: {mode: "read-only"}};
-        const created = await t.agent.newSession({cwd: CWD, _meta: meta});
+        const meta = {codex: {mode: "read-only"}};
+        const systemPrompt = {mode: "append" as const, content: [{type: "text" as const, text: "Only edit through Board tools."}]};
+        const created = await t.agent.newSession({cwd: CWD, systemPrompt, _meta: meta});
         expect(t.codex.lastParams("thread/start")).toMatchObject({developerInstructions: "Only edit through Board tools.", approvalPolicy: "on-request", approvalsReviewer: "user", sandbox: "workspace-write"});
         await t.agent.closeSession({sessionId: created.sessionId});
-        await t.agent.resumeSession({sessionId: created.sessionId, cwd: CWD, _meta: meta});
+        await t.agent.resumeSession({sessionId: created.sessionId, cwd: CWD, systemPrompt, _meta: meta});
         expect(t.codex.lastParams("thread/resume")).toMatchObject({developerInstructions: "Only edit through Board tools.", approvalsReviewer: "user"});
         await expectRejects(t.agent.newSession({cwd: CWD, _meta: {codex: {mode: "invalid"}}}), -32602, "mode");
+        await expectRejects(
+            t.agent.newSession({cwd: CWD, systemPrompt: {mode: "override", content: [{type: "text", text: "x"}]}}),
+            -32602,
+            "systemPrompt.mode",
+        );
     });
 });
 
@@ -33,6 +39,7 @@ describe("initialize", () => {
             fork: {},
             delete: {},
             additionalDirectories: {},
+            systemPrompt: {},
         });
         expect(response.authMethods?.map(method => method.methodId)).toEqual(["api-key", "chat-gpt", "chat-gpt-device-code"]);
         expect(t.codex.lastParams<{clientInfo: {name: string}}>("initialize").clientInfo.name).toBe("test-client");

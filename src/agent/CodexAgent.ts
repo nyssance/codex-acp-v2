@@ -242,6 +242,7 @@ export class CodexAgent {
                     fork: {},
                     delete: {},
                     additionalDirectories: {},
+                    systemPrompt: {},
                 },
                 providers: {},
                 // Codex desktop's thread model: hide = archive (reversible), delete = delete.
@@ -497,7 +498,7 @@ export class CodexAgent {
         }
         const mcpServers = request.mcpServers ?? [];
         const clientTools = clientToolsOf(request._meta);
-        const host = hostSessionOptions(request._meta);
+        const host = hostSessionOptions(request);
         const mode = host.mode ?? initialAgentMode(this.env);
         const hostThreadOptions = {
             ...(host.instructions === undefined ? {} : {developerInstructions: host.instructions}),
@@ -2060,10 +2061,26 @@ function readOnlyThread(thread: Thread, cwd: string): ThreadResumeResponse {
     };
 }
 
-function hostSessionOptions(meta: acp.NewSessionRequest["_meta"]) {
-    const instructions = (meta as {alwith?: {appendSystemPrompt?: unknown}} | undefined)?.alwith?.appendSystemPrompt;
-    if (instructions !== undefined && typeof instructions !== "string") {
-        throw acp.RequestError.invalidParams(undefined, "appendSystemPrompt must be a string");
+/**
+ * ACP `systemPrompt` (alpha.9, capability `session.systemPrompt`): only `append` is advertised, so
+ * it becomes Codex developer instructions; any other mode or a non-text block is rejected as the
+ * protocol requires instead of being treated as append.
+ */
+function hostSessionOptions(request: {systemPrompt?: acp.SystemPrompt | null; _meta?: acp.NewSessionRequest["_meta"]}) {
+    const {systemPrompt, _meta: meta} = request;
+    let instructions: string | undefined;
+    if (systemPrompt !== undefined && systemPrompt !== null) {
+        if (systemPrompt.mode !== "append") {
+            throw acp.RequestError.invalidParams({mode: systemPrompt.mode}, "systemPrompt.mode must be \"append\"");
+        }
+        instructions = systemPrompt.content
+            .map(block => {
+                if (block.type !== "text") {
+                    throw acp.RequestError.invalidParams({type: block.type}, "systemPrompt.content only accepts text blocks");
+                }
+                return block.text;
+            })
+            .join("\n\n");
     }
     const modeId = (meta as {codex?: {mode?: unknown}} | undefined)?.codex?.mode;
     const mode = typeof modeId === "string" ? findAgentMode(modeId) : undefined;
