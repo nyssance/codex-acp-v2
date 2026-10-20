@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.24
+
+- Normalize native Responses requests when resuming conversations containing foreign plaintext reasoning, including reasoning with foreign encrypted envelopes.
+- Preserve original Codex history and authentication through a process-local HTTP/SSE and WebSocket proxy, including zstd requests and cancellation.
+
+
 ## 0.7.23 — 2026-10-20
 
 ### Changed

@@ -18,7 +18,7 @@ export interface FakeGateway {
     close(): Promise<void>;
 }
 
-export function startFakeGateway(options: {token: string; reply: string; delayMs?: number; toolForRequest?: (index: number) => {name: string; arguments: Record<string, unknown>} | undefined}): Promise<FakeGateway> {
+export function startFakeGateway(options: {token: string; reply: string; reasoning?: boolean; delayMs?: number; toolForRequest?: (index: number) => {name: string; arguments: Record<string, unknown>} | undefined}): Promise<FakeGateway> {
     const requests: GatewayRequest[] = [];
     const server = http.createServer((request, response) => {
         const chunks: Buffer[] = [];
@@ -45,7 +45,7 @@ export function startFakeGateway(options: {token: string; reply: string; delayMs
             }
             response.writeHead(200, {"content-type": "text/event-stream", "cache-control": "no-cache"});
             const tool = options.toolForRequest?.(requests.length - 1);
-            const payload = tool ? toolStream(tool, requests.length) : responsesStream(options.reply, typeof body["model"] === "string" ? body["model"] : "unknown");
+            const payload = tool ? toolStream(tool, requests.length) : responsesStream(options.reply, typeof body["model"] === "string" ? body["model"] : "unknown", options.reasoning ?? false);
             if (options.delayMs) setTimeout(() => response.end(payload), options.delayMs);
             else response.end(payload);
         });
@@ -76,14 +76,15 @@ function toolStream(tool: {name: string; arguments: Record<string, unknown>}, in
     return events.map((data, sequence_number) => `event: ${data.type}\ndata: ${JSON.stringify({...data, sequence_number})}\n\n`).join("");
 }
 
-function responsesStream(text: string, model: string): string {
+function responsesStream(text: string, model: string, includeReasoning: boolean): string {
+    const reasoning = {type: "reasoning", id: "reasoning_foreign", summary: [], content: [{type: "reasoning_text", text: "Foreign provider reasoning."}], encrypted_content: "foreign-provider-envelope"};
     const item = {type: "message", id: "msg_fake", role: "assistant", status: "completed", content: [{type: "output_text", text, annotations: []}]};
     const response = {
         id: "resp_fake",
         object: "response",
         model,
         status: "completed",
-        output: [item],
+        output: includeReasoning ? [item, reasoning] : [item],
         usage: {input_tokens: 12, input_tokens_details: {cached_tokens: 0}, output_tokens: 3, output_tokens_details: {reasoning_tokens: 0}, total_tokens: 15},
     };
     const events: Array<[string, Record<string, unknown>]> = [
@@ -96,5 +97,9 @@ function responsesStream(text: string, model: string): string {
         ["response.output_item.done", {type: "response.output_item.done", sequence_number: 6, output_index: 0, item}],
         ["response.completed", {type: "response.completed", sequence_number: 7, response}],
     ];
+    if (includeReasoning) {
+        events.splice(events.length - 1, 0, ["response.output_item.done", {type: "response.output_item.done", output_index: 1, item: reasoning}]);
+        events.forEach(([, data], sequence) => { data["sequence_number"] = sequence; });
+    }
     return events.map(([event, data]) => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`).join("");
 }

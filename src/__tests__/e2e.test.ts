@@ -334,8 +334,8 @@ describe.skipIf(!RUN)("live codex", {timeout: 240_000}, () => {
         expect(await client.call("session/delete", {sessionId: forked.sessionId})).toEqual({});
     });
 
-    it("routes a session through a client-configured gateway", async () => {
-        const gateway: FakeGateway = await startFakeGateway({token: "e2e-token", reply: "pong from the fake gateway"});
+    it("routes through a gateway and returns to native with foreign plaintext and encrypted reasoning", async () => {
+        const gateway: FakeGateway = await startFakeGateway({token: "e2e-token", reply: "pong from the fake gateway", reasoning: true});
         try {
             const providerRequest = {
                 providerId: "openai",

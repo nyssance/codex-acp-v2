@@ -1,3 +1,4 @@
+import {ResponsesProxy} from "../codex/responsesProxy";
 import {ComposerPredictions} from "./composerPredictions";
 import type {ThreadItem} from "../app-server/v2";
 import {clientToolsOf, dynamicTools, ClientTools} from "./clientTools";
@@ -143,6 +144,8 @@ export class CodexAgent {
     private readonly codex: AppServerClient;
     private readonly process: CodexProcess | null;
     private providers: ProviderRouting;
+    private readonly responsesProxy = new ResponsesProxy();
+    private readonly responsesUpstreams = new Map<string, string>();
     private switching = false;
     private admissions = 0;
     private readonly pendingUnsubscribes = new Map<string, Promise<unknown>>();
@@ -382,8 +385,8 @@ export class CodexAgent {
                 const nextCatalog = candidate.catalog(catalog);
                 for (const runtime of moving) {
                     const target = targets.get(runtime) ?? null;
-                    const config = candidate.rebind(runtime.config, this.providers, target);
                     const modelProvider = target ?? nativeProvider;
+                    const config = await this.responsesConfig(candidate.rebind(runtime.config, this.providers, target), modelProvider, runtime.session.cwd);
                     const keep = findModel(nextCatalog, runtime.session.model.model) && candidate.gatewayIdFor(runtime.session.model.model) === target;
                     const requestedModel = candidate.mode === "route" ? candidate.active?.model ?? (keep ? runtime.session.model.model : null) : keep ? runtime.session.model.model : null;
                     const selection = resolveModelSelection(nextCatalog, requestedModel, requestedModel === runtime.session.model.model ? runtime.session.model.effort : null);
@@ -525,9 +528,14 @@ export class CodexAgent {
             throw acp.RequestError.authRequired(undefined, "Log in to Codex first (auth/login)");
         }
         const existingMcp = mcpServers.length > 0 ? await this.withCodex(() => this.configuredMcpServerNames(request.cwd)) : new Set<string>();
-        const config = buildThreadConfig(this.providers.threadConfig(gatewayId), request.cwd, additionalDirectories, mcpServers, existingMcp);
+        let config = buildThreadConfig(this.providers.threadConfig(gatewayId), request.cwd, additionalDirectories, mcpServers, existingMcp);
         const mcpStartupGeneration = this.codex.mcpStartupGeneration;
-        const modelProvider = gatewayId ?? await this.withCodex(() => this.resolveModelProvider());
+        const effective = gatewayId === null && this.providers.modelProvider() === null
+            ? await this.withCodex(() => this.codex.configRead({includeLayers: false, cwd: request.cwd})) : null;
+        const configuredProvider = effective?.config["model_provider"];
+        const modelProvider = gatewayId ?? this.providers.modelProvider()
+            ?? (typeof configuredProvider === "string" && configuredProvider.length > 0 ? configuredProvider : OPENAI_PROVIDER_ID);
+        config = await this.responsesConfig(config, modelProvider, request.cwd, {account, effective});
         const startModel = this.providers.upstreamModel(onGateway ? requestedModel ?? this.providers.gateway(gatewayId)?.model ?? null : requestedModel);
 
         let readOnly = false;
@@ -1225,8 +1233,8 @@ export class CodexAgent {
         } catch {
             await this.withCodex(() => this.codex.threadInjectItems({threadId: session.id, items: [providerChangeNote()]}));
         }
-        const config = this.providers.routeConfig(runtime.config, gatewayId);
         const modelProvider = gatewayId ?? await this.withCodex(() => this.resolveModelProvider());
+        const config = await this.responsesConfig(this.providers.routeConfig(runtime.config, gatewayId), modelProvider, session.cwd);
         await this.codex.threadUnsubscribe({threadId: session.id});
         try {
             await this.withCodex(() => this.codex.threadResume({threadId: session.id, cwd: session.cwd, config, modelProvider, model: this.providers.upstreamModel(modelId), excludeTurns: true}));
@@ -1796,6 +1804,31 @@ export class CodexAgent {
         return names;
     }
 
+    /** Recompute transient transport routing on every open/resume; never persist it in user config. */
+    private async responsesConfig(config: JsonObject, modelProvider: string, cwd: string, context?: {
+        account: Awaited<ReturnType<AppServerClient["accountRead"]>>;
+        effective: Awaited<ReturnType<AppServerClient["configRead"]>> | null;
+    }): Promise<JsonObject> {
+        const next = {...config};
+        const configured = next["openai_base_url"];
+        const previous = typeof configured === "string" ? this.responsesUpstreams.get(configured) : undefined;
+        if (previous !== undefined) delete next["openai_base_url"];
+        if (modelProvider !== OPENAI_PROVIDER_ID) return next;
+        const effective = context?.effective ?? await this.codex.configRead({includeLayers: false, cwd});
+        const base = this.providers.threadConfig(null);
+        const explicit = previous ?? next["openai_base_url"] ?? base["openai_base_url"] ?? effective.config["openai_base_url"] ?? this.env["OPENAI_BASE_URL"];
+        const account = context?.account ?? await this.codex.accountRead({refreshToken: false});
+        const chatgpt = account.account?.type === "chatgpt";
+        // An explicit OpenAI base URL overrides the auth-dependent built-in endpoint in Codex.
+        const upstream = typeof explicit === "string" && explicit.length > 0 ? explicit
+            : chatgpt ? "https://chatgpt.com/backend-api/codex"
+                : "https://api.openai.com/v1";
+        const local = await this.responsesProxy.route(upstream);
+        this.responsesUpstreams.set(local, upstream);
+        next["openai_base_url"] = local;
+        return next;
+    }
+
     private async resolveModelProvider(routing: ProviderRouting = this.providers): Promise<string> {
         const routed = routing.modelProvider();
         if (routed) return routed;
@@ -1848,6 +1881,7 @@ export class CodexAgent {
     private handleCodexExit(): void {
         if (this.exitHandled) return;
         this.exitHandled = true;
+        this.responsesProxy.close();
         for (const runtime of this.sessions.values()) {
             const turn = runtime.session.activeTurn;
             if (!turn || this.completedTurns.get(turn) === turn.turnId) continue;
