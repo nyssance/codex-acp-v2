@@ -1,11 +1,10 @@
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test"
 import { type ChildProcess, execFileSync, spawn } from "node:child_process"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import readline from "node:readline"
 import { pathToFileURL } from "node:url"
-
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest"
 
 import type { SessionHistoryItemsResponse, SessionHistoryResponse } from "../agent/sessionHistory"
 import { type FakeGateway, startFakeGateway } from "./fakeGateway"
@@ -142,7 +141,7 @@ class StdioClient {
   }
 }
 
-describe.skipIf(!RUN)("live codex", { timeout: 240_000 }, () => {
+describe.skipIf(!RUN)("live codex", () => {
   let client: StdioClient
   let cwd: string
   let firstSessionId: string
@@ -527,7 +526,7 @@ describe.skipIf(!RUN)("live codex", { timeout: 240_000 }, () => {
   })
 })
 
-describe.skipIf(!RUN)("live read-only history", { timeout: 120_000 }, () => {
+describe.skipIf(!RUN)("live read-only history", () => {
   it("pages a foreign writer's history, detects changes and reads closed and archived sessions", async () => {
     const owner = new StdioClient()
     const reader = new StdioClient()

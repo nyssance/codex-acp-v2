@@ -32,7 +32,7 @@ export function startFakeGateway(options: {
     request.on("end", () => {
       const path = request.url ?? "/"
       const authorization = request.headers.authorization ?? null
-      let body: Record<string, unknown> = {}
+      let body: Record<string, unknown>
       try {
         body = chunks.length > 0 ? (JSON.parse(Buffer.concat(chunks).toString("utf8")) as Record<string, unknown>) : {}
       } catch {

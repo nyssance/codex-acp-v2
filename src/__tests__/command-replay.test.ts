@@ -1,19 +1,19 @@
+import { describe, expect, it, spyOn } from "bun:test"
 import { mkdtemp } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
 
-import { describe, expect, it, vi } from "vitest"
 import { ResponseError } from "vscode-jsonrpc/node"
 
 import { type CommandReceipt, CommandReceipts } from "../agent/commandReceipts"
 import { historyUpdates } from "../agent/history"
 import { noAgents } from "./fixtures"
-import { createTestAgent, CWD, itemStarted, THREAD_ID, threadResponse, turn, turnCompleted } from "./harness"
+import { createTestAgent, CWD, itemStarted, THREAD_ID, threadResponse, turn, turnCompleted, waitFor } from "./harness"
 
 describe("command history projection", () => {
   it.each(["/review", "/plan inspect"])("does not execute %s when history protection fails", async (text) => {
     const receipts = new CommandReceipts()
-    vi.spyOn(receipts, "prepare").mockRejectedValue(new Error("history directory is read-only"))
+    spyOn(receipts, "prepare").mockRejectedValue(new Error("history directory is read-only"))
     const t = createTestAgent({ commandReceipts: receipts })
     await t.initialize()
     await t.openSession()
@@ -36,7 +36,7 @@ describe("command history projection", () => {
     const preparing = new Promise<void>((resolve) => {
       started = resolve
     })
-    vi.spyOn(receipts, "prepare").mockImplementation(async (threadId) => {
+    spyOn(receipts, "prepare").mockImplementation(async (threadId) => {
       started()
       await gate
       return await prepare(threadId)
@@ -72,7 +72,7 @@ describe("command history projection", () => {
     }
     itemStarted(t.codex, native, "review-turn")
     turnCompleted(t.codex, { id: "review-turn" })
-    await expect.poll(() => t.client.states().at(-1)).toBe("idle")
+    await waitFor(() => expect(t.client.states().at(-1)).toBe("idle"))
     expect(t.client.updatesOf("state_update").at(-1)).toMatchObject({ stopReason: "end_turn" })
     const fresh = createTestAgent({ commandReceipts: new CommandReceipts(home) })
     await fresh.initialize()
@@ -90,7 +90,7 @@ describe("command history projection", () => {
     async (endpoint) => {
       const home = await mkdtemp(path.join(tmpdir(), "acp-receipt-replay-"))
       const receipts = new CommandReceipts(home)
-      vi.spyOn(receipts, "write").mockRejectedValue(new Error("disk full"))
+      spyOn(receipts, "write").mockRejectedValue(new Error("disk full"))
       const t = createTestAgent({ commandReceipts: receipts })
       await t.initialize()
       await t.openSession()
@@ -275,7 +275,7 @@ describe("command start rejection", () => {
       throw new ResponseError(-32602, "Invalid parameters; command not started")
     })
     await t.agent.prompt({ sessionId: THREAD_ID, prompt: [{ type: "text", text: prompt }] })
-    await expect.poll(() => t.client.states().at(-1)).toBe("idle")
+    await waitFor(() => expect(t.client.states().at(-1)).toBe("idle"))
     expect(t.client.updatesOf("state_update").at(-1)).toMatchObject({ stopReason: "error" })
     const fresh = createTestAgent({ commandReceipts: new CommandReceipts(home) })
     await fresh.initialize()

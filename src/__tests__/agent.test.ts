@@ -1,12 +1,12 @@
+import { describe, expect, it } from "bun:test"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { pathToFileURL } from "node:url"
 
 import * as acp from "@agentclientprotocol/sdk/experimental/v2/unstable"
-import { describe, expect, it } from "vitest"
 
-import type { ThreadStartParams, TurnStartParams } from "../app-server/v2"
+import type { SkillsListResponse, ThreadStartParams, TurnStartParams } from "../app-server/v2"
 import {
   createTestAgent,
   CWD,
@@ -506,7 +506,10 @@ describe("session/cancel", () => {
     })
     await t.settle()
     await t.agent.cancel({ sessionId: THREAD_ID })
-    expect(t.codex.lastParams<{ turnId: string }>("turn/interrupt")).toEqual({ threadId: THREAD_ID, turnId: TURN_ID })
+    expect(t.codex.lastParams<{ threadId: string; turnId: string }>("turn/interrupt")).toEqual({
+      threadId: THREAD_ID,
+      turnId: TURN_ID
+    })
     turnCompleted(t.codex, { status: "interrupted" })
     await t.settle()
     expect(t.client.states()).toEqual(["running", "idle"])
@@ -924,12 +927,19 @@ describe("skills and plugins", () => {
         {
           cwd: CWD,
           skills: [
-            { name: "review", description: "Review code", path: "/skills/review", scope: "user", enabled: true }
+            {
+              name: "review",
+              description: "Review code",
+              path: "/skills/review",
+              scope: "user",
+              enabled: true,
+              pluginId: null
+            }
           ],
           errors: []
         }
       ]
-    }
+    } satisfies SkillsListResponse
     t.codex.respond("skills/list", () => listed)
     t.codex.respond("skills/config/write", () => ({ effectiveEnabled: false }))
     expect(await t.agent.skillsList({ cwds: [CWD], forceReload: true })).toEqual(listed)
@@ -947,20 +957,20 @@ describe("skills and plugins", () => {
     const installed = { marketplaces: [], marketplaceLoadErrors: [] }
     t.codex.respond("plugin/list", () => catalog)
     t.codex.respond("plugin/installed", () => installed)
-    t.codex.respond("plugin/install", () => ({ authPolicy: "none", appsNeedingAuth: [] }))
+    t.codex.respond("plugin/install", () => ({ authPolicy: "ON_INSTALL", appsNeedingAuth: [] }))
     t.codex.respond("plugin/uninstall", () => ({}))
     t.codex.respond("plugin/read", () => ({ plugin: { id: "p1", name: "One" } }))
     expect(await t.agent.pluginList({ forceRefetch: true })).toEqual(catalog)
     expect(t.codex.lastParams("plugin/list")).toEqual({ forceRefetch: true })
     expect(await t.agent.pluginInstalled({ cwds: [CWD] })).toEqual(installed)
     expect(await t.agent.pluginInstall({ pluginName: "one", remoteMarketplaceName: "official" })).toEqual({
-      authPolicy: "none",
+      authPolicy: "ON_INSTALL",
       appsNeedingAuth: []
     })
     expect(t.codex.lastParams("plugin/install")).toEqual({ pluginName: "one", remoteMarketplaceName: "official" })
     expect(await t.agent.pluginUninstall({ pluginId: "p1" })).toEqual({})
     expect(t.codex.lastParams("plugin/uninstall")).toEqual({ pluginId: "p1" })
-    expect(await t.agent.pluginRead({ pluginName: "one" })).toEqual({ plugin: { id: "p1", name: "One" } })
+    expect<unknown>(await t.agent.pluginRead({ pluginName: "one" })).toEqual({ plugin: { id: "p1", name: "One" } })
     await t.settle()
     expect(t.client.notifications.filter((entry) => entry.method === "_codex/skills_changed")).toHaveLength(2)
   })

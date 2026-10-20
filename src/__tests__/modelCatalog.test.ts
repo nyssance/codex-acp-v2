@@ -1,8 +1,7 @@
+import { describe, expect, it } from "bun:test"
 import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs"
 import os from "node:os"
 import path from "node:path"
-
-import { describe, expect, it } from "vitest"
 
 import { EXTRA_MODEL_CATALOGS_ENV, mergedModelCatalog } from "../codex/process"
 

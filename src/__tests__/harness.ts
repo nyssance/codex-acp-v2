@@ -1,14 +1,15 @@
 import { CWD, model, thread, THREAD_ID, threadResponse, turn, TURN_ID } from "./fixtures"
 export { CWD, THREAD_ID, TURN_ID, model, thread, turn, threadResponse } from "./fixtures"
+import { expect, mock } from "bun:test"
+
 import * as acp from "@agentclientprotocol/sdk/experimental/v2/unstable"
-import { expect, vi } from "vitest"
 import type { Disposable, MessageConnection, RequestType } from "vscode-jsonrpc/node"
 
 import type { ClientLink } from "../agent/clientSession"
 import { CodexAgent } from "../agent/CodexAgent"
 import { CommandReceipts } from "../agent/commandReceipts"
 import type { ServerNotification } from "../app-server"
-import type { Model, Thread, ThreadItem, Turn } from "../app-server/v2"
+import type { Model, ThreadItem, Turn } from "../app-server/v2"
 import { AppServerClient } from "../codex/AppServerClient"
 import type { CodexProcess } from "../codex/process"
 
@@ -119,11 +120,11 @@ export class FakeClient implements ClientLink {
     request: acp.CreateElicitationRequest
   ) => acp.CreateElicitationResponse | Promise<acp.CreateElicitationResponse> = () => ({ action: "cancel" })
 
-  notify = vi.fn(async (method: string, params?: unknown): Promise<void> => {
+  notify = mock(async (method: string, params?: unknown): Promise<void> => {
     this.notifications.push({ method, params })
   }) as unknown as ClientLink["notify"]
 
-  request = vi.fn(async (method: string, params?: unknown): Promise<unknown> => {
+  request = mock(async (method: string, params?: unknown): Promise<unknown> => {
     this.requests.push({ method, params })
     if (method === "_alwith/tool/call") return await this.toolResponder(params)
     if (method === acp.methods.client.session.requestPermission) {
@@ -276,6 +277,18 @@ export function createTestAgent(
   }
 }
 
+/** Captures a rejection as a value. Bun's `expect(promise).rejects` blocks the event loop until the
+ * promise settles, so it must not be created before the action that settles it; this helper attaches
+ * its handler immediately and is awaited after the trigger. */
+export async function rejection(promise: Promise<unknown>): Promise<unknown> {
+  try {
+    await promise
+  } catch (error) {
+    return error
+  }
+  throw new Error("Expected the promise to reject")
+}
+
 export async function expectRejects(
   promise: Promise<unknown>,
   code: number,
@@ -301,4 +314,21 @@ function fakeProcess(stderr: string): CodexProcess {
     recentStderr: () => stderr,
     exitCode: () => null
   } as unknown as CodexProcess
+}
+
+/** Retries an assertion until it passes or the timeout elapses; the last failure is rethrown. */
+export async function waitFor(
+  assertion: () => void,
+  { timeout = 1_000, interval = 20 }: { timeout?: number; interval?: number } = {}
+): Promise<void> {
+  const deadline = Date.now() + timeout
+  for (;;) {
+    try {
+      assertion()
+      return
+    } catch (error) {
+      if (Date.now() >= deadline) throw error
+      await new Promise((resolve) => setTimeout(resolve, interval))
+    }
+  }
 }

@@ -1,5 +1,6 @@
+import { describe, expect, it } from "bun:test"
+
 import * as acp from "@agentclientprotocol/sdk/experimental/v2/unstable"
-import { describe, expect, it } from "vitest"
 
 import { CommandReceipts } from "../agent/commandReceipts"
 import { createAgentApp } from "../agent/createAgent"

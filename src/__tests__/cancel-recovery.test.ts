@@ -1,10 +1,20 @@
-import { describe, expect, it, vi } from "vitest"
+import { describe, expect, it, spyOn } from "bun:test"
 
 import { CommandReceipts } from "../agent/commandReceipts"
-import { createTestAgent, CWD, itemStarted, thread, THREAD_ID, threadResponse, turn, turnCompleted } from "./harness"
+import {
+  createTestAgent,
+  CWD,
+  itemStarted,
+  thread,
+  THREAD_ID,
+  threadResponse,
+  turn,
+  turnCompleted,
+  waitFor
+} from "./harness"
 
 async function waitUntil(check: () => boolean): Promise<void> {
-  await expect.poll(check, { timeout: 1_000, interval: 5 }).toBe(true)
+  await waitFor(() => expect(check()).toBe(true), { timeout: 1_000, interval: 5 })
 }
 
 async function running(): Promise<ReturnType<typeof createTestAgent>> {
@@ -160,7 +170,7 @@ describe("resumed turn receipt reads", () => {
     async (nativeState) => {
       const receipts = new CommandReceipts()
       let release!: () => void
-      vi.spyOn(receipts, "read").mockImplementation(async () => {
+      spyOn(receipts, "read").mockImplementation(async () => {
         await new Promise<void>((resolve) => {
           release = resolve
         })
@@ -228,7 +238,7 @@ describe("resumed turn receipt reads", () => {
 
   it("bounds restore reads without fabricating message identity or hiding the failure", async () => {
     const receipts = new CommandReceipts()
-    vi.spyOn(receipts, "read").mockImplementation(() => new Promise(() => {}))
+    spyOn(receipts, "read").mockImplementation(() => new Promise(() => {}))
     const t = createTestAgent({ commandReceipts: receipts, cancelGraceMs: 20 })
     await t.initialize()
     const native = {

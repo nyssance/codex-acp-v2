@@ -1,14 +1,14 @@
-import { describe, expect, it, vi } from "vitest"
+import { describe, expect, it, mock } from "bun:test"
 
 import { AppServerClient } from "../codex/AppServerClient"
-import { FakeCodexConnection } from "./harness"
+import { FakeCodexConnection, rejection } from "./harness"
 
 describe("app-server notification lifetimes", () => {
   it("removes an aborted notification waiter before later notifications", async () => {
     const connection = new FakeCodexConnection()
     const codex = new AppServerClient(connection.asMessageConnection())
     const scope = new AbortController()
-    const matches = vi.fn(() => true)
+    const matches = mock(() => true)
     const completed = codex.awaitNotification("thread/compacted", matches, scope.signal)
     scope.abort(new Error("cancelled"))
     await expect(completed).rejects.toThrow("cancelled")
@@ -36,12 +36,11 @@ describe("app-server notification lifetimes", () => {
   it("rejects notification and MCP startup waits on disconnect", async () => {
     const connection = new FakeCodexConnection()
     const codex = new AppServerClient(connection.asMessageConnection())
-    const notification = expect(codex.awaitNotification("account/updated")).rejects.toThrow(
-      "Connection to Codex was lost"
-    )
-    const startup = expect(codex.awaitMcpStartup(["server"], 0)).rejects.toThrow("Connection to Codex was lost")
+    const notification = rejection(codex.awaitNotification("account/updated"))
+    const startup = rejection(codex.awaitMcpStartup(["server"], 0))
     connection.close()
-    await Promise.all([notification, startup])
+    expect(await notification).toMatchObject({ message: "Connection to Codex was lost" })
+    expect(await startup).toMatchObject({ message: "Connection to Codex was lost" })
   })
 
   it("can cancel one MCP startup waiter without cancelling another", async () => {
@@ -64,7 +63,7 @@ describe("app-server notification lifetimes", () => {
     const codex = new AppServerClient(connection.asMessageConnection())
     const first = codex.awaitMcpStartup(["server"], 0, undefined, "first")
     const second = codex.awaitMcpStartup(["server"], 0, undefined, "second")
-    const secondDone = vi.fn()
+    const secondDone = mock()
     void second.then(secondDone)
     connection.emit({
       method: "mcpServer/startupStatus/updated",

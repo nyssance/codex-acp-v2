@@ -1,7 +1,6 @@
+import { describe, expect, it } from "bun:test"
 import path from "node:path"
 import { pathToFileURL } from "node:url"
-
-import { describe, expect, it } from "vitest"
 
 import { ClientSession } from "../agent/clientSession"
 import { parseCommand, resolveCommand } from "../agent/commands"

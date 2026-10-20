@@ -1,15 +1,14 @@
+import { describe, expect, it, spyOn } from "bun:test"
 import { mkdtemp } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
-
-import { describe, expect, it, vi } from "vitest"
 
 import { CodexAgent } from "../agent/CodexAgent"
 import { CommandReceipts } from "../agent/commandReceipts"
 import { AppServerClient } from "../codex/AppServerClient"
 import { startCodexProcess } from "../codex/process"
 import { startFakeGateway } from "./fakeGateway"
-import { FakeClient } from "./harness"
+import { FakeClient, waitFor } from "./harness"
 
 // Real app-server and local upstream; only the receipt disk read is fault-injected.
 describe.skipIf(process.env["RUN_E2E_TESTS"] !== "true")("real Codex command recovery", () => {
@@ -23,7 +22,7 @@ describe.skipIf(process.env["RUN_E2E_TESTS"] !== "true")("real Codex command rec
       const receipts = new CommandReceipts(home)
       let release: (() => void) | undefined
       if (stalled)
-        vi.spyOn(receipts, "read").mockImplementation(async () => {
+        spyOn(receipts, "read").mockImplementation(async () => {
           await new Promise<void>((resolve) => {
             release = resolve
           })
@@ -73,14 +72,14 @@ describe.skipIf(process.env["RUN_E2E_TESTS"] !== "true")("real Codex command rec
           clientUserMessageId: "original-receipt",
           input: [{ type: "text", text: "wait for a reply", text_elements: [] }]
         })
-        await expect.poll(() => gateway.requests.length, { timeout: 15_000 }).toBeGreaterThan(0)
+        await waitFor(() => expect(gateway.requests.length).toBeGreaterThan(0), { timeout: 15_000 })
         await agent.resumeSession({ sessionId, cwd: home })
-        if (stalled) await expect.poll(() => release !== undefined).toBe(true)
+        if (stalled) await waitFor(() => expect(release !== undefined).toBe(true))
         expect(client.updatesOf("user_message")).toHaveLength(0)
         expect(client.updatesOf("agent_message")).toHaveLength(0)
         expect(client.states().at(-1)).toBe("running")
         await agent.cancel({ sessionId })
-        await expect.poll(() => client.states().at(-1), { timeout: 5_000 }).toBe("idle")
+        await waitFor(() => expect(client.states().at(-1)).toBe("idle"), { timeout: 5_000 })
         expect(client.updatesOf("state_update").at(-1)).toMatchObject({ stopReason: "cancelled" })
         const state = await codex.threadRead({ threadId: sessionId, includeTurns: false })
         expect(state.thread.status.type).toBe("idle")

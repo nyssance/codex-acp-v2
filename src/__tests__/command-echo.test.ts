@@ -1,5 +1,6 @@
+import { describe, expect, it } from "bun:test"
+
 import type * as acp from "@agentclientprotocol/sdk/experimental/v2/unstable"
-import { describe, expect, it } from "vitest"
 
 import type { TurnStartParams } from "../app-server/v2"
 import { createTestAgent, itemCompleted, itemStarted, THREAD_ID, turn, turnCompleted } from "./harness"

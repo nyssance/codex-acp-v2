@@ -1,5 +1,6 @@
+import { describe, expect, it, mock } from "bun:test"
+
 import * as acp from "@agentclientprotocol/sdk/experimental/v2/unstable"
-import { describe, expect, it, vi } from "vitest"
 
 import {
   createTestAgent,
@@ -159,7 +160,7 @@ describe("close deadlines", () => {
     await t.openSession()
     const original = t.client.notify
     let next: Promise<acp.PromptResponse> | undefined
-    t.client.notify = vi.fn(async (...args: Parameters<typeof original>) => {
+    t.client.notify = mock(async (...args: Parameters<typeof original>) => {
       await original(...args)
       const params = args[1] as acp.UpdateSessionNotification
       if (params.update?.sessionUpdate === "state_update" && params.update.state === "idle" && !next) {

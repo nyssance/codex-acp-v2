@@ -1,10 +1,11 @@
-import { describe, expect, it, vi } from "vitest"
+import { describe, expect, it, spyOn } from "bun:test"
+
 import { ResponseError } from "vscode-jsonrpc/node"
 
 import { CommandReceipts } from "../agent/commandReceipts"
 import { parseSessionHistoryItemsParams, parseSessionHistoryParams } from "../agent/historyProtocol"
 import type { ThreadItem, ThreadTurnsListParams } from "../app-server/v2"
-import { createTestAgent, type TestAgent, thread, THREAD_ID, turn } from "./harness"
+import { createTestAgent, type TestAgent, thread, THREAD_ID, turn, waitFor } from "./harness"
 
 const mixed: ThreadItem = {
   type: "userMessage",
@@ -41,7 +42,7 @@ describe("general-purpose read-only history", () => {
     const reading = new Promise<void>((resolve) => {
       started = resolve
     })
-    vi.spyOn(commandReceipts, "read").mockImplementation(
+    spyOn(commandReceipts, "read").mockImplementation(
       () =>
         new Promise((_, reject) => {
           rejectRead = reject
@@ -76,9 +77,10 @@ describe("general-purpose read-only history", () => {
     await reading
     controller.abort()
     try {
-      await expect
-        .poll(() => result, { timeout: 500 })
-        .toMatchObject({ status: "error", error: { data: { reason: "history_cancelled" } } })
+      await waitFor(
+        () => expect(result).toMatchObject({ status: "error", error: { data: { reason: "history_cancelled" } } }),
+        { timeout: 500 }
+      )
     } finally {
       rejectRead(new Error("late read failure"))
       await outcome

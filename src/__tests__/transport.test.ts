@@ -1,14 +1,15 @@
+import { describe, expect, it, jest, mock } from "bun:test"
 import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { PassThrough, Writable } from "node:stream"
 
-import { describe, expect, it, vi } from "vitest"
-import { type Message } from "vscode-jsonrpc/node"
+import { type Message, type ResponseMessage } from "vscode-jsonrpc/node"
 
 import { AppServerClient } from "../codex/AppServerClient"
 import { startCodexProcess } from "../codex/process"
 import { createCodexConnection, createReader, createWriter, wireLog } from "../codex/transport"
+import { rejection } from "./harness"
 
 describe("Codex newline transport", () => {
   it("preserves multilingual text at every possible UTF-8 byte boundary", () => {
@@ -31,15 +32,16 @@ describe("Codex newline transport", () => {
     const stream = new PassThrough()
     const reader = createReader(stream)
     const messages: Message[] = []
-    const closed = vi.fn()
+    const closed = mock()
     reader.onClose(closed)
     reader.listen((message) => messages.push(message))
     stream.end('\n{"id":1,"result":{}}\r\n{"id":2,"result":{}}')
     await new Promise((resolve) => stream.on("end", resolve))
-    expect(messages).toEqual([
+    const expected: ResponseMessage[] = [
       { jsonrpc: "2.0", id: 1, result: {} },
       { jsonrpc: "2.0", id: 2, result: {} }
-    ])
+    ]
+    expect(messages).toEqual(expected)
     expect(closed).toHaveBeenCalledTimes(1)
     reader.dispose()
     expect(stream.listenerCount("data")).toBe(0)
@@ -71,7 +73,7 @@ describe("Codex newline transport", () => {
       }
     })
     const writer = createWriter(stream)
-    const finished = vi.fn()
+    const finished = mock()
     const first = writer.write({ jsonrpc: "2.0", id: 1, method: "first" } as Message).then(finished)
     const second = writer.write({ jsonrpc: "2.0", id: 2, method: "second" } as Message)
     await Promise.resolve()
@@ -93,7 +95,7 @@ describe("Codex newline transport", () => {
       }
     })
     const writer = createWriter(stream)
-    const errors = vi.fn()
+    const errors = mock()
     writer.onError(errors)
     await expect(writer.write({ jsonrpc: "2.0", method: "test" } as Message)).rejects.toThrow("broken pipe")
     await new Promise((resolve) => setImmediate(resolve))
@@ -111,10 +113,9 @@ describe("Codex newline transport", () => {
     const { connection } = createCodexConnection(incoming, outgoing)
     const codex = new AppServerClient(connection)
     connection.listen()
-    const pending = codex.threadList({})
-    const rejected = expect(pending).rejects.toThrow("Connection to Codex was lost")
+    const rejected = rejection(codex.threadList({}))
     incoming.end()
-    await rejected
+    expect(await rejected).toMatchObject({ message: "Connection to Codex was lost" })
     connection.dispose()
     outgoing.destroy()
   })
@@ -239,10 +240,10 @@ describe("failed writes during EOF drain", () => {
     try {
       const first = codex.threadList({})
       await new Promise<void>((resolve) => outgoing.end(resolve))
-      const failed = expect(codex.threadList({})).rejects.toThrow("Connection to Codex was lost")
+      const failed = rejection(codex.threadList({}))
       incoming.end(JSON.stringify({ id: requestId, result: { data: [], nextCursor: null } }) + "\n")
       await expect(first).resolves.toMatchObject({ data: [] })
-      await failed
+      expect(await failed).toMatchObject({ message: "Connection to Codex was lost" })
       await drained
     } finally {
       connection.dispose()
@@ -271,7 +272,7 @@ describe("failed writes during EOF drain", () => {
 })
 
 it("bounds a failed write even when stdout never ends", async () => {
-  vi.useFakeTimers()
+  jest.useFakeTimers()
   const incoming = new PassThrough()
   const outgoing = new Writable({
     write(_chunk, _encoding, done) {
@@ -283,13 +284,13 @@ it("bounds a failed write even when stdout never ends", async () => {
   connection.listen()
   try {
     await new Promise<void>((resolve) => outgoing.end(resolve))
-    const failed = expect(codex.threadList({})).rejects.toThrow("Connection to Codex was lost")
-    await vi.advanceTimersByTimeAsync(5_000)
-    await failed
+    const failed = rejection(codex.threadList({}))
+    jest.advanceTimersByTime(5_000)
+    expect(await failed).toMatchObject({ message: "Connection to Codex was lost" })
   } finally {
     connection.dispose()
     incoming.destroy()
     outgoing.destroy()
-    vi.useRealTimers()
+    jest.useRealTimers()
   }
 })

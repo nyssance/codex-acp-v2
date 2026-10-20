@@ -1,6 +1,5 @@
+import { describe, expect, it } from "bun:test"
 import { PassThrough, Writable } from "node:stream"
-
-import { describe, expect, it } from "vitest"
 
 import { AppServerClient } from "../codex/AppServerClient"
 import { createCodexConnection } from "../codex/transport"

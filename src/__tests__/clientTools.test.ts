@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest"
+import { describe, expect, it } from "bun:test"
 
 import type { DynamicToolCallParams, DynamicToolCallResponse, ThreadStartParams } from "../app-server/v2"
 import { createTestAgent, THREAD_ID, TURN_ID, turnCompleted } from "./harness"
@@ -34,7 +34,7 @@ describe("client tool callbacks", () => {
   it("declares tools before the first turn and keeps ordinary tool waiting in running", async () => {
     const t = await start()
     expect(t.codex.lastParams<ThreadStartParams>("thread/start").dynamicTools).toEqual([
-      { ...tools.definitions[0], type: "function", name: "alwith_client_read_canvas", deferLoading: false }
+      { ...tools.definitions[0]!, type: "function", name: "alwith_client_read_canvas", deferLoading: false }
     ])
     let release!: (value: unknown) => void
     t.client.toolResponder = () =>

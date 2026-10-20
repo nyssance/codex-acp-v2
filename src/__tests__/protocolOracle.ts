@@ -35,7 +35,11 @@ export class ProtocolOracle {
     }
     if (acp.SessionUpdate.isToolCallUpdate(update)) {
       for (const content of update.content ?? []) {
-        if (content.type === "terminal" && !this.terminals.has(`${sessionId}:${content.terminalId}`))
+        if (
+          content.type === "terminal" &&
+          typeof content.terminalId === "string" &&
+          !this.terminals.has(`${sessionId}:${content.terminalId}`)
+        )
           this.issues.push(`Unknown terminal reference: ${content.terminalId}`)
       }
     }
@@ -44,7 +48,11 @@ export class ProtocolOracle {
         if (key.startsWith(`${sessionId}:`)) this.issues.push(`Still running at idle: ${key}`)
       }
     }
-    if (acp.SessionUpdate.isAgentMessageChunk(update) && update.content.type === "text") {
+    if (
+      acp.SessionUpdate.isAgentMessageChunk(update) &&
+      update.content.type === "text" &&
+      typeof update.content.text === "string"
+    ) {
       const key = `${sessionId}:${update.messageId}`
       this.messages.set(key, (this.messages.get(key) ?? "") + update.content.text)
     }

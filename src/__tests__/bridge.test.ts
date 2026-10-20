@@ -1,6 +1,5 @@
+import { describe, expect, it } from "bun:test"
 import path from "node:path"
-
-import { describe, expect, it } from "vitest"
 
 import { thread } from "./fixtures"
 import { createTestAgent, CWD, itemCompleted, itemStarted, THREAD_ID, TURN_ID, turnCompleted } from "./harness"

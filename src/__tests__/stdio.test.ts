@@ -1,11 +1,9 @@
-import { spawn } from "node:child_process"
+import { expect, it } from "bun:test"
 import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
-import { Readable, Writable } from "node:stream"
 
 import * as acp from "@agentclientprotocol/sdk/experimental/v2/unstable"
-import { expect, it } from "vitest"
 
 import { ProtocolOracle } from "./protocolOracle"
 
@@ -20,15 +18,22 @@ it("speaks ACP v2 over real stdio with a deterministic Codex process", async () 
   )
   if (!windows) await chmod(executable, 0o755)
   const binary = process.env["SMOKE_BINARY"]
-  const child = spawn(binary ? path.resolve(binary) : "bun", binary ? [] : ["src/index.ts"], {
-    stdio: ["pipe", "pipe", "pipe"],
+  const child = Bun.spawn(binary ? [path.resolve(binary)] : ["bun", "src/index.ts"], {
+    stdin: "pipe",
+    stdout: "pipe",
+    stderr: "pipe",
     env: { ...process.env, CODEX_PATH: executable }
   })
-  let stderr = ""
-  child.stderr.on("data", (chunk) => {
-    stderr += chunk.toString()
+  const stderr = new Response(child.stderr).text()
+  const stdin = new WritableStream<Uint8Array>({
+    write(chunk) {
+      void child.stdin.write(chunk)
+      return Promise.resolve(child.stdin.flush()).then(() => undefined)
+    },
+    close() {
+      void child.stdin.end()
+    }
   })
-  const exited = new Promise<number | null>((resolve) => child.on("close", resolve))
   const oracle = new ProtocolOracle()
   let finish!: () => void
   const idle = new Promise<void>((resolve) => {
@@ -39,31 +44,28 @@ it("speaks ACP v2 over real stdio with a deterministic Codex process", async () 
     if (acp.SessionUpdate.isStateUpdate(params.update) && params.update.state === "idle") finish()
   })
   try {
-    await app.connectWith(
-      acp.ndJsonStream(Writable.toWeb(child.stdin), Readable.toWeb(child.stdout) as ReadableStream<Uint8Array>),
-      async (client) => {
-        const init = await client.request("initialize", {
-          protocolVersion: 2,
-          info: { name: "stdio-test", version: "1" }
-        })
-        expect(init.protocolVersion).toBe(2)
-        const session = await client.request("session/new", { cwd: directory, mcpServers: [] })
-        await client.request("session/prompt", {
-          sessionId: session.sessionId,
-          prompt: [{ type: "text", text: "hello" }]
-        })
-        await idle
-        expect(oracle.messages.get(`${session.sessionId}:answer`)).toBe("你好 🌍 fixture")
-        expect(oracle.issues).toEqual([])
-        await client.request("session/close", { sessionId: session.sessionId })
-      }
-    )
+    await app.connectWith(acp.ndJsonStream(stdin, child.stdout), async (client) => {
+      const init = await client.request("initialize", {
+        protocolVersion: 2,
+        info: { name: "stdio-test", version: "1" }
+      })
+      expect(init.protocolVersion).toBe(2)
+      const session = await client.request("session/new", { cwd: directory, mcpServers: [] })
+      await client.request("session/prompt", {
+        sessionId: session.sessionId,
+        prompt: [{ type: "text", text: "hello" }]
+      })
+      await idle
+      expect(oracle.messages.get(`${session.sessionId}:answer`)).toBe("你好 🌍 fixture")
+      expect(oracle.issues).toEqual([])
+      await client.request("session/close", { sessionId: session.sessionId })
+    })
   } finally {
-    child.stdin.end()
+    void child.stdin.end()
     const timer = setTimeout(() => child.kill(), 2_000)
-    await exited
+    await child.exited
     clearTimeout(timer)
     await rm(directory, { recursive: true, force: true })
   }
-  expect(stderr).toBe("")
+  expect(await stderr).toBe("")
 }, 15_000)

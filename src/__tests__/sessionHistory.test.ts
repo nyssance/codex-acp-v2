@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest"
+import { describe, expect, it } from "bun:test"
 
 import { parseSessionHistoryParams } from "../agent/sessionHistory"
 import type { ThreadTurnsListParams, Turn } from "../app-server/v2"
@@ -168,19 +168,21 @@ describe("read-only session history", () => {
 })
 
 describe("history validation and content", () => {
-  it.each([
-    null,
-    [],
-    {},
-    { sessionId: " " },
-    { sessionId: "s", limit: 0 },
-    { sessionId: "s", limit: 101 },
-    { sessionId: "s", limit: 1.5 },
-    { sessionId: "s", limit: "1" },
-    { sessionId: "s", cursor: 1 },
-    { sessionId: "s", cursor: "" },
-    { sessionId: "s", cursor: "a".repeat(65537) }
-  ])("rejects invalid params %#", (raw) => {
+  it.each(
+    [
+      null,
+      [],
+      {},
+      { sessionId: " " },
+      { sessionId: "s", limit: 0 },
+      { sessionId: "s", limit: 101 },
+      { sessionId: "s", limit: 1.5 },
+      { sessionId: "s", limit: "1" },
+      { sessionId: "s", cursor: 1 },
+      { sessionId: "s", cursor: "" },
+      { sessionId: "s", cursor: "a".repeat(65537) }
+    ].map((raw) => [raw])
+  )("rejects invalid params %#", (raw) => {
     expect(() => parseSessionHistoryParams(raw)).toThrow()
   })
 

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest"
+import { afterEach, describe, expect, it, mock } from "bun:test"
 
 import { createTestAgent } from "./harness"
 
@@ -22,7 +22,14 @@ async function setup() {
   }))
   return t
 }
-afterEach(() => vi.unstubAllGlobals())
+const realFetch = globalThis.fetch
+afterEach(() => {
+  globalThis.fetch = realFetch
+})
+/** Bun types `fetch` with a static `preconnect`; a stub must carry it to be assignable. */
+const stubFetch = (impl: (input: string | URL | Request, init?: RequestInit) => Promise<Response>): void => {
+  globalThis.fetch = Object.assign(impl, { preconnect: realFetch.preconnect })
+}
 describe("remote plugin enablement", () => {
   it.each([false, true])(
     "changes remote state to %s, reconciles and checks readback without writing local config",
@@ -31,8 +38,8 @@ describe("remote plugin enablement", () => {
       t.codex.respond("plugin/installed", () => ({
         marketplaces: [{ plugins: [{ remotePluginId, installed: true, enabled }] }]
       }))
-      const request = vi.fn().mockResolvedValue(Response.json({ id: remotePluginId, enabled }))
-      vi.stubGlobal("fetch", request)
+      const request = mock().mockResolvedValue(Response.json({ id: remotePluginId, enabled }))
+      stubFetch(request)
       expect(await t.agent.pluginSetEnabled({ ...params, enabled })).toEqual({ enabled })
       expect(request.mock.calls[0]![0].toString()).toBe(
         `https://chatgpt.com/backend-api/ps/plugins/plugin_supabase/${enabled ? "enable" : "disable"}`
@@ -50,11 +57,10 @@ describe("remote plugin enablement", () => {
   )
   it("refreshes expired credentials once", async () => {
     const t = await setup()
-    const request = vi
-      .fn()
+    const request = mock()
       .mockResolvedValueOnce(new Response(null, { status: 401 }))
       .mockResolvedValueOnce(Response.json({ id: remotePluginId, enabled: false }))
-    vi.stubGlobal("fetch", request)
+    stubFetch(request)
     await t.agent.pluginSetEnabled(params)
     expect(t.codex.calls("getAuthStatus").map((c) => c.params)).toEqual([
       { includeToken: true, refreshToken: false },
@@ -63,7 +69,7 @@ describe("remote plugin enablement", () => {
   })
   it("rejects service failure without exposing its response or a success notification", async () => {
     const t = await setup()
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("sensitive response", { status: 403 })))
+    stubFetch(mock().mockResolvedValue(new Response("sensitive response", { status: 403 })))
     await expect(t.agent.pluginSetEnabled(params)).rejects.toThrow("HTTP 403")
     expect(t.codex.calls("plugin/reconcile")).toEqual([])
     expect(t.client.notifications.filter((n) => n.method === "_codex/skills_changed")).toEqual([])
@@ -71,7 +77,7 @@ describe("remote plugin enablement", () => {
   it("rejects stale readback instead of reporting success", async () => {
     const t = await setup()
     t.codex.respond("plugin/installed", () => ({ marketplaces: [{ plugins: [{ remotePluginId, enabled: true }] }] }))
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ id: remotePluginId, enabled: false })))
+    stubFetch(mock().mockResolvedValue(Response.json({ id: remotePluginId, enabled: false })))
     await expect(t.agent.pluginSetEnabled(params)).rejects.toThrow("could not be synchronized")
   })
   it("refuses to send ChatGPT credentials to a non-ChatGPT backend", async () => {
@@ -80,8 +86,8 @@ describe("remote plugin enablement", () => {
       account: { type: "chatgpt" },
       workspaceRouting: { backendOrigin: "https://example.com", chatgptAccountId: "workspace" }
     }))
-    const request = vi.fn()
-    vi.stubGlobal("fetch", request)
+    const request = mock()
+    stubFetch(request)
     await expect(t.agent.pluginSetEnabled(params)).rejects.toThrow("Unsupported ChatGPT backend")
     expect(t.codex.calls("getAuthStatus")).toEqual([])
     expect(request).not.toHaveBeenCalled()

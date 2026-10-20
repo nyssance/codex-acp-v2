@@ -1,4 +1,4 @@
-import { expect, it } from "vitest"
+import { expect, it } from "bun:test"
 
 import type { ModelListParams, TurnStartParams } from "../app-server/v2"
 import { createTestAgent, model, THREAD_ID, turnCompleted } from "./harness"

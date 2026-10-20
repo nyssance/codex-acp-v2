@@ -1,4 +1,4 @@
-import { expect, test } from "vitest"
+import { expect, test } from "bun:test"
 
 import { parsePredictionParams } from "../agent/CodexAgent"
 import { createTestAgent, THREAD_ID, threadResponse, turn, TURN_ID } from "./harness"

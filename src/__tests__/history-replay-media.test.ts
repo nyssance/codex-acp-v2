@@ -1,4 +1,4 @@
-import { expect, it } from "vitest"
+import { expect, it } from "bun:test"
 
 import { createTestAgent, CWD, THREAD_ID, turn } from "./harness"
 
@@ -185,7 +185,7 @@ it.each(["local", "inline", "mixed"])(
         await t.agent.resumeSession({ sessionId: THREAD_ID, cwd: CWD, replayFrom: { type: "start" } })
         expect(t.client.updatesOf("user_message")[0]?.content).toEqual([
           { type: "text", text: "检测图片\n第二行" },
-          ...paths.map(() => ({ type: "image", mimeType: "image/png", data }))
+          ...paths.map(() => ({ type: "image" as const, mimeType: "image/png", data }))
         ])
         await t.agent.closeSession({ sessionId: THREAD_ID })
       }

@@ -1,4 +1,4 @@
-import { expect, it } from "vitest"
+import { expect, it } from "bun:test"
 
 import { fromUserMessage } from "../codex/sessionConfig"
 import { createTestAgent, CWD, THREAD_ID, turn } from "./harness"
@@ -92,7 +92,7 @@ it("normalizes live insertion and native echoes without changing the submitted p
   const receipt = await t.agent.prompt({ sessionId: THREAD_ID, prompt: [{ type: "text", text }] })
   await t.settle()
   const expected = replies.map((reply) => ({
-    type: "text",
+    type: "text" as const,
     text: `${reply.question}\n${reply.answer}`,
     _meta: { codex: { questionReply: reply } }
   }))

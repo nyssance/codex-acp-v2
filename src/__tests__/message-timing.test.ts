@@ -1,4 +1,4 @@
-import { expect, it } from "vitest"
+import { expect, it } from "bun:test"
 
 import { createTestAgent, CWD, THREAD_ID, turn, TURN_ID } from "./harness"
 

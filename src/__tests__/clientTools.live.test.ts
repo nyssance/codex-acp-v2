@@ -1,14 +1,13 @@
+import { describe, expect, it } from "bun:test"
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-
-import { describe, expect, it } from "vitest"
 
 import { CodexAgent } from "../agent/CodexAgent"
 import { AppServerClient } from "../codex/AppServerClient"
 import { startCodexProcess } from "../codex/process"
 import { startFakeGateway } from "./fakeGateway"
-import { FakeClient } from "./harness"
+import { FakeClient, waitFor } from "./harness"
 
 // Real Codex binary + adapter, isolated home and local upstream: no account or paid API.
 describe.skipIf(!process.env["CODEX_PATH"])("real Codex client tools", () => {
@@ -81,7 +80,7 @@ describe.skipIf(!process.env["CODEX_PATH"])("real Codex client tools", () => {
     async function prompt(active: Awaited<ReturnType<typeof connect>>, sessionId: string) {
       active.client.clear()
       await active.agent.prompt({ sessionId, prompt: [{ type: "text", text: "use the declared tools" }] })
-      await expect.poll(() => active.client.states().at(-1), { timeout: 30000 }).toBe("idle")
+      await waitFor(() => expect(active.client.states().at(-1)).toBe("idle"), { timeout: 30000 })
       expect(active.client.updatesOf("state_update").at(-1)).toMatchObject({ stopReason: "end_turn" })
     }
     try {

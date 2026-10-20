@@ -1,7 +1,7 @@
-import { describe, expect, it, vi } from "vitest"
+import { describe, expect, it, spyOn } from "bun:test"
 
 import { CommandReceipts } from "../agent/commandReceipts"
-import { createTestAgent, itemStarted, thread, THREAD_ID, turn, turnCompleted } from "./harness"
+import { createTestAgent, itemStarted, thread, THREAD_ID, turn, turnCompleted, waitFor } from "./harness"
 
 describe("command receipt persistence failures", () => {
   it("streams updates while saving and waits for a successful save before idle", async () => {
@@ -11,7 +11,7 @@ describe("command receipt persistence failures", () => {
     const gate = new Promise<void>((resolve) => {
       release = resolve
     })
-    vi.spyOn(receipts, "write").mockImplementation(async (itemId, receipt) => {
+    spyOn(receipts, "write").mockImplementation(async (itemId, receipt) => {
       await gate
       await save(itemId, receipt)
     })
@@ -49,7 +49,7 @@ describe("command receipt persistence failures", () => {
     async (completion) => {
       const receipts = new CommandReceipts()
       let rejectWrite!: (reason: Error) => void
-      vi.spyOn(receipts, "write").mockImplementation(
+      spyOn(receipts, "write").mockImplementation(
         () =>
           new Promise<void>((_, reject) => {
             rejectWrite = reject
@@ -78,7 +78,7 @@ describe("command receipt persistence failures", () => {
       t.codex.respond("thread/read", () => ({ thread: thread({ status: { type: "idle" } }) }))
       try {
         await t.agent.cancel({ sessionId: THREAD_ID })
-        await expect.poll(() => t.client.states().at(-1), { timeout: 1_000 }).toBe("idle")
+        await waitFor(() => expect(t.client.states().at(-1)).toBe("idle"), { timeout: 1_000 })
         expect(t.client.updatesOf("state_update").at(-1)).toMatchObject({ stopReason: "cancelled" })
         expect(t.client.updatesOf("agent_message_chunk").some((update) => update.messageId === "progress")).toBe(true)
         expect(
@@ -106,7 +106,7 @@ describe("command receipt persistence failures", () => {
 
   it("reports a write failure registered behind queued notifications after native completion", async () => {
     const receipts = new CommandReceipts()
-    vi.spyOn(receipts, "write").mockRejectedValue(new Error("receipt disk full"))
+    spyOn(receipts, "write").mockRejectedValue(new Error("receipt disk full"))
     const t = createTestAgent({ commandReceipts: receipts })
     await t.initialize()
     await t.openSession()
@@ -116,7 +116,7 @@ describe("command receipt persistence failures", () => {
     const gate = new Promise<void>((resolve) => {
       release = resolve
     })
-    vi.spyOn(t.client, "notify").mockImplementationOnce(async () => {
+    spyOn(t.client, "notify").mockImplementationOnce(async () => {
       await gate
     })
     t.codex.emit({
@@ -141,7 +141,7 @@ describe("command receipt persistence failures", () => {
 
   it("bounds a stalled write after normal completion and reports the saving failure", async () => {
     const receipts = new CommandReceipts()
-    vi.spyOn(receipts, "write").mockImplementation(() => new Promise<void>(() => {}))
+    spyOn(receipts, "write").mockImplementation(() => new Promise<void>(() => {}))
     const t = createTestAgent({ commandReceipts: receipts, cancelGraceMs: 20 })
     await t.initialize()
     await t.openSession()
@@ -154,7 +154,7 @@ describe("command receipt persistence failures", () => {
       content: [{ type: "text", text: "inspect", text_elements: [] }]
     })
     turnCompleted(t.codex)
-    await expect.poll(() => t.client.states().at(-1), { timeout: 1_000 }).toBe("idle")
+    await waitFor(() => expect(t.client.states().at(-1)).toBe("idle"), { timeout: 1_000 })
     expect(t.client.updatesOf("state_update").at(-1)).toMatchObject({ stopReason: "error" })
     expect(t.client.updatesOf("agent_message_chunk").at(-1)?.content).toMatchObject({
       text: expect.stringContaining("command history")

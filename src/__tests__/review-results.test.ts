@@ -1,4 +1,4 @@
-import { expect, it } from "vitest"
+import { expect, it } from "bun:test"
 
 import { historyUpdates } from "../agent/history"
 import type { ThreadItem } from "../app-server/v2"

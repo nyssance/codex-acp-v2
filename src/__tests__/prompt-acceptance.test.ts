@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest"
+import { describe, expect, it } from "bun:test"
+
 import { ResponseError } from "vscode-jsonrpc/node"
 
 import { createTestAgent, itemStarted, THREAD_ID, turnCompleted } from "./harness"

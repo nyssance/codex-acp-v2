@@ -1,9 +1,8 @@
+import { expect, it } from "bun:test"
 import { writeFile } from "node:fs/promises"
 import os from "node:os"
 import { performance } from "node:perf_hooks"
 import { PassThrough } from "node:stream"
-
-import { expect, it } from "vitest"
 
 import { createReader } from "../codex/transport"
 import { createTestAgent, itemCompleted, THREAD_ID, TURN_ID, turnCompleted } from "./harness"
