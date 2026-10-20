@@ -1,9 +1,9 @@
+import { afterEach, describe, expect, it } from "bun:test"
 import { once } from "node:events"
 import { createServer, type Server } from "node:http"
 import { zstdCompressSync } from "node:zlib"
 
-import { afterEach, describe, expect, it } from "vitest"
-import WebSocket, { WebSocketServer } from "ws"
+import WebSocket, { type RawData, WebSocketServer } from "ws"
 
 import { ResponsesProxy } from "../codex/responsesProxy"
 
@@ -40,17 +40,25 @@ async function receive(socket: WebSocket): Promise<string> {
   return String(data)
 }
 
+/** A ws frame as text: Buffer, Buffer list or ArrayBuffer. */
+function rawText(data: RawData): string {
+  return (Buffer.isBuffer(data) ? data : Array.isArray(data) ? Buffer.concat(data) : Buffer.from(data)).toString("utf8")
+}
+
 describe("Responses compatibility transport", () => {
   it("decodes zstd, preserves auth and streams SSE through the original base path", async () => {
-    const server = createServer(async (req, res) => {
-      const chunks: Buffer[] = []
-      for await (const chunk of req) chunks.push(Buffer.from(chunk))
-      res.writeHead(200, { "content-type": "text/event-stream" })
-      res.write(
-        `data: ${JSON.stringify({ path: req.url, auth: req.headers.authorization, account: req.headers["chatgpt-account-id"], encoding: req.headers["content-encoding"] ?? null, body: JSON.parse(Buffer.concat(chunks).toString()) })}\n\n`
-      )
-      res.end("data: [DONE]\n\n")
-    })
+    const server = createServer(
+      (req, res) =>
+        void (async () => {
+          const chunks: Buffer[] = []
+          for await (const chunk of req) chunks.push(Buffer.from(chunk))
+          res.writeHead(200, { "content-type": "text/event-stream" })
+          res.write(
+            `data: ${JSON.stringify({ path: req.url, auth: req.headers.authorization, account: req.headers["chatgpt-account-id"], encoding: req.headers["content-encoding"] ?? null, body: JSON.parse(Buffer.concat(chunks).toString()) })}\n\n`
+          )
+          res.end("data: [DONE]\n\n")
+        })()
+    )
     const base = await listen(server)
     const route = await proxy().route(`${base}/backend-api/codex`)
     const response = await fetch(`${route}/responses`, {
@@ -78,7 +86,7 @@ describe("Responses compatibility transport", () => {
     wss.on("connection", (socket, req) => {
       upstreamClosed = once(socket, "close")
       socket.on("message", (data) =>
-        socket.send(JSON.stringify({ body: JSON.parse(String(data)), auth: req.headers.authorization, path: req.url }))
+        socket.send(JSON.stringify({ body: JSON.parse(rawText(data)), auth: req.headers.authorization, path: req.url }))
       )
     })
     const route = await proxy().route(await listen(server))

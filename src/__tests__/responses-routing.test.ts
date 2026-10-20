@@ -1,4 +1,4 @@
-import { expect, it } from "vitest"
+import { expect, it } from "bun:test"
 
 import type { ThreadForkParams, ThreadResumeParams, ThreadStartParams } from "../app-server/v2"
 import { createTestAgent, CWD, model, THREAD_ID } from "./harness"
