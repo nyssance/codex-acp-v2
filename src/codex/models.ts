@@ -1,4 +1,4 @@
-import type * as acp from "@agentclientprotocol/sdk/experimental/v2";
+import type * as acp from "@agentclientprotocol/sdk/experimental/v2/unstable";
 import type {Model, ReasoningEffortOption} from "../app-server/v2";
 import type {ModeKind} from "../app-server/ModeKind";
 import {NATIVE_GROUP_ID, NATIVE_GROUP_NAME} from "../agent/providers";

@@ -1,4 +1,4 @@
-import type * as acp from "@agentclientprotocol/sdk/experimental/v2";
+import type * as acp from "@agentclientprotocol/sdk/experimental/v2/unstable";
 import type {ApprovalsReviewer, AskForApproval, SandboxMode, SandboxPolicy} from "../app-server/v2";
 
 export const MODE_CONFIG_ID = "mode";

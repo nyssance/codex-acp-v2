@@ -1,4 +1,4 @@
-import * as acp from "@agentclientprotocol/sdk/experimental/v2";
+import * as acp from "@agentclientprotocol/sdk/experimental/v2/unstable";
 import {spawn} from "node:child_process";
 import {mkdtemp, writeFile, chmod, rm} from "node:fs/promises";
 import os from "node:os";

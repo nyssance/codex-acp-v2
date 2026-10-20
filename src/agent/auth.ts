@@ -1,4 +1,4 @@
-import * as acp from "@agentclientprotocol/sdk/experimental/v2";
+import * as acp from "@agentclientprotocol/sdk/experimental/v2/unstable";
 import open from "open";
 import type {AppServerClient} from "../codex/AppServerClient";
 import {logger} from "../util/logger";

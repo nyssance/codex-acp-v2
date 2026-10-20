@@ -1,4 +1,4 @@
-import type * as acp from "@agentclientprotocol/sdk/experimental/v2";
+import type * as acp from "@agentclientprotocol/sdk/experimental/v2/unstable";
 import type {ThreadItem, Turn} from "../app-server/v2";
 import type {AppServerClient} from "../codex/AppServerClient";
 import {HistoryRead, historyError, parseSessionHistoryParams, parseSessionHistoryItemsParams, type HistoryPage, type SessionHistoryParams, type SessionHistoryItemsParams} from "./historyProtocol";

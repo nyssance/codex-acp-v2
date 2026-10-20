@@ -1,7 +1,7 @@
 import {createHash, randomUUID} from "node:crypto";
 import {mkdir, readFile, readdir, writeFile} from "node:fs/promises";
 import path from "node:path";
-import * as acp from "@agentclientprotocol/sdk/experimental/v2";
+import * as acp from "@agentclientprotocol/sdk/experimental/v2/unstable";
 import type {Thread} from "../app-server/v2";
 import type {AppServerClient} from "../codex/AppServerClient";
 import {abortable} from "../util/abort";

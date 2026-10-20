@@ -1,4 +1,4 @@
-import * as acp from "@agentclientprotocol/sdk/experimental/v2";
+import * as acp from "@agentclientprotocol/sdk/experimental/v2/unstable";
 
 /** Independent client model: validate standard payloads and apply ACP patch semantics. */
 export class ProtocolOracle {

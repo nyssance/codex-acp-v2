@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 
-import * as acp from "@agentclientprotocol/sdk/experimental/v2";
+import * as acp from "@agentclientprotocol/sdk/experimental/v2/unstable";
 import {Readable, Writable} from "node:stream";
 import packageJson from "../package.json";
 import {createAgentApp} from "./agent/createAgent";

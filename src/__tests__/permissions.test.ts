@@ -1,4 +1,4 @@
-import * as acp from "@agentclientprotocol/sdk/experimental/v2";
+import * as acp from "@agentclientprotocol/sdk/experimental/v2/unstable";
 import {describe, expect, it} from "vitest";
 import type {
     CommandExecutionRequestApprovalParams,

@@ -2,7 +2,7 @@ import {ComposerPredictions} from "./composerPredictions";
 import type {ThreadItem} from "../app-server/v2";
 import {clientToolsOf, dynamicTools, ClientTools} from "./clientTools";
 import {classifyTurnError, type StopReason} from "./turnErrors";
-import * as acp from "@agentclientprotocol/sdk/experimental/v2";
+import * as acp from "@agentclientprotocol/sdk/experimental/v2/unstable";
 import type {JsonValue} from "../app-server/serde_json/JsonValue";
 import path from "node:path";
 import type {FuzzyFileSearchParams, FuzzyFileSearchResponse, ServerNotification} from "../app-server";

@@ -1,4 +1,4 @@
-import type * as acp from "@agentclientprotocol/sdk/experimental/v2";
+import type * as acp from "@agentclientprotocol/sdk/experimental/v2/unstable";
 import type {Thread, Turn} from "../app-server/v2";
 import {itemSnapshot} from "../bridge/itemSnapshot";
 import type {AgentDirectory} from "../bridge/agentDirectory";

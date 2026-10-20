@@ -1,4 +1,4 @@
-import type * as acp from "@agentclientprotocol/sdk/experimental/v2";
+import type * as acp from "@agentclientprotocol/sdk/experimental/v2/unstable";
 
 /** Recognize only complete Desktop reply envelopes; quoted examples and malformed data remain text. */
 export function questionReplyContent(text: string): acp.ContentBlock[] | null {

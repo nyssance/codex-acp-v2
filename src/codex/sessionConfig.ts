@@ -1,5 +1,5 @@
 import {pathToFileURL} from "node:url";
-import * as acp from "@agentclientprotocol/sdk/experimental/v2";
+import * as acp from "@agentclientprotocol/sdk/experimental/v2/unstable";
 import path from "node:path";
 import {localImageContent} from "./userImages";
 import type {JsonValue} from "../app-server/serde_json/JsonValue";

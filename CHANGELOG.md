@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.7.23 — 2026-10-20
+
+### Changed
+
+- `@agentclientprotocol/sdk` 2.0.0: every protocol import moves to `experimental/v2/unstable`, where 2.0 keeps
+  fork, providers, `systemPrompt`, whole-message frames and `usage`. The wire shapes are unchanged.
+
 ## 0.7.22 — 2026-10-20
 
 ### Changed

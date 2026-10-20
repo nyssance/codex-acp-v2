@@ -1,4 +1,4 @@
-import type * as acp from "@agentclientprotocol/sdk/experimental/v2";
+import type * as acp from "@agentclientprotocol/sdk/experimental/v2/unstable";
 import type {TurnStartParams} from "../app-server/v2";
 import {describe, expect, it} from "vitest";
 import {createTestAgent, itemStarted, itemCompleted, THREAD_ID, turn, turnCompleted} from "./harness";

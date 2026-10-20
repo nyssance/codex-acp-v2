@@ -1,4 +1,4 @@
-import * as acp from "@agentclientprotocol/sdk/experimental/v2";
+import * as acp from "@agentclientprotocol/sdk/experimental/v2/unstable";
 import {describe, expect, it, vi} from "vitest";
 import {createTestAgent, CWD, expectRejects, itemCompleted, model, THREAD_ID, threadResponse, turn, turnCompleted} from "./harness";
 

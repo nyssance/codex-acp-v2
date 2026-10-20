@@ -1,4 +1,4 @@
-import * as acp from "@agentclientprotocol/sdk/experimental/v2";
+import * as acp from "@agentclientprotocol/sdk/experimental/v2/unstable";
 import {createHash} from "node:crypto";
 import type {Thread, Turn} from "../app-server/v2";
 import type {AppServerClient} from "../codex/AppServerClient";

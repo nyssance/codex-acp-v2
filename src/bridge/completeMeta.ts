@@ -1,4 +1,4 @@
-import type * as acp from "@agentclientprotocol/sdk/experimental/v2";
+import type * as acp from "@agentclientprotocol/sdk/experimental/v2/unstable";
 
 /**
  * ACP v2 clients patch an entity's `_meta` by top-level key and replace each key's value whole,

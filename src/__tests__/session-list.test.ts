@@ -1,4 +1,4 @@
-import * as acp from "@agentclientprotocol/sdk/experimental/v2";
+import * as acp from "@agentclientprotocol/sdk/experimental/v2/unstable";
 import {mkdtemp, mkdir, writeFile, rm} from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";

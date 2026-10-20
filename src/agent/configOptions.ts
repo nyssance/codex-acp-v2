@@ -1,4 +1,4 @@
-import * as acp from "@agentclientprotocol/sdk/experimental/v2";
+import * as acp from "@agentclientprotocol/sdk/experimental/v2/unstable";
 import type {AppServerClient} from "../codex/AppServerClient";
 import {findAgentMode, MODE_CONFIG_ID, modeConfigOption} from "../codex/modes";
 import {

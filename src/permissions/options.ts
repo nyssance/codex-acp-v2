@@ -1,4 +1,4 @@
-import type * as acp from "@agentclientprotocol/sdk/experimental/v2";
+import type * as acp from "@agentclientprotocol/sdk/experimental/v2/unstable";
 import type {CommandExecutionApprovalDecision, CommandExecutionRequestApprovalParams, FileChangeApprovalDecision} from "../app-server/v2";
 import {availableCommandDecisions, renderExecPolicyPrefix} from "./commandDecisions";
 

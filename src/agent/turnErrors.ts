@@ -1,4 +1,4 @@
-import type * as acp from "@agentclientprotocol/sdk/experimental/v2";
+import type * as acp from "@agentclientprotocol/sdk/experimental/v2/unstable";
 import type {CodexErrorInfo} from "../app-server/v2";
 
 export type StopReason = Extract<acp.IdleStateUpdate, {stopReason: "end_turn" | "cancelled" | "error" | "max_tokens" | "max_turn_requests" | "refusal"}>["stopReason"];

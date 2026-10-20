@@ -1,4 +1,4 @@
-import * as acp from "@agentclientprotocol/sdk/experimental/v2";
+import * as acp from "@agentclientprotocol/sdk/experimental/v2/unstable";
 import {createAgentApp} from "../agent/createAgent";
 import {AppServerClient} from "../codex/AppServerClient";
 import {describe, expect, it} from "vitest";

@@ -1,7 +1,7 @@
 import {constants} from "node:fs";
 import {open} from "node:fs/promises";
 import {fileURLToPath, pathToFileURL} from "node:url";
-import * as acp from "@agentclientprotocol/sdk/experimental/v2";
+import * as acp from "@agentclientprotocol/sdk/experimental/v2/unstable";
 
 // Provenance is process-local: client-supplied metadata and ordinary links cannot
 // authorize local reads. Only native localImage inputs create these references.

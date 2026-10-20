@@ -1,4 +1,4 @@
-import * as acp from "@agentclientprotocol/sdk/experimental/v2";
+import * as acp from "@agentclientprotocol/sdk/experimental/v2/unstable";
 import type {StopReason} from "./turnErrors";
 import {logger} from "../util/logger";
 import {hydrateUserImages} from "../codex/userImages";

@@ -1,6 +1,6 @@
 import {CWD, THREAD_ID, TURN_ID, model, thread, turn, threadResponse} from "./fixtures";
 export {CWD, THREAD_ID, TURN_ID, model, thread, turn, threadResponse} from "./fixtures";
-import * as acp from "@agentclientprotocol/sdk/experimental/v2";
+import * as acp from "@agentclientprotocol/sdk/experimental/v2/unstable";
 import type {Disposable, MessageConnection, RequestType} from "vscode-jsonrpc/node";
 import {expect, vi} from "vitest";
 import type {ServerNotification} from "../app-server";

@@ -1,5 +1,5 @@
 import {writeFile} from "node:fs/promises";
-import * as acp from "@agentclientprotocol/sdk/experimental/v2";
+import * as acp from "@agentclientprotocol/sdk/experimental/v2/unstable";
 import {ClientSession, type ClientLink} from "../agent/clientSession";
 import type {Session} from "../agent/session";
 import {AgentDirectory} from "../bridge/agentDirectory";

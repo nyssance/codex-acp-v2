@@ -1,4 +1,4 @@
-import * as acp from "@agentclientprotocol/sdk/experimental/v2";
+import * as acp from "@agentclientprotocol/sdk/experimental/v2/unstable";
 import type {RateLimitSnapshot, ReviewTarget, SkillsListEntry, TurnCompletedNotification} from "../app-server/v2";
 import type {AppServerClient} from "../codex/AppServerClient";
 import {COLLABORATION_MODE_CONFIG_ID, DEFAULT_COLLABORATION_MODE, PLAN_COLLABORATION_MODE, findModel, supportedEfforts} from "../codex/models";

@@ -1,4 +1,4 @@
-import type * as acp from "@agentclientprotocol/sdk/experimental/v2";
+import type * as acp from "@agentclientprotocol/sdk/experimental/v2/unstable";
 import type {JsonValue} from "../app-server/serde_json/JsonValue";
 import type {McpServerElicitationRequestParams, McpServerElicitationRequestResponse} from "../app-server/v2";
 import {ToolName} from "../bridge/toolCalls";

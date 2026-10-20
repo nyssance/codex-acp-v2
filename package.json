@@ -3,7 +3,7 @@
   "publishConfig": {
     "access": "public"
   },
-  "version": "0.7.22",
+  "version": "0.7.23",
   "description": "Native ACP v2 agent for the OpenAI Codex app-server",
   "packageManager": "bun@1.4.3",
   "engines": {
@@ -70,7 +70,7 @@
     "vitest": "^4.1.11"
   },
   "dependencies": {
-    "@agentclientprotocol/sdk": "^1.9.0",
+    "@agentclientprotocol/sdk": "^2.0.0",
     "diff": "^9.0.0",
     "open": "^11.0.2",
     "vscode-jsonrpc": "^9.0.2"

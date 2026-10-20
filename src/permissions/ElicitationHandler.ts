@@ -1,4 +1,4 @@
-import * as acp from "@agentclientprotocol/sdk/experimental/v2";
+import * as acp from "@agentclientprotocol/sdk/experimental/v2/unstable";
 import type {ServerNotification} from "../app-server";
 import type {JsonValue} from "../app-server/serde_json/JsonValue";
 import type {

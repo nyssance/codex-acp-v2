@@ -1,4 +1,4 @@
-import type * as acp from "@agentclientprotocol/sdk/experimental/v2";
+import type * as acp from "@agentclientprotocol/sdk/experimental/v2/unstable";
 import type {ThreadItem} from "../app-server/v2";
 import {terminalSnapshot, usesTerminal} from "./terminal";
 import * as tool from "./toolCalls";
