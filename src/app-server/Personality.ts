@@ -5,4 +5,4 @@
 /**
  * Deprecated: `friendly` and `pragmatic` no longer select a style.
  */
-export type Personality = "none" | "friendly" | "pragmatic";
+export type Personality = "none" | "friendly" | "pragmatic"

@@ -1,1920 +1,2596 @@
-import {ResponsesProxy} from "../codex/responsesProxy";
-import {ComposerPredictions} from "./composerPredictions";
-import type {ThreadItem} from "../app-server/v2";
-import {clientToolsOf, dynamicTools, ClientTools} from "./clientTools";
-import {classifyTurnError, type StopReason} from "./turnErrors";
-import * as acp from "@agentclientprotocol/sdk/experimental/v2/unstable";
-import type {JsonValue} from "../app-server/serde_json/JsonValue";
-import path from "node:path";
-import type {FuzzyFileSearchParams, FuzzyFileSearchResponse, ServerNotification} from "../app-server";
+import path from "node:path"
+
+import * as acp from "@agentclientprotocol/sdk/experimental/v2/unstable"
+
+import type { FuzzyFileSearchParams, FuzzyFileSearchResponse, ServerNotification } from "../app-server"
+import type { JsonValue } from "../app-server/serde_json/JsonValue"
 import type {
-    GetAccountRateLimitsResponse,
-    GetAccountResponse,
-    MarketplaceAddParams,
-    MarketplaceAddResponse,
-    MarketplaceRemoveParams,
-    MarketplaceUpgradeParams,
-    MarketplaceUpgradeResponse,
-    PluginInstallParams,
-    PluginInstallResponse,
-    PluginInstalledParams,
-    PluginInstalledResponse,
-    PluginListParams,
-    PluginListResponse,
-    PluginReadParams,
-    PluginReadResponse,
-    PluginUninstallParams,
-    SkillsConfigWriteParams,
-    SkillsConfigWriteResponse,
-    SkillsListParams,
-    SkillsListResponse,
-    Thread,
-    ThreadResumeResponse,
-    Turn,
-    TurnCompletedNotification,
-    TurnError,
-    ThreadReadStateUpdateResponse,
-} from "../app-server/v2";
-import {EventBridge, type CompletedPlan} from "../bridge/EventBridge";
-import {mcpStartupFailed, ToolName} from "../bridge/toolCalls";
-import {TurnStartRejectedError, type AppServerClient} from "../codex/AppServerClient";
-import type {CodexProcess} from "../codex/process";
-import {setRemotePluginEnabled} from "../codex/remotePluginEnablement";
-import {findAgentMode, initialAgentMode, withWritableRoots} from "../codex/modes";
+  GetAccountRateLimitsResponse,
+  GetAccountResponse,
+  MarketplaceAddParams,
+  MarketplaceAddResponse,
+  MarketplaceRemoveParams,
+  MarketplaceUpgradeParams,
+  MarketplaceUpgradeResponse,
+  PluginInstalledParams,
+  PluginInstalledResponse,
+  PluginInstallParams,
+  PluginInstallResponse,
+  PluginListParams,
+  PluginListResponse,
+  PluginReadParams,
+  PluginReadResponse,
+  PluginUninstallParams,
+  SkillsConfigWriteParams,
+  SkillsConfigWriteResponse,
+  SkillsListParams,
+  SkillsListResponse,
+  Thread,
+  ThreadItem,
+  ThreadReadStateUpdateResponse,
+  ThreadResumeResponse,
+  Turn,
+  TurnCompletedNotification,
+  TurnError
+} from "../app-server/v2"
+import { AgentDirectory } from "../bridge/agentDirectory"
+import { type CompletedPlan, EventBridge } from "../bridge/EventBridge"
+import { mcpStartupFailed, ToolName } from "../bridge/toolCalls"
+import { type AppServerClient, TurnStartRejectedError } from "../codex/AppServerClient"
 import {
-    DEFAULT_COLLABORATION_MODE,
-    FAST_SERVICE_TIER,
-    findModel,
-    MODEL_CONFIG_ID,
-    modelLacksReasoning,
-    modelSupportsImages,
-    PLAN_COLLABORATION_MODE,
-    resolveModelSelection,
-    supportedEfforts,
-} from "../codex/models";
+  DEFAULT_COLLABORATION_MODE,
+  FAST_SERVICE_TIER,
+  findModel,
+  MODEL_CONFIG_ID,
+  modelLacksReasoning,
+  modelSupportsImages,
+  PLAN_COLLABORATION_MODE,
+  resolveModelSelection,
+  supportedEfforts
+} from "../codex/models"
+import { findAgentMode, initialAgentMode, withWritableRoots } from "../codex/modes"
+import type { CodexProcess } from "../codex/process"
+import { setRemotePluginEnabled } from "../codex/remotePluginEnablement"
+import { ResponsesProxy } from "../codex/responsesProxy"
 import {
-    buildThreadConfig,
-    isJsonObject,
-    promptTitle,
-    readAdditionalDirectories,
-    sanitizeMcpServerName,
-    toUserInput,
-    type JsonObject,
-} from "../codex/sessionConfig";
-import {CodexApprovalHandler} from "../permissions/ApprovalHandler";
-import {CodexElicitationHandler} from "../permissions/ElicitationHandler";
-import {TurnContext} from "../permissions/turnContext";
-import {errorMessage, logger} from "../util/logger";
-import {toAcpUsage} from "../util/tokens";
-import {abortable} from "../util/abort";
-import {authMethods, login, logout} from "./auth";
-import {ClientSession, type ClientCapabilitySet, type ClientLink} from "./clientSession";
-import {assertCommandHistory, CommandReceipts, internalPlanMessageId, type CommandHistoryGuard, type CommandReceipt} from "./commandReceipts";
-import {availableCommands, mcpMessage, parseCommand, resolveCommand, skillsMessage, statusMessage} from "./commands";
-import {applyConfigOption, sessionConfigOptions} from "./configOptions";
-import {historyTitle, historyUpdates} from "./history";
-import {readSessionHistory, readSessionHistoryItems, type SessionHistoryItemsParams, type SessionHistoryItemsResponse, type SessionHistoryParams, type SessionHistoryResponse} from "./sessionHistory";
-import {historyError} from "./historyProtocol";
-import {nativeForks} from "./forkIndex";
-import {AgentDirectory} from "../bridge/agentDirectory";
-import {OPENAI_PROVIDER_ID, ProviderRouting} from "./providers";
-import {createActiveTurn, type ActiveTurn, type Session} from "./session";
+  buildThreadConfig,
+  isJsonObject,
+  type JsonObject,
+  promptTitle,
+  readAdditionalDirectories,
+  sanitizeMcpServerName,
+  toUserInput
+} from "../codex/sessionConfig"
+import { CodexApprovalHandler } from "../permissions/ApprovalHandler"
+import { CodexElicitationHandler } from "../permissions/ElicitationHandler"
+import { TurnContext } from "../permissions/turnContext"
+import { abortable } from "../util/abort"
+import { errorMessage, logger } from "../util/logger"
+import { toAcpUsage } from "../util/tokens"
+import { authMethods, login, logout } from "./auth"
+import { type ClientCapabilitySet, type ClientLink, ClientSession } from "./clientSession"
+import { ClientTools, clientToolsOf, dynamicTools } from "./clientTools"
+import {
+  assertCommandHistory,
+  type CommandHistoryGuard,
+  type CommandReceipt,
+  CommandReceipts,
+  internalPlanMessageId
+} from "./commandReceipts"
+import { availableCommands, mcpMessage, parseCommand, resolveCommand, skillsMessage, statusMessage } from "./commands"
+import { ComposerPredictions } from "./composerPredictions"
+import { applyConfigOption, sessionConfigOptions } from "./configOptions"
+import { nativeForks } from "./forkIndex"
+import { historyTitle, historyUpdates } from "./history"
+import { historyError } from "./historyProtocol"
+import { OPENAI_PROVIDER_ID, ProviderRouting } from "./providers"
+import { type ActiveTurn, createActiveTurn, type Session } from "./session"
+import {
+  readSessionHistory,
+  readSessionHistoryItems,
+  type SessionHistoryItemsParams,
+  type SessionHistoryItemsResponse,
+  type SessionHistoryParams,
+  type SessionHistoryResponse
+} from "./sessionHistory"
+import { classifyTurnError, type StopReason } from "./turnErrors"
 
 export interface CodexAgentOptions {
-    codex: AppServerClient;
-    process?: CodexProcess;
-    /** JSON object merged into every thread's Codex config (from `CODEX_CONFIG`). */
-    config?: JsonObject;
-    /** Codex model provider for new threads (from `MODEL_PROVIDER`). */
-    modelProvider?: string;
-    info: acp.Implementation;
-    env?: NodeJS.ProcessEnv;
-    /** Total local close budget, including turn finalization and remote unsubscribe. */
-    closeGraceMs?: number;
-    /** Budget per cancellation check and command history preparation/read/finalization. */
-    cancelGraceMs?: number;
-    commandReceipts?: CommandReceipts;
+  codex: AppServerClient
+  process?: CodexProcess
+  /** JSON object merged into every thread's Codex config (from `CODEX_CONFIG`). */
+  config?: JsonObject
+  /** Codex model provider for new threads (from `MODEL_PROVIDER`). */
+  modelProvider?: string
+  info: acp.Implementation
+  env?: NodeJS.ProcessEnv
+  /** Total local close budget, including turn finalization and remote unsubscribe. */
+  closeGraceMs?: number
+  /** Budget per cancellation check and command history preparation/read/finalization. */
+  cancelGraceMs?: number
+  commandReceipts?: CommandReceipts
 }
 
 interface SessionRuntime {
-    lineage: {nativeSessionId: string; forkedFromId: string | null; forkedAtTurnId?: string | null};
-    config: JsonObject;
-    modelProvider: string | null;
-    stale: boolean;
-    /** Opened through Codex's read path because another Codex client holds the thread's writer. */
-    readOnly: boolean;
-    session: Session;
-    client: ClientSession;
-    bridge: EventBridge;
-    turnContext: TurnContext;
-    elicitation: CodexElicitationHandler;
-    lifetime: AbortController;
-    /** Serializes notification handling so frames reach the client in Codex order. */
-    queue: Promise<void>;
-    /** Config revision: one more every time the session's config options change; a prompt may bind to it. */
-    configRevision: number;
+  lineage: { nativeSessionId: string; forkedFromId: string | null; forkedAtTurnId?: string | null }
+  config: JsonObject
+  modelProvider: string | null
+  stale: boolean
+  /** Opened through Codex's read path because another Codex client holds the thread's writer. */
+  readOnly: boolean
+  session: Session
+  client: ClientSession
+  bridge: EventBridge
+  turnContext: TurnContext
+  elicitation: CodexElicitationHandler
+  lifetime: AbortController
+  /** Serializes notification handling so frames reach the client in Codex order. */
+  queue: Promise<void>
+  /** Config revision: one more every time the session's config options change; a prompt may bind to it. */
+  configRevision: number
 }
 
 /** The next `config_option_update` for a session: its options at a new revision, with any Codex-side meta beside it. */
 function configOptionsFrame(runtime: SessionRuntime, codex?: Record<string, unknown>): acp.SessionUpdate {
-    runtime.configRevision += 1;
-    return {
-        sessionUpdate: "config_option_update",
-        configOptions: sessionConfigOptions(runtime.session),
-        _meta: {alwith: {configRevision: runtime.configRevision}, ...(codex ? {codex} : {})},
-    };
+  runtime.configRevision += 1
+  return {
+    sessionUpdate: "config_option_update",
+    configOptions: sessionConfigOptions(runtime.session),
+    _meta: { alwith: { configRevision: runtime.configRevision }, ...(codex ? { codex } : {}) }
+  }
 }
 
 type OpenRequest =
-    | {kind: "new"; request: acp.NewSessionRequest}
-    | {kind: "resume"; request: acp.ResumeSessionRequest}
-    | {kind: "fork"; request: acp.ForkSessionRequest};
+  | { kind: "new"; request: acp.NewSessionRequest }
+  | { kind: "resume"; request: acp.ResumeSessionRequest }
+  | { kind: "fork"; request: acp.ForkSessionRequest }
 
-const CLOSE_TURN_GRACE_MS = 5_000;
-const HISTORY_PAGE_SIZE = 50;
+const CLOSE_TURN_GRACE_MS = 5_000
+const HISTORY_PAGE_SIZE = 50
 /** Custom stop reason (`_`-prefixed per ACP extensibility) for a turn Codex reported as failed. */
-const IMPLEMENT_PLAN_OPTION = "implement_plan";
-const REVISE_PLAN_OPTION = "revise_plan";
+const IMPLEMENT_PLAN_OPTION = "implement_plan"
+const REVISE_PLAN_OPTION = "revise_plan"
 
 /**
  * Native ACP v2 agent for the Codex app-server. One instance serves one client
  * connection; sessions map one-to-one onto Codex threads.
  */
 export class CodexAgent {
-    private readonly codex: AppServerClient;
-    private readonly process: CodexProcess | null;
-    private providers: ProviderRouting;
-    private readonly responsesProxy = new ResponsesProxy();
-    private readonly responsesUpstreams = new Map<string, string>();
-    private switching = false;
-    private admissions = 0;
-    private readonly pendingUnsubscribes = new Map<string, Promise<unknown>>();
-    private readonly sessionMutations = new Set<string>();
-    private providerQueue: Promise<unknown> = Promise.resolve();
-    private readonly info: acp.Implementation;
-    private readonly env: NodeJS.ProcessEnv;
-    private readonly closeGraceMs: number;
-    private readonly cancelGraceMs: number;
-    private readonly cancelling = new WeakMap<ActiveTurn, Promise<void>>();
-    private readonly commandWrites = new WeakMap<ActiveTurn, Promise<void>>();
-    private readonly commandGuards = new WeakMap<ActiveTurn, CommandHistoryGuard>();
-    private readonly commandsStarted = new WeakSet<ActiveTurn>();
-    private commandReceipts: CommandReceipts | null;
-    private readonly sessions = new Map<string, SessionRuntime>();
-    private capabilities: ClientCapabilitySet | null = null;
-    private codexInitialized = false;
-    private codexHome: string | null = null;
-    private initializing: Promise<void> | null = null;
-    private readonly terminalTurns = new WeakSet<ActiveTurn>();
-    private readonly completedTurns = new WeakMap<ActiveTurn, string>();
-    private skillRoots: string[] = [];
-    private readonly predictions: ComposerPredictions;
-    private skillsGeneration = 0;
-    private changingSkillRoots = false;
-    private readonly publishedSkills = new WeakMap<SessionRuntime, Awaited<ReturnType<AppServerClient["skillsList"]>>>();
-    private readonly skillSnapshots = new Map<string, Awaited<ReturnType<AppServerClient["skillsList"]>>>();
-    private skillsQueue: Promise<unknown> = Promise.resolve();
-    private accountGeneration = 0;
-    private readonly agents = new AgentDirectory(async threadId => (await this.codex.threadRead({threadId, includeTurns: false})).thread);
+  private readonly codex: AppServerClient
+  private readonly process: CodexProcess | null
+  private providers: ProviderRouting
+  private readonly responsesProxy = new ResponsesProxy()
+  private readonly responsesUpstreams = new Map<string, string>()
+  private switching = false
+  private admissions = 0
+  private readonly pendingUnsubscribes = new Map<string, Promise<unknown>>()
+  private readonly sessionMutations = new Set<string>()
+  private providerQueue: Promise<unknown> = Promise.resolve()
+  private readonly info: acp.Implementation
+  private readonly env: NodeJS.ProcessEnv
+  private readonly closeGraceMs: number
+  private readonly cancelGraceMs: number
+  private readonly cancelling = new WeakMap<ActiveTurn, Promise<void>>()
+  private readonly commandWrites = new WeakMap<ActiveTurn, Promise<void>>()
+  private readonly commandGuards = new WeakMap<ActiveTurn, CommandHistoryGuard>()
+  private readonly commandsStarted = new WeakSet<ActiveTurn>()
+  private commandReceipts: CommandReceipts | null
+  private readonly sessions = new Map<string, SessionRuntime>()
+  private capabilities: ClientCapabilitySet | null = null
+  private codexInitialized = false
+  private codexHome: string | null = null
+  private initializing: Promise<void> | null = null
+  private readonly terminalTurns = new WeakSet<ActiveTurn>()
+  private readonly completedTurns = new WeakMap<ActiveTurn, string>()
+  private skillRoots: string[] = []
+  private readonly predictions: ComposerPredictions
+  private skillsGeneration = 0
+  private changingSkillRoots = false
+  private readonly publishedSkills = new WeakMap<SessionRuntime, Awaited<ReturnType<AppServerClient["skillsList"]>>>()
+  private readonly skillSnapshots = new Map<string, Awaited<ReturnType<AppServerClient["skillsList"]>>>()
+  private skillsQueue: Promise<unknown> = Promise.resolve()
+  private accountGeneration = 0
+  private readonly agents = new AgentDirectory(
+    async (threadId) => (await this.codex.threadRead({ threadId, includeTurns: false })).thread
+  )
 
-    constructor(private readonly link: ClientLink, options: CodexAgentOptions) {
-        this.codex = options.codex;
-        this.predictions = new ComposerPredictions(this.codex);
-        this.process = options.process ?? null;
-        this.providers = new ProviderRouting(options.config ?? {}, options.modelProvider ?? null);
-        this.info = options.info;
-        this.env = options.env ?? process.env;
-        this.closeGraceMs = options.closeGraceMs ?? CLOSE_TURN_GRACE_MS;
-        this.cancelGraceMs = options.cancelGraceMs ?? 3_000;
-        this.commandReceipts = options.commandReceipts ?? null;
-        void this.process?.exited.then(() => this.handleCodexExit());
-        this.codex.connection.onClose(() => this.handleCodexExit());
-        const stopObserving = this.codex.observeNotifications(notification => {
-            if (notification.method === "skills/changed") {
-                this.skillsGeneration += 1;
-                this.skillSnapshots.clear();
-                // Codex emits skills/changed for our own extraRoots/set. Republish here would
-                // alternate session roots forever; the current operation already reloads them.
-                if (!this.changingSkillRoots) for (const runtime of this.sessions.values()) void this.refreshAvailableCommands(runtime);
-                // Hosts with a skills / plugins UI refetch on this one signal.
-                this.notifySkillsChanged();
+  constructor(
+    private readonly link: ClientLink,
+    options: CodexAgentOptions
+  ) {
+    this.codex = options.codex
+    this.predictions = new ComposerPredictions(this.codex)
+    this.process = options.process ?? null
+    this.providers = new ProviderRouting(options.config ?? {}, options.modelProvider ?? null)
+    this.info = options.info
+    this.env = options.env ?? process.env
+    this.closeGraceMs = options.closeGraceMs ?? CLOSE_TURN_GRACE_MS
+    this.cancelGraceMs = options.cancelGraceMs ?? 3_000
+    this.commandReceipts = options.commandReceipts ?? null
+    void this.process?.exited.then(() => this.handleCodexExit())
+    this.codex.connection.onClose(() => this.handleCodexExit())
+    const stopObserving = this.codex.observeNotifications((notification) => {
+      if (notification.method === "skills/changed") {
+        this.skillsGeneration += 1
+        this.skillSnapshots.clear()
+        // Codex emits skills/changed for our own extraRoots/set. Republish here would
+        // alternate session roots forever; the current operation already reloads them.
+        if (!this.changingSkillRoots)
+          for (const runtime of this.sessions.values()) void this.refreshAvailableCommands(runtime)
+        // Hosts with a skills / plugins UI refetch on this one signal.
+        this.notifySkillsChanged()
+      }
+      if (notification.method === "account/updated")
+        void this.refreshAccounts().catch((error) => logger.error("refreshing account failed", error))
+      // Hosts that show usage or drive a file picker get Codex's payloads verbatim.
+      if (notification.method === "account/rateLimits/updated")
+        this.forward("_codex/rate_limits_updated", notification.params)
+      if (notification.method === "fuzzyFileSearch/sessionUpdated")
+        this.forward("_codex/fuzzy_file_search_updated", notification.params)
+      if (notification.method === "fuzzyFileSearch/sessionCompleted")
+        this.forward("_codex/fuzzy_file_search_completed", notification.params)
+    })
+    this.codex.disconnectSignal.addEventListener("abort", stopObserving, { once: true })
+  }
+
+  // ---- initialize -----------------------------------------------------------
+
+  async initialize(params: acp.InitializeRequest): Promise<acp.InitializeResponse> {
+    if (params.protocolVersion !== acp.PROTOCOL_VERSION) {
+      throw acp.RequestError.invalidParams(
+        { protocolVersion: params.protocolVersion },
+        `Unsupported protocol version ${params.protocolVersion}; this agent speaks ACP v${acp.PROTOCOL_VERSION}`
+      )
+    }
+    const capabilities = {
+      formElicitation: params.capabilities?.elicitation?.form != null,
+      urlElicitation: params.capabilities?.elicitation?.url != null
+    }
+    // Clients re-send initialize when they re-attach; Codex accepts it only once per process.
+    if (!this.codexInitialized) {
+      this.initializing ??= this.withCodex(async () => {
+        const initialized = await this.codex.initialize({
+          clientInfo: { name: params.info.name, title: params.info.title ?? null, version: params.info.version },
+          capabilities: { experimentalApi: true, requestAttestation: false }
+        })
+        this.codexHome = initialized.codexHome
+        this.commandReceipts ??= new CommandReceipts(initialized.codexHome)
+        this.codexInitialized = true
+      }).finally(() => {
+        this.initializing = null
+      })
+      await this.initializing
+    }
+    this.capabilities = capabilities
+    return {
+      protocolVersion: acp.PROTOCOL_VERSION,
+      info: this.info,
+      capabilities: {
+        session: {
+          prompt: { image: {}, embeddedContext: {} },
+          mcp: { stdio: {}, http: {} },
+          fork: {},
+          delete: {},
+          additionalDirectories: {},
+          systemPrompt: {}
+        },
+        providers: {},
+        // Codex desktop's thread model: hide = archive (reversible), delete = delete.
+        // ACP has no archive verb, so it rides the `_codex/*` extension surface and is
+        // declared here; `session/list` takes `_meta.codex.archived` to page the archive.
+        // seedHistory: a host that keeps its own transcript can continue it on a fresh thread —
+        // `session/new` with `_meta.codex.seedHistory: [{role, text}]` injects it as model-visible
+        // history (thread/inject_items) before the first turn.
+        // skills / plugins: the `_codex/skills_*`, `_codex/plugin_*` and `_codex/marketplace_*`
+        // pass-through surface for a host that manages Codex's catalogs itself.
+        // rename / account / fuzzyFileSearch: `_codex/session_rename`, `_codex/account_read`,
+        // `_codex/rate_limits` (+ `_codex/rate_limits_updated`) and `_codex/fuzzy_file_search`.
+        _meta: {
+          alwith: { tools: { version: 1 }, turns: { version: 2 }, configRevision: { version: 1 } },
+          codex: {
+            forkAtTurn: true,
+            sessionLineage: true,
+            archive: true,
+            readState: true,
+            sessionList: { version: 1 },
+            sessionHistory: { version: 2, items: true, modes: ["browse", "export"] },
+            seedHistory: true,
+            skills: true,
+            plugins: true,
+            pluginEnable: true,
+            providerCatalog: true,
+            rename: true,
+            account: true,
+            fuzzyFileSearch: true,
+            composerPredictions: true
+          }
+        }
+      },
+      authMethods: authMethods(this.capabilities, this.env)
+    }
+  }
+
+  private requireInitialized(method: string): ClientCapabilitySet {
+    if (this.capabilities === null) {
+      throw acp.RequestError.invalidRequest(
+        { method },
+        `${method} requires a successful initialize first: send {"protocolVersion": ${acp.PROTOCOL_VERSION}, "info": {"name": ..., "version": ...}}`
+      )
+    }
+    return this.capabilities
+  }
+
+  // ---- auth -------------------------------------------------------------------
+
+  async login(params: acp.LoginAuthRequest, requestId: acp.JsonRpcId | null = null): Promise<acp.LoginAuthResponse> {
+    this.requireInitialized("auth/login")
+    await this.withCodex(() => login(this.codex, this.link, params, requestId, this.env))
+    await this.refreshAccounts()
+    return {}
+  }
+
+  async logout(_params: acp.LogoutAuthRequest): Promise<acp.LogoutAuthResponse> {
+    this.requireInitialized("auth/logout")
+    await this.withCodex(() => logout(this.codex))
+    await this.refreshAccounts()
+    return {}
+  }
+
+  private async refreshAccounts(): Promise<void> {
+    this.codex.invalidateModels()
+    const generation = ++this.accountGeneration
+    const account = (await this.codex.accountRead({ refreshToken: false })).account
+    if (generation !== this.accountGeneration) return
+    for (const runtime of this.sessions.values()) runtime.session.account = account
+  }
+
+  // ---- providers ----------------------------------------------------------------
+
+  listProviders(_params: acp.ListProvidersRequest): acp.ListProvidersResponse {
+    this.requireInitialized("providers/list")
+    return this.providers.list()
+  }
+
+  async setProvider(params: acp.SetProviderRequest): Promise<acp.SetProviderResponse> {
+    this.requireInitialized("providers/set")
+    await this.changeProvider((candidate) => candidate.set(params))
+    return {}
+  }
+
+  async disableProvider(params: acp.DisableProviderRequest): Promise<acp.DisableProviderResponse> {
+    this.requireInitialized("providers/disable")
+    if (params.providerId !== OPENAI_PROVIDER_ID) return {}
+    await this.changeProvider((candidate) => candidate.disable(params))
+    return {}
+  }
+
+  private assertNoActiveTurns(method: string): void {
+    const busy = [...this.sessions.values()]
+      .filter((runtime) => runtime.session.activeTurn !== null)
+      .map((runtime) => runtime.session.id)
+    if (busy.length > 0) {
+      throw acp.RequestError.invalidRequest(
+        { sessions: busy },
+        `${method} cannot change routing while a turn is running; cancel it or wait for idle`
+      )
+    }
+  }
+
+  private assertRoutingAvailable(): void {
+    if (this.switching)
+      throw acp.RequestError.invalidRequest(
+        undefined,
+        "Provider routing is changing; retry after providers/set or providers/disable finishes"
+      )
+  }
+
+  private async admission<T>(operation: () => Promise<T>, sessionId?: string): Promise<T> {
+    this.assertRoutingAvailable()
+    if (sessionId && this.sessionMutations.has(sessionId))
+      throw acp.RequestError.invalidRequest(
+        { sessionId },
+        "Session lifecycle or configuration work is in progress; retry when it finishes"
+      )
+    if (sessionId) this.sessionMutations.add(sessionId)
+    this.admissions += 1
+    try {
+      return await operation()
+    } finally {
+      this.admissions -= 1
+      if (sessionId) this.sessionMutations.delete(sessionId)
+    }
+  }
+
+  private async changeProvider(change: (candidate: ProviderRouting) => void): Promise<void> {
+    const pending = this.providerQueue.then(async () => {
+      this.assertNoActiveTurns("providers/set or providers/disable")
+      if (this.admissions > 0)
+        throw acp.RequestError.invalidRequest(
+          undefined,
+          "Session configuration or lifecycle work is in progress; retry the provider change when it finishes"
+        )
+      this.switching = true
+      const candidate = this.providers.copy()
+      const attempted: SessionRuntime[] = []
+      const staged = new Map<
+        SessionRuntime,
+        { config: JsonObject; catalog: Session["catalog"]; model: Session["model"] }
+      >()
+      try {
+        change(candidate)
+        const catalog = await this.withCodex(() => this.codex.allModels(true))
+        const nativeProvider = await this.resolveModelProvider(candidate)
+        // Route mode moves every session; catalog mode only touches sessions whose gateway
+        // was removed or re-registered (a rotated key, say) — `copy()` shares untouched
+        // gateway objects, so identity tells the two apart. The others just learn the
+        // new catalog. A session stays on its gateway when the candidate still has it.
+        const wholesale =
+          (this.providers.active !== null && this.providers.mode === "route") ||
+          (candidate.active !== null && candidate.mode === "route")
+        const unavailable = new Set(
+          [...this.sessions.values()].filter(
+            (runtime) =>
+              this.providers.mode === "catalog" &&
+              this.providers.hasGateway(runtime.modelProvider) &&
+              !candidate.hasGateway(runtime.modelProvider)
+          )
+        )
+        const moving = [...this.sessions.values()].filter(
+          (runtime) =>
+            !unavailable.has(runtime) &&
+            (wholesale ||
+              (this.providers.hasGateway(runtime.modelProvider) &&
+                candidate.gateway(runtime.modelProvider) !== this.providers.gateway(runtime.modelProvider)))
+        )
+        const targets = new Map<SessionRuntime, string | null>(
+          moving.map((runtime) => {
+            if (candidate.active === null) return [runtime, null]
+            if (candidate.mode === "route") return [runtime, candidate.defaultGatewayId()]
+            return [runtime, candidate.hasGateway(runtime.modelProvider) ? runtime.modelProvider : null]
+          })
+        )
+        // Codex cannot cold-resume a thread before its history storage exists.
+        // Validate every session before detaching any subscription. Catalog mode
+        // materializes an empty gateway session instead (see rerouteSession).
+        for (const runtime of moving) {
+          try {
+            await this.codex.threadTurnsList({ threadId: runtime.session.id, limit: 1, itemsView: "notLoaded" })
+          } catch (error) {
+            if (wholesale) {
+              throw acp.RequestError.invalidRequest(
+                { sessionId: runtime.session.id, details: errorMessage(error) },
+                "Cannot reload this session's history for a provider change; close empty sessions and configure the provider before creating them, or retry after history is available"
+              )
             }
-            if (notification.method === "account/updated") void this.refreshAccounts().catch(error => logger.error("refreshing account failed", error));
-            // Hosts that show usage or drive a file picker get Codex's payloads verbatim.
-            if (notification.method === "account/rateLimits/updated") this.forward("_codex/rate_limits_updated", notification.params);
-            if (notification.method === "fuzzyFileSearch/sessionUpdated") this.forward("_codex/fuzzy_file_search_updated", notification.params);
-            if (notification.method === "fuzzyFileSearch/sessionCompleted") this.forward("_codex/fuzzy_file_search_completed", notification.params);
-        });
-        this.codex.disconnectSignal.addEventListener("abort", stopObserving, {once: true});
-    }
-
-    // ---- initialize -----------------------------------------------------------
-
-    async initialize(params: acp.InitializeRequest): Promise<acp.InitializeResponse> {
-        if (params.protocolVersion !== acp.PROTOCOL_VERSION) {
-            throw acp.RequestError.invalidParams(
-                {protocolVersion: params.protocolVersion},
-                `Unsupported protocol version ${params.protocolVersion}; this agent speaks ACP v${acp.PROTOCOL_VERSION}`,
-            );
+            await this.withCodex(() =>
+              this.codex.threadInjectItems({ threadId: runtime.session.id, items: [providerChangeNote()] })
+            )
+          }
         }
-        const capabilities = {
-            formElicitation: params.capabilities?.elicitation?.form != null,
-            urlElicitation: params.capabilities?.elicitation?.url != null,
-        };
-        // Clients re-send initialize when they re-attach; Codex accepts it only once per process.
-        if (!this.codexInitialized) {
-            this.initializing ??= this.withCodex(async () => {
-                const initialized = await this.codex.initialize({
-                    clientInfo: {name: params.info.name, title: params.info.title ?? null, version: params.info.version},
-                    capabilities: {experimentalApi: true, requestAttestation: false},
-                });
-                this.codexHome = initialized.codexHome;
-                this.commandReceipts ??= new CommandReceipts(initialized.codexHome);
-                this.codexInitialized = true;
-            }).finally(() => { this.initializing = null; });
-            await this.initializing;
+        const nextCatalog = candidate.catalog(catalog)
+        for (const runtime of moving) {
+          const target = targets.get(runtime) ?? null
+          const modelProvider = target ?? nativeProvider
+          const config = await this.responsesConfig(
+            candidate.rebind(runtime.config, this.providers, target),
+            modelProvider,
+            runtime.session.cwd
+          )
+          const keep =
+            findModel(nextCatalog, runtime.session.model.model) &&
+            candidate.gatewayIdFor(runtime.session.model.model) === target
+          const requestedModel =
+            candidate.mode === "route"
+              ? (candidate.active?.model ?? (keep ? runtime.session.model.model : null))
+              : keep
+                ? runtime.session.model.model
+                : null
+          const selection = resolveModelSelection(
+            nextCatalog,
+            requestedModel,
+            requestedModel === runtime.session.model.model ? runtime.session.model.effort : null
+          )
+          attempted.push(runtime)
+          // A subscribed live thread treats resume as rejoin and ignores routing overrides.
+          await this.codex.threadUnsubscribe({ threadId: runtime.session.id })
+          const thread = await this.withCodex(() =>
+            this.codex.threadResume({
+              threadId: runtime.session.id,
+              cwd: runtime.session.cwd,
+              config,
+              modelProvider,
+              model: candidate.upstreamModel(selection.model),
+              excludeTurns: true
+            })
+          )
+          staged.set(runtime, {
+            config,
+            catalog: nextCatalog,
+            model: resolveModelSelection(
+              nextCatalog,
+              requestedModel ?? candidate.selectionId(thread.model, modelProvider),
+              thread.reasoningEffort
+            )
+          })
         }
-        this.capabilities = capabilities;
-        return {
-            protocolVersion: acp.PROTOCOL_VERSION,
-            info: this.info,
-            capabilities: {
-                session: {
-                    prompt: {image: {}, embeddedContext: {}},
-                    mcp: {stdio: {}, http: {}},
-                    fork: {},
-                    delete: {},
-                    additionalDirectories: {},
-                    systemPrompt: {},
-                },
-                providers: {},
-                // Codex desktop's thread model: hide = archive (reversible), delete = delete.
-                // ACP has no archive verb, so it rides the `_codex/*` extension surface and is
-                // declared here; `session/list` takes `_meta.codex.archived` to page the archive.
-                // seedHistory: a host that keeps its own transcript can continue it on a fresh thread —
-                // `session/new` with `_meta.codex.seedHistory: [{role, text}]` injects it as model-visible
-                // history (thread/inject_items) before the first turn.
-                // skills / plugins: the `_codex/skills_*`, `_codex/plugin_*` and `_codex/marketplace_*`
-                // pass-through surface for a host that manages Codex's catalogs itself.
-                // rename / account / fuzzyFileSearch: `_codex/session_rename`, `_codex/account_read`,
-                // `_codex/rate_limits` (+ `_codex/rate_limits_updated`) and `_codex/fuzzy_file_search`.
-                _meta: {alwith: {tools: {version: 1}, turns: {version: 2}, configRevision: {version: 1}}, codex: {forkAtTurn: true, sessionLineage: true, archive: true, readState: true, sessionList: {version: 1}, sessionHistory: {version: 2, items: true, modes: ["browse", "export"]}, seedHistory: true, skills: true, plugins: true, pluginEnable: true, providerCatalog: true, rename: true, account: true, fuzzyFileSearch: true, composerPredictions: true}},
-            },
-            authMethods: authMethods(this.capabilities, this.env),
-        };
-    }
-
-    private requireInitialized(method: string): ClientCapabilitySet {
-        if (this.capabilities === null) {
-            throw acp.RequestError.invalidRequest(
-                {method},
-                `${method} requires a successful initialize first: send {"protocolVersion": ${acp.PROTOCOL_VERSION}, "info": {"name": ..., "version": ...}}`,
-            );
-        }
-        return this.capabilities;
-    }
-
-    // ---- auth -------------------------------------------------------------------
-
-    async login(params: acp.LoginAuthRequest, requestId: acp.JsonRpcId | null = null): Promise<acp.LoginAuthResponse> {
-        this.requireInitialized("auth/login");
-        await this.withCodex(() => login(this.codex, this.link, params, requestId, this.env));
-        await this.refreshAccounts();
-        return {};
-    }
-
-    async logout(_params: acp.LogoutAuthRequest): Promise<acp.LogoutAuthResponse> {
-        this.requireInitialized("auth/logout");
-        await this.withCodex(() => logout(this.codex));
-        await this.refreshAccounts();
-        return {};
-    }
-
-    private async refreshAccounts(): Promise<void> {
-        this.codex.invalidateModels();
-        const generation = ++this.accountGeneration;
-        const account = (await this.codex.accountRead({refreshToken: false})).account;
-        if (generation !== this.accountGeneration) return;
-        for (const runtime of this.sessions.values()) runtime.session.account = account;
-    }
-
-    // ---- providers ----------------------------------------------------------------
-
-    listProviders(_params: acp.ListProvidersRequest): acp.ListProvidersResponse {
-        this.requireInitialized("providers/list");
-        return this.providers.list();
-    }
-
-    async setProvider(params: acp.SetProviderRequest): Promise<acp.SetProviderResponse> {
-        this.requireInitialized("providers/set");
-        await this.changeProvider(candidate => candidate.set(params));
-        return {};
-    }
-
-    async disableProvider(params: acp.DisableProviderRequest): Promise<acp.DisableProviderResponse> {
-        this.requireInitialized("providers/disable");
-        if (params.providerId !== OPENAI_PROVIDER_ID) return {};
-        await this.changeProvider(candidate => candidate.disable(params));
-        return {};
-    }
-
-    private assertNoActiveTurns(method: string): void {
-        const busy = [...this.sessions.values()].filter(runtime => runtime.session.activeTurn !== null).map(runtime => runtime.session.id);
-        if (busy.length > 0) {
-            throw acp.RequestError.invalidRequest({sessions: busy}, `${method} cannot change routing while a turn is running; cancel it or wait for idle`);
-        }
-    }
-
-    private assertRoutingAvailable(): void {
-        if (this.switching) throw acp.RequestError.invalidRequest(undefined, "Provider routing is changing; retry after providers/set or providers/disable finishes");
-    }
-
-    private async admission<T>(operation: () => Promise<T>, sessionId?: string): Promise<T> {
-        this.assertRoutingAvailable();
-        if (sessionId && this.sessionMutations.has(sessionId)) throw acp.RequestError.invalidRequest({sessionId}, "Session lifecycle or configuration work is in progress; retry when it finishes");
-        if (sessionId) this.sessionMutations.add(sessionId);
-        this.admissions += 1;
-        try {
-            return await operation();
-        } finally {
-            this.admissions -= 1;
-            if (sessionId) this.sessionMutations.delete(sessionId);
-        }
-    }
-
-    private async changeProvider(change: (candidate: ProviderRouting) => void): Promise<void> {
-        const pending = this.providerQueue.then(async () => {
-            this.assertNoActiveTurns("providers/set or providers/disable");
-            if (this.admissions > 0) throw acp.RequestError.invalidRequest(undefined, "Session configuration or lifecycle work is in progress; retry the provider change when it finishes");
-            this.switching = true;
-            const candidate = this.providers.copy();
-            const attempted: SessionRuntime[] = [];
-            const staged = new Map<SessionRuntime, {config: JsonObject; catalog: Session["catalog"]; model: Session["model"]}>();
-            try {
-                change(candidate);
-                const catalog = await this.withCodex(() => this.codex.allModels(true));
-                const nativeProvider = await this.resolveModelProvider(candidate);
-                // Route mode moves every session; catalog mode only touches sessions whose gateway
-                // was removed or re-registered (a rotated key, say) — `copy()` shares untouched
-                // gateway objects, so identity tells the two apart. The others just learn the
-                // new catalog. A session stays on its gateway when the candidate still has it.
-                const wholesale = (this.providers.active !== null && this.providers.mode === "route") || (candidate.active !== null && candidate.mode === "route");
-                const unavailable = new Set([...this.sessions.values()].filter(runtime =>
-                    this.providers.mode === "catalog" && this.providers.hasGateway(runtime.modelProvider) && !candidate.hasGateway(runtime.modelProvider)));
-                const moving = [...this.sessions.values()].filter(runtime => !unavailable.has(runtime) && (wholesale
-                    || (this.providers.hasGateway(runtime.modelProvider) && candidate.gateway(runtime.modelProvider) !== this.providers.gateway(runtime.modelProvider))));
-                const targets = new Map<SessionRuntime, string | null>(moving.map(runtime => {
-                    if (candidate.active === null) return [runtime, null];
-                    if (candidate.mode === "route") return [runtime, candidate.defaultGatewayId()];
-                    return [runtime, candidate.hasGateway(runtime.modelProvider) ? runtime.modelProvider : null];
-                }));
-                // Codex cannot cold-resume a thread before its history storage exists.
-                // Validate every session before detaching any subscription. Catalog mode
-                // materializes an empty gateway session instead (see rerouteSession).
-                for (const runtime of moving) {
-                    try {
-                        await this.codex.threadTurnsList({threadId: runtime.session.id, limit: 1, itemsView: "notLoaded"});
-                    } catch (error) {
-                        if (wholesale) {
-                            throw acp.RequestError.invalidRequest({sessionId: runtime.session.id, details: errorMessage(error)},
-                                "Cannot reload this session's history for a provider change; close empty sessions and configure the provider before creating them, or retry after history is available");
-                        }
-                        await this.withCodex(() => this.codex.threadInjectItems({threadId: runtime.session.id, items: [providerChangeNote()]}));
-                    }
-                }
-                const nextCatalog = candidate.catalog(catalog);
-                for (const runtime of moving) {
-                    const target = targets.get(runtime) ?? null;
-                    const modelProvider = target ?? nativeProvider;
-                    const config = await this.responsesConfig(candidate.rebind(runtime.config, this.providers, target), modelProvider, runtime.session.cwd);
-                    const keep = findModel(nextCatalog, runtime.session.model.model) && candidate.gatewayIdFor(runtime.session.model.model) === target;
-                    const requestedModel = candidate.mode === "route" ? candidate.active?.model ?? (keep ? runtime.session.model.model : null) : keep ? runtime.session.model.model : null;
-                    const selection = resolveModelSelection(nextCatalog, requestedModel, requestedModel === runtime.session.model.model ? runtime.session.model.effort : null);
-                    attempted.push(runtime);
-                    // A subscribed live thread treats resume as rejoin and ignores routing overrides.
-                    await this.codex.threadUnsubscribe({threadId: runtime.session.id});
-                    const thread = await this.withCodex(() => this.codex.threadResume({
-                        threadId: runtime.session.id, cwd: runtime.session.cwd, config,
-                        modelProvider, model: candidate.upstreamModel(selection.model), excludeTurns: true,
-                    }));
-                    staged.set(runtime, {config, catalog: nextCatalog, model: resolveModelSelection(nextCatalog, requestedModel ?? candidate.selectionId(thread.model, modelProvider), thread.reasoningEffort)});
-                }
-                for (const runtime of unavailable) runtime.config = candidate.rebind(runtime.config, this.providers, null);
-                this.providers = candidate;
-                for (const runtime of this.sessions.values()) {
-                    const next = staged.get(runtime);
-                    if (next) {
-                        runtime.config = next.config;
-                        runtime.modelProvider = targets.get(runtime) ?? nativeProvider;
-                        runtime.session.model = next.model;
-                        runtime.stale = false;
-                    }
-                    runtime.session.catalog = nextCatalog;
-                    runtime.session.gatewayGroups = candidate.gatewayGroups();
-                    if (!next && !unavailable.has(runtime)) runtime.session.model = resolveModelSelection(nextCatalog, findModel(nextCatalog, runtime.session.model.model) ? runtime.session.model.model : null, runtime.session.model.effort);
-                    // Notification delivery cannot roll back an already committed routing transaction.
-                    void runtime.client.update(configOptionsFrame(runtime, {routing: {stale: false}})).catch(error => logger.error("Provider config notification failed", error));
-                }
-            } catch (error) {
-                if (attempted.length === 0 && error instanceof acp.RequestError) throw error;
-                const staleSessions: string[] = [];
-                for (const runtime of attempted) {
-                    try {
-                        await this.codex.threadUnsubscribe({threadId: runtime.session.id});
-                        await this.codex.threadResume({threadId: runtime.session.id, cwd: runtime.session.cwd,
-                            config: runtime.config, modelProvider: runtime.modelProvider, model: this.providers.upstreamModel(runtime.session.model.model), excludeTurns: true});
-                    } catch (rollbackError) {
-                        runtime.stale = true;
-                        staleSessions.push(runtime.session.id);
-                        logger.error("Provider rollback failed", rollbackError, {sessionId: runtime.session.id});
-                        void runtime.client.update(configOptionsFrame(runtime, {routing: {stale: true}})).catch(() => {});
-                    }
-                }
-                throw acp.RequestError.internalError({staleSessions, attemptedSessions: attempted.map(runtime => runtime.session.id)},
-                    `Provider change failed: ${errorMessage(error)}${staleSessions.length ? "; resume affected sessions or retry the provider change before prompting" : "; previous routing restored"}`);
-            } finally { this.switching = false; }
-        });
-        this.providerQueue = pending.catch(() => {});
-        await pending;
-    }
-
-    // ---- sessions ---------------------------------------------------------------
-
-    async newSession(params: acp.NewSessionRequest, signal?: AbortSignal): Promise<acp.NewSessionResponse> {
-        const runtime = await this.openSession({kind: "new", request: params}, signal);
-        return {sessionId: runtime.session.id, configOptions: sessionConfigOptions(runtime.session), _meta: {alwith: {configRevision: runtime.configRevision}, codex: runtime.lineage}};
-    }
-
-    async resumeSession(params: acp.ResumeSessionRequest, signal?: AbortSignal): Promise<acp.ResumeSessionResponse> {
-        const runtime = await this.openSession({kind: "resume", request: params}, signal);
-        const configOptions = sessionConfigOptions(runtime.session);
-        return {configOptions, _meta: {alwith: {configRevision: runtime.configRevision}, codex: {...runtime.lineage, ...(runtime.readOnly ? {readOnly: true, reason: "active_writer"} : {})}}};
-    }
-
-    async forkSession(params: acp.ForkSessionRequest, signal?: AbortSignal): Promise<acp.ForkSessionResponse> {
-        const runtime = await this.openSession({kind: "fork", request: params}, signal);
-        return {sessionId: runtime.session.id, configOptions: sessionConfigOptions(runtime.session), _meta: {alwith: {configRevision: runtime.configRevision}, codex: runtime.lineage}};
-    }
-
-    private async openSession(open: OpenRequest, signal?: AbortSignal): Promise<SessionRuntime> {
-        if (signal?.aborted) throw acp.RequestError.requestCancelled(undefined, "Session opening was cancelled");
-        const pending = this.admission(async () => {
-            const runtime = await this.openSessionInternal(open, signal);
-            if (signal?.aborted) {
-                await this.closeRuntime(runtime.session.id);
-                throw acp.RequestError.requestCancelled(undefined, "Session opening was cancelled");
-            }
-            return runtime;
-        }, open.kind === "new" ? undefined : open.request.sessionId);
-        try {
-            return signal ? await abortable(pending, signal) : await pending;
-        } catch (error) {
-            if (signal?.aborted) throw acp.RequestError.requestCancelled(undefined, "Session opening was cancelled; any thread returned later will be unsubscribed");
-            throw error;
-        }
-    }
-
-    private assertUnsubscribeSettled(sessionId: string): void {
-        if (this.pendingUnsubscribes.has(sessionId)) {
-            throw acp.RequestError.invalidRequest({sessionId}, "A previous unsubscribe is still pending; retry after Codex responds or reconnect the agent");
-        }
-    }
-
-    private async openSessionInternal(open: OpenRequest, signal?: AbortSignal): Promise<SessionRuntime> {
-        const method = {new: "session/new", resume: "session/resume", fork: "session/fork"}[open.kind];
-        const capabilities = this.requireInitialized(method);
-        if (open.kind !== "new") this.assertUnsubscribeSettled(open.request.sessionId);
-        const {request} = open;
-        const lastTurnId = open.kind === "fork" ? forkTurnId(request._meta) : undefined;
-        if (typeof request.cwd !== "string" || !path.isAbsolute(request.cwd)) {
-            throw acp.RequestError.invalidParams({cwd: request.cwd}, "cwd must be an absolute path");
-        }
-        if (open.kind === "resume" && open.request.replayFrom != null && open.request.replayFrom.type !== "start") {
-            throw acp.RequestError.invalidParams({replayFrom: open.request.replayFrom}, "Only replayFrom {type: \"start\"} is supported");
-        }
-        const seed = open.kind === "new" ? seedHistoryOf(open.request._meta) : [];
-        const additionalDirectories = readAdditionalDirectories(request.cwd, request.additionalDirectories);
-        if (open.kind === "resume" && this.sessions.has(open.request.sessionId)) {
-            // A second open for a live session replaces it; close the old runtime first.
-            await this.closeRuntime(open.request.sessionId);
-            this.assertUnsubscribeSettled(open.request.sessionId);
-        }
-        const mcpServers = request.mcpServers ?? [];
-        const clientTools = clientToolsOf(request._meta);
-        const host = hostSessionOptions(request);
-        const mode = host.mode ?? initialAgentMode(this.env);
-        const hostThreadOptions = {
-            ...(host.instructions === undefined ? {} : {developerInstructions: host.instructions}),
-            ...(host.mode ? {approvalPolicy: mode.approvalPolicy, approvalsReviewer: mode.approvalsReviewer, sandbox: mode.sandboxMode} : {}),
-        };
-
-        // Which provider this thread runs on. Route mode: the gateway, always. Catalog mode:
-        // the gateway serving the model the client asks for, or (resume) the one Codex says
-        // the thread last ran on.
-        const requestedModel = requestedModelOf(request._meta);
-        let gatewayId = this.providers.defaultGatewayId();
-        if (this.providers.active !== null && this.providers.mode === "catalog") {
-            if (requestedModel !== null) gatewayId = this.providers.gatewayIdFor(requestedModel);
-            else if (open.kind === "resume") {
-                const known = await this.withCodex(() => this.codex.threadRead({threadId: open.request.sessionId, includeTurns: false}));
-                gatewayId = this.providers.hasGateway(known.thread.modelProvider) ? known.thread.modelProvider : null;
-            }
-        }
-        const onGateway = gatewayId !== null;
-        // A client-configured gateway carries its own credentials; only native OpenAI routing needs a login.
-        let accountVersion = this.accountGeneration;
-        const account = await this.withCodex(() => this.codex.accountRead({refreshToken: false}));
-        if (!onGateway && account.requiresOpenaiAuth && account.account === null) {
-            throw acp.RequestError.authRequired(undefined, "Log in to Codex first (auth/login)");
-        }
-        const existingMcp = mcpServers.length > 0 ? await this.withCodex(() => this.configuredMcpServerNames(request.cwd)) : new Set<string>();
-        let config = buildThreadConfig(this.providers.threadConfig(gatewayId), request.cwd, additionalDirectories, mcpServers, existingMcp);
-        const mcpStartupGeneration = this.codex.mcpStartupGeneration;
-        const effective = gatewayId === null && this.providers.modelProvider() === null
-            ? await this.withCodex(() => this.codex.configRead({includeLayers: false, cwd: request.cwd})) : null;
-        const configuredProvider = effective?.config["model_provider"];
-        const modelProvider = gatewayId ?? this.providers.modelProvider()
-            ?? (typeof configuredProvider === "string" && configuredProvider.length > 0 ? configuredProvider : OPENAI_PROVIDER_ID);
-        config = await this.responsesConfig(config, modelProvider, request.cwd, {account, effective});
-        const startModel = this.providers.upstreamModel(onGateway ? requestedModel ?? this.providers.gateway(gatewayId)?.model ?? null : requestedModel);
-
-        let readOnly = false;
-        const {thread, skills} = await this.withSkillsContext(request.cwd, additionalDirectories, async skills => ({skills, thread: await this.withCodex(async () => {
-            if (signal?.aborted) throw acp.RequestError.requestCancelled(undefined, "Session opening was cancelled");
-            switch (open.kind) {
-                case "new":
-                    return await this.codex.threadStart({...hostThreadOptions, config, cwd: request.cwd, modelProvider, model: startModel,
-                        ...(clientTools ? {dynamicTools: dynamicTools(clientTools)} : {})});
-                case "resume":
-                    try {
-                        // History is paged through thread/turns/list during replay; full hydration here is deprecated.
-                        return await this.codex.threadResume({...hostThreadOptions, threadId: open.request.sessionId, config, cwd: request.cwd, modelProvider, model: startModel, excludeTurns: true});
-                    } catch (error) {
-                        // Codex's writer lock is a file lock across the Codex home: another Codex
-                        // client (ChatGPT app, CLI, app-server) has this thread open, and nothing in
-                        // this process can release it. Codex's TUI opens such threads for viewing
-                        // through thread/read; so does this session.
-                        if (!errorMessage(error).includes("already has an active writer")) throw error;
-                        readOnly = true;
-                        return readOnlyThread((await this.codex.threadRead({threadId: open.request.sessionId, includeTurns: false})).thread, request.cwd);
-                    }
-                case "fork":
-                    return await this.codex.threadFork({...hostThreadOptions, ...(lastTurnId === undefined ? {} : {lastTurnId}), threadId: open.request.sessionId, config, cwd: request.cwd, modelProvider, model: startModel, excludeTurns: true});
-            }
-        })}));
-        const sessionId = thread.thread.id;
-        let removeCancellation = () => {};
-        const openingCompletions = new Map<string, TurnCompletedNotification>();
-        const openingStarts = new Set<string>();
-        const stopObservingOpen = this.codex.observeNotifications(notification => {
-            if (notification.method === "turn/completed" && notification.params.threadId === sessionId) {
-                if (openingCompletions.size >= 32) openingCompletions.delete(openingCompletions.keys().next().value!);
-                openingCompletions.set(notification.params.turn.id, notification.params);
-            }
-            if (notification.method === "turn/started" && notification.params.threadId === sessionId && this.sessions.has(sessionId)) {
-                if (openingStarts.size >= 32) openingStarts.delete(openingStarts.values().next().value!);
-                openingStarts.add(notification.params.turn.id);
-            }
-        });
-        try {
-            if (signal?.aborted) throw acp.RequestError.requestCancelled(undefined, "Session opening was cancelled");
-            const codexCatalog = await this.withCodex(() => this.codex.allModels());
-            let openedAccount = account.account;
-            while (accountVersion !== this.accountGeneration) {
-                accountVersion = this.accountGeneration;
-                openedAccount = (await this.withCodex(() => this.codex.accountRead({refreshToken: false}))).account;
-            }
-            const catalog = this.providers.catalog(codexCatalog);
-            const model = resolveModelSelection(catalog, this.providers.selectionId(startModel ?? thread.model, gatewayId ?? thread.modelProvider), thread.reasoningEffort);
-            const session: Session = {
-                ...(clientTools ? {clientTools} : {}),
-                id: sessionId,
-                cwd: request.cwd,
-                additionalDirectories,
-                mcpServerNames: mcpServerNames(mcpServers).filter(name => !existingMcp.has(name)),
-                catalog,
-                gatewayGroups: this.providers.gatewayGroups(),
-                model,
-                mode,
-                collaborationMode: DEFAULT_COLLABORATION_MODE,
-                fastMode: thread.serviceTier === FAST_SERVICE_TIER,
-                account: openedAccount,
-                title: null,
-                titleIsExplicit: false,
-                activeTurn: null,
-                lastUsage: null,
-                contextWindow: null,
-                closed: false,
-            };
-            const runtime = this.installRuntime(session, capabilities, config, gatewayId ?? thread.modelProvider, threadLineage(thread.thread), readOnly);
-            const cancelOpening = () => {
-                runtime.session.closed = true;
-                runtime.lifetime.abort();
-                runtime.client.dispose();
-            };
-            signal?.addEventListener("abort", cancelOpening, {once: true});
-            removeCancellation = () => signal?.removeEventListener("abort", cancelOpening);
-            if (signal?.aborted) cancelOpening();
-            const replay = open.kind === "fork" || (open.kind === "resume" && open.request.replayFrom?.type === "start");
-            if (open.kind !== "new") {
-                await this.replayHistory(runtime, replay, thread.thread);
-            } else {
-                if (seed.length > 0) {
-                    await this.withCodex(() => this.codex.threadInjectItems({threadId: sessionId, items: seed.map(seedItem)}));
-                }
-            }
-            if (thread.thread.status.type === "active" && runtime.session.activeTurn === null) {
-                const latest = await this.withCodex(() => this.codex.threadTurnsList({threadId: session.id, limit: 1, sortDirection: "desc", itemsView: "full"}));
-                const active = latest.data.find(turn => turn.status === "inProgress");
-                if (active && !(openingStarts.has(active.id) && openingCompletions.has(active.id))) {
-                    await assertCommandHistory(this.codex, thread.thread, this.commandReceipts, signal);
-                    const completed = openingCompletions.get(active.id);
-                    this.observeForeignTurn(runtime, active.id, completed ? Promise.resolve(completed) : undefined, active.items, replay);
-                }
-            }
-            if (mcpServers.length > 0) void this.reportMcpStartup(runtime, mcpStartupGeneration);
-            void this.publishAvailableCommands(runtime, skills);
-            return runtime;
-        } catch (error) {
-            // The thread is loaded and subscribed on the Codex side; do not leak it.
-            const runtime = this.sessions.get(sessionId);
-            if (runtime) {
-                runtime.session.closed = true;
-                runtime.lifetime.abort();
-                runtime.bridge.dispose();
-                runtime.client.dispose();
-            }
-            this.sessions.delete(sessionId);
-            this.codex.detachThread(sessionId);
-            await within(this.unsubscribeThread(sessionId), this.closeGraceMs).catch(() => {});
-            throw error;
-        } finally {
-            removeCancellation();
-            stopObservingOpen();
-        }
-    }
-
-    private installRuntime(session: Session, capabilities: ClientCapabilitySet, config: JsonObject, modelProvider: string | null, lineage: SessionRuntime["lineage"], readOnly = false): SessionRuntime {
-        const client = new ClientSession(session.id, this.link, capabilities);
-        const bridge = new EventBridge(client, session, this.agents, (itemId, receipt) => {
-            const turn = session.activeTurn;
-            const guard = turn ? this.commandGuards.get(turn) : undefined;
-            const write = this.commandReceipts!.write(itemId, receipt).then(async () => {
-                if (guard) await this.commandReceipts!.complete(guard);
-            });
-            if (turn) this.commandWrites.set(turn, write);
-            // Keep disk I/O off the notification queue, and observe rejection immediately.
-            // Finalization checks the same promise after all item notifications registered it.
-            void write.catch(error => logger.error("Command receipt save failed", error, {sessionId: session.id, itemId}));
-        }, itemId => abortable(this.commandReceipts!.read(itemId), AbortSignal.timeout(this.cancelGraceMs)));
-        const turnContext = new TurnContext(session.id);
-        const signal = () => {
-            const turn = session.activeTurn;
-            return AbortSignal.any([this.codex.disconnectSignal, ...(turn ? [turn.abort.signal, turn.stop.signal] : [])]);
-        };
-        const approval = new CodexApprovalHandler(client, turnContext, signal);
-        const elicitation = new CodexElicitationHandler(client, turnContext, signal);
-        const runtime: SessionRuntime = {lineage, config, modelProvider, stale: false, readOnly, session, client, bridge, turnContext, elicitation, lifetime: new AbortController(), queue: Promise.resolve(), configRevision: 0};
-        const tools = new ClientTools(session, client, AbortSignal.any([runtime.lifetime.signal, this.codex.disconnectSignal]));
-        // Frames already queued (e.g. the tool call under review) must reach the client before its prompt.
-        const drained = <P, T>(operation: (params: P) => Promise<T>) => async (params: P): Promise<T> => {
-            await abortable(this.drain(runtime), this.codex.disconnectSignal);
-            return await operation(params);
-        };
-        this.codex.attachThread(session.id, {
-            tool: params => tools.call(params),
-            notification: (notification) => this.enqueue(runtime, notification),
-            approval: {
-                handleCommandExecution: drained(params => approval.handleCommandExecution(params)),
-                handleFileChange: drained(params => approval.handleFileChange(params)),
-                handlePermissionsRequest: drained(params => approval.handlePermissionsRequest(params)),
-            },
-            elicitation: {
-                handleElicitation: drained(params => elicitation.handleElicitation(params)),
-                handleUserInput: drained(params => elicitation.handleUserInput(params)),
-            },
-        });
-        this.sessions.set(session.id, runtime);
-        return runtime;
-    }
-
-    private enqueue(runtime: SessionRuntime, notification: ServerNotification): void {
-        if (runtime.lifetime.signal.aborted) return;
-        if (notification.method === "turn/started" && runtime.session.activeTurn === null) {
-            this.observeForeignTurn(runtime, notification.params.turn.id);
-        }
-        const turn = runtime.session.activeTurn;
-        if (notification.method.startsWith("item/") && "turnId" in notification.params && typeof notification.params.turnId === "string") {
-            // A start response may trail its first items; filter only once ownership is known.
-            if (!turn || (turn.turnId !== null && notification.params.turnId !== turn.turnId)) return;
-        }
-        if (turn && notification.method === "turn/completed") this.completedTurns.set(turn, notification.params.turn.id);
-        if (runtime.lifetime.signal.aborted) return;
-        const run = async () => {
-            if (runtime.lifetime.signal.aborted) return;
-            try {
-                runtime.turnContext.observe(notification);
-                await runtime.elicitation.observe(notification);
-                await runtime.bridge.handle(notification);
-            } catch (error) {
-                logger.error("notification handling failed", error, {sessionId: runtime.session.id, method: notification.method});
-            }
-        };
-        runtime.queue = runtime.queue.then(run, run);
-    }
-
-    private observeForeignTurn(runtime: SessionRuntime, turnId: string, completion?: Promise<TurnCompletedNotification>, items: readonly ThreadItem[] = [], replayItems = true): void {
-        if (runtime.session.activeTurn || runtime.session.closed) return;
-        const turn = createActiveTurn(runtime.session.id);
-        runtime.session.activeTurn = turn;
-        this.turnStarted(runtime, turn, turnId, runtime.session.id);
-        runtime.client.reportRunning();
-        const completed = completion ?? this.codex.awaitTurnCompleted(runtime.session.id, turnId, turn.stop.signal);
-        void this.runPrompt(runtime, turn, {sessionId: runtime.session.id, prompt: []}, completed, items, replayItems);
-    }
-
-    private async drain(runtime: SessionRuntime): Promise<void> {
-        let current: Promise<void>;
-        do {
-            current = runtime.queue;
-            await abortable(current, runtime.client.signal);
-        } while (runtime.queue !== current);
-    }
-
-    /**
-     * Publishes the session title and, when asked, replays the transcript. Turns are
-     * paged through thread/turns/list and streamed page by page, so a long session
-     * never needs to be materialized in one response.
-     */
-    private async replayHistory(runtime: SessionRuntime, replay: boolean, thread: Thread): Promise<void> {
-        const {session, client} = runtime;
-        let titlePublished = false;
-        const publishTitle = async (turns: readonly Turn[]) => {
-            if (titlePublished) return;
-            const title = historyTitle(thread, turns);
-            if (title === null && replay) return;
-            titlePublished = true;
-            session.title = title;
-            session.titleIsExplicit = !!thread.name?.trim();
-            if (title) await client.update({sessionUpdate: "session_info_update", title});
-        };
-        if (!replay) {
-            const firstPage = thread.name?.trim() ? {data: [] as Turn[]} : await this.turnPage(session.id, null);
-            await publishTitle(firstPage.data);
-            return;
-        }
-        // Native turn IDs are preserved by fork. Comparing the two native histories locates
-        // the inherited boundary again after restart, without a second provenance store.
-        const parentTurns = new Set<string>();
-        if (thread.forkedFromId !== null) {
-            let parentCursor: string | null = null;
-            const seen = new Set<string>();
-            do {
-                const page = await this.withCodex(() => this.codex.threadTurnsList({threadId: thread.forkedFromId!, cursor: parentCursor, limit: HISTORY_PAGE_SIZE, sortDirection: "asc", itemsView: "summary"}));
-                for (const turn of page.data) parentTurns.add(turn.id);
-                parentCursor = page.nextCursor;
-                if (parentCursor !== null) {
-                    if (seen.has(parentCursor)) throw acp.RequestError.internalError(undefined, "Codex parent history repeated a cursor");
-                    seen.add(parentCursor);
-                }
-            } while (parentCursor !== null && !session.closed);
-            runtime.lineage.forkedAtTurnId = null;
-        }
-        const cursors = new Set<string>();
-        let cursor: string | null = null;
-        do {
-            const page: {data: Turn[]; nextCursor: string | null} = await this.turnPage(session.id, cursor);
-            await assertCommandHistory(this.codex, thread, this.commandReceipts, runtime.lifetime.signal);
-            for (const turn of page.data) {
-                if (parentTurns.has(turn.id)) runtime.lineage.forkedAtTurnId = turn.id;
-            }
-            await publishTitle(page.data);
-            const commandReceipts = new Map<string, CommandReceipt>();
-            const userItems = page.data.flatMap(turn => turn.items.filter(item => item.type === "userMessage"));
-            const receipts = await Promise.all(userItems.map(item => this.commandReceipts?.read(item.id)));
-            for (let i = 0; i < userItems.length; i++) {
-                const receipt = receipts[i];
-                if (receipt) commandReceipts.set(userItems[i]!.id, receipt);
-            }
-            await this.agents.load(page.data.flatMap(turn => turn.items));
-            await client.updateAll(historyUpdates(page.data, this.agents, commandReceipts));
-            cursor = page.nextCursor;
-            if (cursor !== null) {
-                if (cursors.has(cursor)) throw acp.RequestError.internalError({sessionId: session.id}, "Codex history pagination repeated a cursor; retry after restarting Codex");
-                cursors.add(cursor);
-            }
-        } while (cursor !== null && !session.closed);
-        await publishTitle([]);
-    }
-
-    private async turnPage(threadId: string, cursor: string | null): Promise<{data: Turn[]; nextCursor: string | null}> {
-        const page = await this.withCodex(() => this.codex.threadTurnsList({threadId, cursor, limit: HISTORY_PAGE_SIZE, sortDirection: "asc", itemsView: "full"}));
-        return {data: page.data, nextCursor: page.nextCursor};
-    }
-
-    private async reportMcpStartup(runtime: SessionRuntime, afterGeneration: number): Promise<void> {
-        try {
-            const result = await this.codex.awaitMcpStartup(runtime.session.mcpServerNames, afterGeneration, runtime.lifetime.signal, runtime.session.id);
-            if (runtime.session.closed) return;
-            for (const failure of result.failed) {
-                await runtime.client.update(mcpStartupFailed(failure.server, `MCP server "${failure.server}" failed to start: ${failure.error}`));
-            }
-            for (const server of result.cancelled) {
-                await runtime.client.update(mcpStartupFailed(server, `MCP server "${server}" startup was cancelled.`));
-            }
-        } catch (error) {
-            if (runtime.lifetime.signal.aborted) return;
-            logger.error("MCP startup reporting failed", error, {sessionId: runtime.session.id});
-        }
-    }
-
-    private async publishAvailableCommands(runtime: SessionRuntime, snapshot?: Awaited<ReturnType<AppServerClient["skillsList"]>>): Promise<void> {
-        try {
-            const skills = snapshot ?? await this.codex.skillsList({cwds: [runtime.session.cwd, ...runtime.session.additionalDirectories]});
-            if (runtime.session.closed) return;
-            await runtime.client.update({sessionUpdate: "available_commands_update", availableCommands: availableCommands(skills.data)});
-            this.publishedSkills.set(runtime, skills);
-        } catch (error) {
-            logger.error("publishing available commands failed", error, {sessionId: runtime.session.id});
-        }
-    }
-
-    async listSessions(params: acp.ListSessionsRequest): Promise<acp.ListSessionsResponse> {
-        this.requireInitialized("session/list");
-        return this.readSessionList(params, false);
-    }
-
-    async sessionList(params: acp.ListSessionsRequest = {}): Promise<acp.ListSessionsResponse> {
-        this.requireInitialized("_codex/session_list");
-        if (Object.values(params).some(value => value !== undefined)) return this.listSessions(params);
-        return this.readSessionList({}, true);
-    }
-
-    private async readSessionList(params: acp.ListSessionsRequest, all: boolean): Promise<acp.ListSessionsResponse> {
-        const cwd = params.cwd?.trim() || null;
-        const archived = archivedFilter(params._meta);
-        const list = (cursor: string | null) => this.withCodex(() => this.codex.threadList({
-            cursor,
-            ...(all ? {limit: 100} : {}),
-            ...(cwd ? {cwd} : {}),
-            sourceKinds: ["cli", "vscode", "exec", "appServer", "unknown"],
-            // Omitting this lets Codex hide threads created through another gateway.
-            modelProviders: [],
-            // Codex lists non-archived threads by default; the archive is a separate page.
-            ...(archived ? {archived: true} : {}),
-        }));
-        const response = await list(params.cursor ?? null);
-        if (all) {
-            const threads = new Map(response.data.map(thread => [thread.id, thread]));
-            const cursors = new Set<string>();
-            while (response.nextCursor !== null) {
-                const cursor = response.nextCursor;
-                if (cursors.has(cursor)) throw acp.RequestError.internalError(undefined, "Codex thread list repeated a cursor");
-                cursors.add(cursor);
-                const page = await list(cursor);
-                for (const thread of page.data) threads.set(thread.id, thread);
-                response.nextCursor = page.nextCursor;
-            }
-            response.data = [...threads.values()];
-        }
-        const home = this.codexHome;
-        if (home === null) throw acp.RequestError.internalError(undefined, "Codex home is unavailable after initialize");
-        const forks = await this.withCodex(() => nativeForks(home, archived, cwd,
-            async id => (await this.codex.threadRead({threadId: id, includeTurns: false})).thread));
-        const byId = new Map(forks.map(thread => [thread.id, thread]));
-        // Native list rows can lose forkedFromId after unload; thread/read retains the rollout lineage.
-        response.data = response.data.map(thread => byId.get(thread.id) ?? thread);
-        if (!params.cursor) {
-            const missing = new Map(byId);
-            for (const thread of response.data) missing.delete(thread.id);
-            // thread/read may hydrate a non-empty preview while the native list index still
-            // excludes it. Check actual pages, not the hydrated preview; avoid duplicate rows.
-            let cursor = response.nextCursor;
-            const cursors = new Set<string>();
-            while (missing.size > 0 && cursor !== null) {
-                if (cursors.has(cursor)) throw acp.RequestError.internalError(undefined, "Codex thread list repeated a cursor");
-                cursors.add(cursor);
-                const page = await list(cursor);
-                for (const thread of page.data) missing.delete(thread.id);
-                cursor = page.nextCursor;
-            }
-            response.data.push(...missing.values());
-        }
-        const sessions: acp.SessionInfo[] = [];
-        // Full listings can need many title repairs; bound their history reads.
-        const batchSize = all ? 8 : response.data.length;
-        for (let offset = 0; offset < response.data.length; offset += batchSize) {
-            sessions.push(...await Promise.all(response.data.slice(offset, offset + batchSize).map(async thread => ({
-                sessionId: thread.id,
-                cwd: thread.cwd,
-                // Native previews can start with a serialized attachment, or cut it
-                // halfway through a URI. Read the first page only for those rows.
-                title: !thread.name?.trim() && /^(?:\[@|# Files mentioned by the user:|<send_user_message_question_reply>)/.test(thread.preview.trimStart())
-                    ? historyTitle(thread, (await this.turnPage(thread.id, null)).data)
-                    : thread.name?.trim() || thread.preview.trim() || null,
-                updatedAt: new Date(thread.updatedAt * 1000).toISOString(),
-                _meta: {codex: {archived, ...threadLineage(thread)}},
-            }))));
-        }
-        return all ? {sessions} : {sessions, nextCursor: response.nextCursor};
-    }
-
-    async closeSession(params: acp.CloseSessionRequest): Promise<acp.CloseSessionResponse> {
-        return await this.admission(() => this.closeSessionInternal(params), params.sessionId);
-    }
-
-    private async closeSessionInternal(params: acp.CloseSessionRequest): Promise<acp.CloseSessionResponse> {
-        this.requireInitialized("session/close");
-        return await this.closeRuntime(params.sessionId);
-    }
-
-    async deleteSession(params: acp.DeleteSessionRequest): Promise<acp.DeleteSessionResponse> {
-        return await this.admission(() => this.deleteSessionInternal(params), params.sessionId);
-    }
-
-    private async deleteSessionInternal(params: acp.DeleteSessionRequest): Promise<acp.DeleteSessionResponse> {
-        this.requireInitialized("session/delete");
-        await this.closeRuntime(params.sessionId);
-        // Real deletion, like Codex desktop's Delete; hiding is `_codex/session_archive`.
-        await this.withCodex(() => this.codex.threadDelete({threadId: params.sessionId}));
-        return {};
-    }
-
-    async sessionHistory(params: SessionHistoryParams, signal?: AbortSignal): Promise<SessionHistoryResponse> {
-        this.requireInitialized("_codex/session_history");
-        this.checkHistoryIdle(params);
-        const response = await readSessionHistory(this.codex, this.agents, params, signal, this.commandReceipts);
-        this.checkHistoryIdle(params);
-        return {...response, running: this.sessions.get(params.sessionId)?.session.activeTurn ? true : response.running};
-    }
-
-    async sessionHistoryItems(params: SessionHistoryItemsParams, signal?: AbortSignal): Promise<SessionHistoryItemsResponse> {
-        this.requireInitialized("_codex/session_history_items");
-        this.checkHistoryIdle(params);
-        const response = await readSessionHistoryItems(this.codex, this.agents, params, signal, this.commandReceipts);
-        this.checkHistoryIdle(params);
-        return {...response, running: this.sessions.get(params.sessionId)?.session.activeTurn ? true : response.running};
-    }
-
-    private checkHistoryIdle(params: SessionHistoryParams | SessionHistoryItemsParams): void {
-        // Browsing is allowed during a prompt; export must also guard the accepted-but-not-persisted gap.
-        if (params.mode === "export" && this.sessions.get(params.sessionId)?.session.activeTurn) {
-            throw historyError("history_busy", "Session history is still running; retry after the turn finishes", true);
-        }
-    }
-
-    async requestPrediction(params: {sessionId: string; sourceTurnId: string}): Promise<Record<string, never>> {
-        return await this.admission(() => this.requestPredictionInternal(params), params.sessionId);
-    }
-
-    private async requestPredictionInternal(params: {sessionId: string; sourceTurnId: string}): Promise<Record<string, never>> {
-        const runtime = this.runtime(params.sessionId, "_codex/session_prediction_request");
-        assertWritable(runtime);
-        if (runtime.session.activeTurn) throw acp.RequestError.invalidRequest(undefined, "Wait for the current turn to finish before requesting a prediction");
-        if (runtime.modelProvider !== OPENAI_PROVIDER_ID || runtime.session.collaborationMode === PLAN_COLLABORATION_MODE) throw acp.RequestError.invalidRequest(undefined, "Predictions require an OpenAI session outside plan mode");
-        const latest = await this.withCodex(() => this.codex.threadTurnsList({threadId: params.sessionId, limit: 1, sortDirection: "desc"}));
-        if (latest.data[0]?.id !== params.sourceTurnId || latest.data[0].status !== "completed") throw acp.RequestError.invalidRequest(undefined, "Predictions require the latest completed turn");
-        if (runtime.session.activeTurn || runtime.lifetime.signal.aborted) throw acp.RequestError.invalidRequest(undefined, "The source session changed; retry after it finishes");
-        const lowEffort = supportedEfforts(findModel(runtime.session.catalog, runtime.session.model.model)).some(option => option.reasoningEffort === "low");
-        this.predictions.start(params.sessionId, params.sourceTurnId, runtime.client, runtime.lifetime.signal, lowEffort ? "low" : undefined);
-        return {};
-    }
-
-    async archiveSession(params: SessionIdParams): Promise<Record<string, never>> {
-        return await this.admission(() => this.archiveSessionInternal(params), params.sessionId);
-    }
-
-    private async archiveSessionInternal(params: SessionIdParams): Promise<Record<string, never>> {
-        this.requireInitialized("_codex/session_archive");
-        await this.closeRuntime(params.sessionId);
-        await this.withCodex(() => this.codex.threadArchive({threadId: params.sessionId}));
-        return {};
-    }
-
-    /** Codex's durable read receipt; `expectedRevision` is the revision the client last saw. */
-    async updateSessionReadState(params: SessionReadStateUpdateParams): Promise<ThreadReadStateUpdateResponse> {
-        this.requireInitialized("_codex/session_read_state_update");
-        return await this.withCodex(() => this.codex.threadReadStateUpdate({threadId: params.sessionId, operation: {type: params.operation}, expectedRevision: params.expectedRevision}));
-    }
-
-    async unarchiveSession(params: SessionIdParams): Promise<Record<string, never>> {
-        return await this.admission(() => this.unarchiveSessionInternal(params), params.sessionId);
-    }
-
-    private async unarchiveSessionInternal(params: SessionIdParams): Promise<Record<string, never>> {
-        this.requireInitialized("_codex/session_unarchive");
-        await this.withCodex(() => this.codex.threadUnarchive({threadId: params.sessionId}));
-        return {};
-    }
-
-    // ---- skills and plugins ---------------------------------------------------------
-
-    async skillsList(params: SkillsListParams): Promise<SkillsListResponse> {
-        this.requireInitialized("_codex/skills_list");
-        return await this.withCodex(() => this.codex.skillsList(params));
-    }
-
-    async skillsConfigWrite(params: SkillsConfigWriteParams): Promise<SkillsConfigWriteResponse> {
-        this.requireInitialized("_codex/skills_config_write");
-        const response = await this.withCodex(() => this.codex.skillsConfigWrite(params));
-        this.notifySkillsChanged();
-        return response;
-    }
-
-    async pluginSetEnabled(params: PluginSetEnabledParams): Promise<{enabled: boolean}> {
-        this.requireInitialized("_codex/plugin_set_enabled");
-        if (params.remotePluginId !== undefined) {
-            await this.withCodex(async () => {
-                await setRemotePluginEnabled(this.codex, params.remotePluginId!, params.enabled);
-                await this.codex.pluginReconcile({reason: "plugin-enabled-changed"});
-                const installed = await this.codex.pluginInstalled({});
-                const plugin = installed.marketplaces.flatMap(market => market.plugins).find(plugin => plugin.remotePluginId === params.remotePluginId);
-                if (!plugin || plugin.enabled !== params.enabled) throw new Error("Remote plugin state could not be synchronized; refresh the plugin catalog");
-            });
-            this.notifySkillsChanged();
-            return {enabled: params.enabled};
-        }
-        const response = await this.withCodex(() => this.codex.configValueWrite({
-            keyPath: `plugins.${JSON.stringify(params.pluginId)}.enabled`,
-            value: params.enabled,
-            mergeStrategy: "upsert",
-        }));
-        this.notifySkillsChanged();
-        if (response.status === "okOverridden") {
-            throw acp.RequestError.invalidRequest(undefined, "Plugin enablement is overridden by a higher-priority configuration");
-        }
-        return {enabled: params.enabled};
-    }
-
-    async pluginList(params: PluginListParams): Promise<PluginListResponse> {
-        this.requireInitialized("_codex/plugin_list");
-        return await this.withCodex(() => this.codex.pluginList(params));
-    }
-
-    async pluginInstalled(params: PluginInstalledParams): Promise<PluginInstalledResponse> {
-        this.requireInitialized("_codex/plugin_installed");
-        return await this.withCodex(() => this.codex.pluginInstalled(params));
-    }
-
-    async pluginInstall(params: PluginInstallParams): Promise<PluginInstallResponse> {
-        this.requireInitialized("_codex/plugin_install");
-        const response = await this.withCodex(() => this.codex.pluginInstall(params));
-        this.notifySkillsChanged();
-        return response;
-    }
-
-    async pluginUninstall(params: PluginUninstallParams): Promise<Record<string, never>> {
-        this.requireInitialized("_codex/plugin_uninstall");
-        await this.withCodex(() => this.codex.pluginUninstall(params));
-        this.notifySkillsChanged();
-        return {};
-    }
-
-    async pluginRead(params: PluginReadParams): Promise<PluginReadResponse> {
-        this.requireInitialized("_codex/plugin_read");
-        return await this.withCodex(() => this.codex.pluginRead(params));
-    }
-
-    async marketplaceAdd(params: MarketplaceAddParams): Promise<MarketplaceAddResponse> {
-        this.requireInitialized("_codex/marketplace_add");
-        const response = await this.withCodex(() => this.codex.marketplaceAdd(params));
-        this.notifySkillsChanged();
-        return response;
-    }
-
-    async marketplaceRemove(params: MarketplaceRemoveParams): Promise<Record<string, never>> {
-        this.requireInitialized("_codex/marketplace_remove");
-        await this.withCodex(() => this.codex.marketplaceRemove(params));
-        this.notifySkillsChanged();
-        return {};
-    }
-
-    async marketplaceUpgrade(params: MarketplaceUpgradeParams): Promise<MarketplaceUpgradeResponse> {
-        this.requireInitialized("_codex/marketplace_upgrade");
-        const response = await this.withCodex(() => this.codex.marketplaceUpgrade(params));
-        this.notifySkillsChanged();
-        return response;
-    }
-
-    /**
-     * One signal for both catalogs: Codex's `skills/changed` and every catalog mutation made
-     * through this adapter. Plugins ship skills, so a plugin change is a skills change too.
-     */
-    private notifySkillsChanged(): void {
-        void this.link.notify("_codex/skills_changed", {}).catch(error => logger.error("skills change notification failed", error));
-    }
-
-    /** Relays a Codex notification to the client under a `_codex/*` name, payload verbatim. */
-    private forward(method: string, params: unknown): void {
-        void this.link.notify(method, params).catch(error => logger.error(`${method} notification failed`, error));
-    }
-
-    // ---- thread name, account, file search --------------------------------------------
-
-    /**
-     * `_codex/session_rename`: Codex names the thread (`thread/name/set`) and, for a loaded
-     * thread, reports it back as `thread/name/updated`, which the bridge already turns into
-     * `session_info_update`. A thread that is not loaded gets no notification, so the client
-     * updates its own list from the request it made.
-     */
-    async sessionRename(params: SessionRenameParams): Promise<Record<string, never>> {
-        this.requireInitialized("_codex/session_rename");
-        await this.withCodex(() => this.codex.threadSetName({threadId: params.sessionId, name: params.name}));
-        return {};
-    }
-
-    /** `_alwith/config_snapshot`: the session's options at their current revision. */
-    configSnapshot(params: {sessionId: string}): {configRevision: number; configOptions: acp.SessionConfigOption[]} {
-        const runtime = this.runtime(params.sessionId, "_alwith/config_snapshot");
-        return {configRevision: runtime.configRevision, configOptions: sessionConfigOptions(runtime.session)};
-    }
-
-    async accountRead(): Promise<GetAccountResponse> {
-        this.requireInitialized("_codex/account_read");
-        return await this.withCodex(() => this.codex.accountRead({refreshToken: false}));
-    }
-
-    async rateLimits(): Promise<GetAccountRateLimitsResponse> {
-        this.requireInitialized("_codex/rate_limits");
-        return await this.withCodex(() => this.codex.accountRateLimitsRead());
-    }
-
-    async fuzzyFileSearch(params: FuzzyFileSearchRequest): Promise<FuzzyFileSearchResponse> {
-        this.requireInitialized("_codex/fuzzy_file_search");
-        const request: FuzzyFileSearchParams = {query: params.query, roots: params.roots, cancellationToken: params.cancellationToken};
-        return await this.withCodex(() => this.codex.fuzzyFileSearch(request));
-    }
-
-    private async closeRuntime(sessionId: string): Promise<acp.CloseSessionResponse> {
-        this.predictions.cancel(sessionId);
-        const deadline = performance.now() + this.closeGraceMs;
-        const runtime = this.sessions.get(sessionId);
-        if (!runtime) return {};
-        runtime.session.closed = true;
-        runtime.lifetime.abort();
-        const turn = runtime.session.activeTurn;
-        if (turn) {
-            void this.interruptTurn(runtime, turn);
-            // Reserve half the total budget for unsubscribe, even if interruption stalls.
-            await within(turn.finished, Math.max(0, this.closeGraceMs / 2));
-            if (runtime.session.activeTurn === turn) {
-                // One best-effort terminal write; disposal releases any backpressured write.
-                await within(this.reportIdle(runtime, turn, "cancelled", {usage: usageOf(runtime.session)}), Math.max(0, (deadline - performance.now()) / 2)).catch(() => {});
-            }
-            turn.stop.abort();
-        }
-        if (this.sessions.get(sessionId) === runtime) this.sessions.delete(sessionId);
-        this.codex.detachThread(sessionId);
-        runtime.client.dispose();
-        runtime.bridge.dispose();
-        if (turn) {
-            turn.resolveStarted(null);
-            runtime.session.activeTurn = null;
-            turn.resolveFinished();
-        }
-        const unsubscribe = runtime.readOnly ? Promise.resolve() : this.unsubscribeThread(sessionId);
-        let remoteUnsubscribe: "confirmed" | "timed_out" | "failed" = "confirmed";
-        try {
-            if (!await within(unsubscribe, Math.max(0, deadline - performance.now()))) {
-                remoteUnsubscribe = "timed_out";
-            }
-        } catch (error) {
-            remoteUnsubscribe = "failed";
-            logger.error("thread/unsubscribe failed", error, {sessionId});
-        }
-        if (remoteUnsubscribe !== "confirmed") logger.log("session close detached locally", {sessionId, remoteUnsubscribe});
-        return {_meta: {codex: {close: {attempted: true, localDetached: true, remoteUnsubscribe}}}};
-    }
-
-    private unsubscribeThread(sessionId: string): Promise<unknown> {
-        const unsubscribe = this.codex.threadUnsubscribe({threadId: sessionId});
-        this.pendingUnsubscribes.set(sessionId, unsubscribe);
-        const release = () => {
-            if (this.pendingUnsubscribes.get(sessionId) === unsubscribe) this.pendingUnsubscribes.delete(sessionId);
-        };
-        void unsubscribe.then(release, release);
-        return unsubscribe;
-    }
-
-    async setSessionConfigOption(params: acp.SetSessionConfigOptionRequest): Promise<acp.SetSessionConfigOptionResponse> {
-        return await this.admission(() => this.setSessionConfigOptionInternal(params), params.sessionId);
-    }
-
-    private async setSessionConfigOptionInternal(params: acp.SetSessionConfigOptionRequest): Promise<acp.SetSessionConfigOptionResponse> {
-        this.predictions.cancel(params.sessionId);
-        const runtime = this.runtime(params.sessionId, "session/set_config_option");
-        assertWritable(runtime);
-        if (params.configId === MODEL_CONFIG_ID && (this.providers.mode === "catalog" || runtime.session.model.model.startsWith("gateway:")) && typeof params.value === "string") {
-            this.providers.upstreamModel(params.value);
-            const target = this.providers.gatewayIdFor(params.value);
-            const destination = target ?? await this.withCodex(() => this.resolveModelProvider());
-            if (destination !== runtime.modelProvider) await this.rerouteSession(runtime, target, params.value);
-        }
-        await this.withCodex(() => applyConfigOption(runtime.session, this.codex, params));
-        await runtime.client.update(configOptionsFrame(runtime));
-        return {configOptions: sessionConfigOptions(runtime.session), _meta: {alwith: {configRevision: runtime.configRevision}}};
-    }
-
-    /**
-     * Catalog mode: moves one live thread between Codex's native provider and a gateway.
-     * Codex has no per-turn provider (`turn/start` overrides the model only), so this is the
-     * same unsubscribe + cold resume as an agent-wide provider change. A thread Codex has not
-     * materialized yet (no user message) cannot be resumed; it is materialized first with a
-     * developer note, the way `seedHistory` injects items.
-     */
-    private async rerouteSession(runtime: SessionRuntime, gatewayId: string | null, modelId: string): Promise<void> {
-        const {session} = runtime;
-        this.assertRoutingAvailable();
-        if (session.activeTurn !== null) {
-            throw acp.RequestError.invalidRequest({sessionId: session.id}, "The model provider cannot change while a turn is running; cancel it or wait for idle");
-        }
-        try {
-            await this.codex.threadTurnsList({threadId: session.id, limit: 1, itemsView: "notLoaded"});
-        } catch {
-            await this.withCodex(() => this.codex.threadInjectItems({threadId: session.id, items: [providerChangeNote()]}));
-        }
-        const modelProvider = gatewayId ?? await this.withCodex(() => this.resolveModelProvider());
-        const config = await this.responsesConfig(this.providers.routeConfig(runtime.config, gatewayId), modelProvider, session.cwd);
-        await this.codex.threadUnsubscribe({threadId: session.id});
-        try {
-            await this.withCodex(() => this.codex.threadResume({threadId: session.id, cwd: session.cwd, config, modelProvider, model: this.providers.upstreamModel(modelId), excludeTurns: true}));
-        } catch (error) {
-            try {
-                await this.codex.threadResume({threadId: session.id, cwd: session.cwd, config: runtime.config, modelProvider: runtime.modelProvider, model: this.providers.upstreamModel(session.model.model), excludeTurns: true});
-            } catch (rollbackError) {
-                runtime.stale = true;
-                logger.error("Provider rollback failed", rollbackError, {sessionId: session.id});
-            }
-            throw acp.RequestError.internalError({sessionId: session.id, stale: runtime.stale}, `Could not move the session to ${gatewayId !== null ? `gateway "${gatewayId}"` : "Codex's provider"}: ${errorMessage(error)}`);
-        }
-        runtime.config = config;
-        runtime.modelProvider = modelProvider;
-        runtime.stale = false;
-    }
-
-    private runtime(sessionId: string, method: string): SessionRuntime {
-        this.requireInitialized(method);
-        const runtime = this.sessions.get(sessionId);
-        if (!runtime || runtime.session.closed) throw acp.RequestError.invalidParams({sessionId}, `Unknown session "${sessionId}" (missing or closed); create or resume it first`);
-        return runtime;
-    }
-
-    // ---- prompts ------------------------------------------------------------------
-
-    async prompt(params: acp.PromptRequest): Promise<acp.PromptResponse> {
-        return await this.promptInternal(params, false, requestedMessageId(params) ?? crypto.randomUUID());
-    }
-
-    /**
-     * `messageId` is minted here and handed to Codex as `clientUserMessageId`, so the receipt
-     * names the user message before Codex materializes it and the later `user_message` echo
-     * (`userMessage.clientId`) claims the same id. Steering keeps the id it was minted with.
-     */
-    private async promptInternal(params: acp.PromptRequest, allowReentry: boolean, messageId: string): Promise<acp.PromptResponse> {
-        this.predictions.cancel(params.sessionId);
-        this.assertRoutingAvailable();
-        if (!allowReentry && this.sessionMutations.has(params.sessionId)) throw acp.RequestError.invalidRequest({sessionId: params.sessionId}, "Session lifecycle or configuration work is in progress; retry when it finishes");
-        const runtime = this.runtime(params.sessionId, "session/prompt");
-        assertWritable(runtime);
-        if (runtime.stale) throw acp.RequestError.invalidRequest({sessionId: params.sessionId, _meta: {codex: {routing: {stale: true}}}}, "Session routing is stale; resume the session or successfully change providers before prompting");
-        if (!Array.isArray(params.prompt) || params.prompt.length === 0) {
-            throw acp.RequestError.invalidParams(undefined, "prompt must contain at least one content block");
-        }
-        // The client binds the prompt to the config revision it saw; a mismatch is refused here, in the same
-        // step that admits the prompt, with the actual options beside the refusal.
-        const expectedConfigRevision = expectedConfigRevisionOf(params._meta);
-        if (expectedConfigRevision !== null && expectedConfigRevision !== runtime.configRevision) {
-            throw acp.RequestError.invalidParams(
-                {alwith: {configStale: {expected: expectedConfigRevision, actual: runtime.configRevision, configOptions: sessionConfigOptions(runtime.session)}}},
-                "config/stale",
-            );
-        }
-        const {session} = runtime;
-        if (params._meta && typeof params._meta === "object") runtime.bridge.rememberPromptMeta(messageId, params._meta as Record<string, unknown>);
-        this.providers.upstreamModel(session.model.model);
-        const model = findModel(session.catalog, session.model.model);
-        if (!modelSupportsImages(model) && params.prompt.some(block => block.type === "image")) {
-            throw acp.RequestError.invalidParams({model: session.model.model}, "The current model does not support image input");
-        }
-        if (session.activeTurn) {
-            return await this.steerActiveTurn(runtime, session.activeTurn, params, messageId);
-        }
-        const turn = createActiveTurn(session.id, messageId);
-        session.activeTurn = turn;
-        runtime.client.reportRunning(messageId);
-        void this.runPrompt(runtime, turn, params);
-        return {messageId};
-    }
-
-    /** A prompt during a running turn is injected into it; Codex calls this steering. */
-    private async steerActiveTurn(runtime: SessionRuntime, turn: ActiveTurn, params: acp.PromptRequest, messageId: string): Promise<acp.PromptResponse> {
-        const turnId = turn.turnId ?? await turn.started;
-        if (turnId === null || turn.threadId !== runtime.session.id) {
-            throw acp.RequestError.invalidRequest({sessionId: params.sessionId}, "A turn is already running; wait for it to finish or cancel it");
-        }
-        try {
-            await this.codex.turnSteer({threadId: runtime.session.id, expectedTurnId: turnId, clientUserMessageId: messageId, input: toUserInput(params.prompt)});
-            return {messageId, _meta: {codex: {steered: turnId}}};
-        } catch (error) {
-            // Retry as a new prompt only after a matching completion proves the steer lost the race.
-            if (this.completedTurns.get(turn) === turnId || runtime.session.activeTurn !== turn) {
-                await turn.finished;
-                return await this.promptInternal(params, true, messageId);
-            }
-            throw acp.RequestError.invalidRequest({sessionId: params.sessionId, turnId}, `Could not steer the running turn: ${errorMessage(error)}`);
-        }
-    }
-
-    private async runPrompt(runtime: SessionRuntime, turn: ActiveTurn, params: acp.PromptRequest, observed?: Promise<TurnCompletedNotification>, items: readonly ThreadItem[] = [], replayItems = true): Promise<void> {
-        const {session, bridge} = runtime;
-        bridge.beginTurn();
-        let restoreError: Error | undefined;
-        if (items.length) {
-            const turnId = turn.turnId;
-            if (turnId === null) throw acp.RequestError.internalError(undefined, "Cannot restore items without their turn id");
-            const signal = AbortSignal.any([turn.abort.signal, turn.stop.signal, runtime.lifetime.signal]);
-            runtime.queue = runtime.queue.then(async () => {
-                try {
-                    await bridge.restore(items, turnId, signal, replayItems);
-                } catch (error) {
-                    if (signal.aborted) return;
-                    restoreError = new Error("Could not restore command history; check Codex home access and reopen the session.", {cause: error});
-                    logger.error("Restoring active turn history failed", error, {sessionId: session.id, turnId});
-                }
-            });
-        }
-        try {
-            if (!observed) {
-                if (turn.clientUserMessageId === null) throw acp.RequestError.internalError(undefined, "Prompt requires a message receipt");
-                // Record the ACP insertion before promptInternal returns success, independently of Codex.
-                await bridge.insertPrompt(turn.clientUserMessageId, params.prompt);
-            }
-            const command = parseCommand(params.prompt);
-            const outcome = command ? resolveCommand(command, session) : {kind: "prompt" as const};
-            if (!observed && outcome.kind !== "prompt") {
-                const native = outcome.kind === "review" ? "review" : outcome.kind === "config" && outcome.promptText ? "prompt" : null;
-                if (turn.clientUserMessageId === null) throw acp.RequestError.internalError(undefined, "Command requires a prompt receipt");
-                if (native) {
-                    bridge.rememberCommand(turn.clientUserMessageId, native);
-                    await this.prepareCommand(runtime, turn);
-                }
-            }
-            let completed = await abortable(observed ?? this.executePrompt(runtime, turn, command, outcome, params), turn.stop.signal);
-            await this.drain(runtime);
-            await bridge.flush();
-            if (restoreError && !turn.abort.signal.aborted) throw restoreError;
-            await this.finishCommandWrite(runtime, turn);
-
-            if (completed?.turn.status === "completed" && !turn.abort.signal.aborted && !this.exitHandled) {
-                completed = await abortable(this.maybeImplementPlan(runtime, turn, completed), turn.stop.signal);
-            }
-            if (completed?.turn.status === "interrupted" || turn.abort.signal.aborted) {
-                await this.reportIdle(runtime, turn, "cancelled", {usage: usageOf(session)});
-                return;
-            }
-            if (completed?.turn.status === "failed") {
-                await this.reportTurnFailure(runtime, turn, completed.turn.error ?? bridge.takeError() ?? {message: "Turn failed", codexErrorInfo: null, additionalDetails: null, misalignment: null});
-                return;
-            }
-            const pendingError = bridge.takeError();
-            if (pendingError) {
-                await this.reportTurnFailure(runtime, turn, pendingError);
-                return;
-            }
-            await this.publishFallbackTitle(runtime, promptTitle(params.prompt));
-            await this.reportIdle(runtime, turn, "end_turn", {usage: usageOf(session)});
-        } catch (error) {
-            if (error instanceof TurnStartRejectedError && turn.turnId === null && !this.commandWrites.has(turn)) this.commandsStarted.delete(turn);
-            const guard = this.commandGuards.get(turn);
-            if (guard && !this.commandsStarted.has(turn)) {
-                await this.finishCommandWrite(runtime, turn).catch(cleanupError => logger.error("Unused command guard cleanup failed", cleanupError, {sessionId: session.id}));
-            }
-            if (this.terminalTurns.has(turn)) {
-                logger.error("Terminal update failed", error, {sessionId: session.id});
-                return;
-            }
-            if (turn.stop.signal.aborted && session.closed) return;
-            if (turn.abort.signal.aborted || session.closed) {
-                await this.reportIdle(runtime, turn, "cancelled", {usage: usageOf(session)}).catch(() => {});
-                return;
-            }
-            logger.error("prompt failed", error, {sessionId: session.id});
-            await this.reportTurnFailure(runtime, turn, this.failureOf(error)).catch(() => {});
-        } finally {
-            turn.resolveStarted(null);
-            if (session.activeTurn === turn) session.activeTurn = null;
-            turn.resolveFinished();
-        }
-    }
-
-    private async prepareCommand(runtime: SessionRuntime, turn: ActiveTurn): Promise<void> {
-        let guard: CommandHistoryGuard | undefined;
-        const preparing = this.commandReceipts!.prepare(runtime.session.id).then(value => { guard = value; });
-        try {
-            const signal = AbortSignal.any([turn.abort.signal, turn.stop.signal]);
-            if (!await abortable(within(preparing, this.cancelGraceMs), signal)) {
-                throw new Error("Protecting command history timed out; check Codex home access and retry. The command was not executed.");
-            }
-            this.commandGuards.set(turn, guard!);
-        } catch (error) {
-            // Preparation alone cannot create native history, even if it settles after cancellation.
-            void preparing.then(async () => { if (guard) await this.commandReceipts!.complete(guard); })
-                .catch(cleanupError => logger.error("Command history preparation failed", cleanupError, {sessionId: runtime.session.id}));
-            throw error;
-        }
-    }
-
-    private async finishCommandWrite(runtime: SessionRuntime, turn: ActiveTurn): Promise<void> {
-        const guard = this.commandGuards.get(turn);
-        const write = this.commandWrites.get(turn) ?? (guard
-            ? this.commandsStarted.has(turn)
-                ? Promise.reject(new Error("Codex did not report the command's native user message."))
-                : this.commandReceipts!.complete(guard)
-            : undefined);
-        if (!write) return;
-        try {
-            if (!await abortable(within(write, this.cancelGraceMs), turn.stop.signal)) {
-                throw new Error("Saving the command receipt timed out.");
-            }
-        } catch (error) {
-            if (turn.stop.signal.aborted) throw error;
-            const message = `Could not confirm saved command history. ${errorMessage(error)} History replay is blocked until its receipt mapping is restored; check Codex home access and free space.`;
-            if (!turn.abort.signal.aborted) throw acp.RequestError.internalError({sessionId: runtime.session.id}, message);
-            // Native cancellation is already confirmed; a failed save must not prevent idle.
-            await runtime.client.update({sessionUpdate: "agent_message", messageId: `command-save:${turn.clientUserMessageId ?? turn.turnId}`,
-                content: [{type: "text", text: message}], _meta: {codex: {notice: true}}});
-        }
-    }
-
-    private async executePrompt(runtime: SessionRuntime, turn: ActiveTurn, command: ReturnType<typeof parseCommand>, outcome: ReturnType<typeof resolveCommand>, params: acp.PromptRequest): Promise<TurnCompletedNotification | null> {
-        const {session, client} = runtime;
-        let completed: TurnCompletedNotification | null = null;
-        switch (outcome.kind) {
-            case "prompt":
-                completed = await this.runCodexTurn(runtime, turn, params.prompt);
-                break;
-            case "message":
-                await client.update(agentMessage(`command:${command?.name}:${Date.now()}`, await this.commandText(runtime, command?.name ?? "", outcome.text)));
-                break;
-            case "config":
-                await this.setSessionConfigOption({sessionId: session.id, configId: outcome.configId, type: "id", value: outcome.value});
-                if (outcome.promptText) {
-                    const promptText = outcome.promptText;
-                    const commandText = params.prompt.find(acp.ContentBlock.isText);
-                    completed = await this.runCodexTurn(runtime, turn, params.prompt.map(block => block === commandText ? {...block, type: "text", text: promptText} : block));
-                } else {
-                    await client.update(agentMessage(`command:${turn.clientUserMessageId}`, `Plan mode ${outcome.value === PLAN_COLLABORATION_MODE ? "enabled" : "disabled"}.`));
-                }
-                break;
-            case "compact":
-                await this.runCompaction(runtime, turn);
-                break;
-            case "review":
-                turn.abort.signal.throwIfAborted();
-                this.commandsStarted.add(turn);
-                completed = await this.withCodex(() => this.codex.runReview({threadId: session.id, target: outcome.target, delivery: "inline"}, (turnId, threadId) => {
-                    this.turnStarted(runtime, turn, turnId, threadId);
-                }, turn.stop.signal));
-                break;
-            case "logout":
-                await this.withCodex(() => logout(this.codex));
-                await this.refreshAccounts();
-                await client.update(agentMessage(`command:logout:${Date.now()}`, "Logged out of the Codex account."));
-                break;
-        }
-        return completed;
-    }
-
-    private async runCodexTurn(runtime: SessionRuntime, turn: ActiveTurn, prompt: readonly acp.ContentBlock[], clientUserMessageId = turn.clientUserMessageId): Promise<TurnCompletedNotification> {
-        const {session} = runtime;
-        const model = findModel(session.catalog, session.model.model);
-        const disableSummary = session.account?.type === "apiKey" || modelLacksReasoning(model);
-        let startSent = false;
-        const beforeStart = new AbortController();
-        const cancelBeforeStart = () => {if (!startSent) beforeStart.abort(turn.abort.signal.reason);};
-        turn.abort.signal.addEventListener("abort", cancelBeforeStart, {once: true});
-        if (turn.abort.signal.aborted) cancelBeforeStart();
-        try {
-            const result = await abortable(this.withSkillsContext(session.cwd, session.additionalDirectories, async skills => {
-                if (this.publishedSkills.get(runtime) !== skills) void this.publishAvailableCommands(runtime, skills);
-                if (turn.abort.signal.aborted || turn.stop.signal.aborted) return {completed: Promise.resolve(interruptedTurn(session.id))};
-                startSent = true;
-                if (this.commandGuards.has(turn)) this.commandsStarted.add(turn);
-                const completed = this.withCodex(() => this.codex.runTurn({
-                    threadId: session.id,
-                    clientUserMessageId,
-                    input: toUserInput(prompt),
-                    approvalPolicy: session.mode.approvalPolicy,
-                    approvalsReviewer: session.mode.approvalsReviewer,
-                    sandboxPolicy: withWritableRoots(session.mode.sandboxPolicy, session.additionalDirectories),
-                    model: this.providers.upstreamModel(session.model.model),
-                    effort: supportedEfforts(model).length > 0 ? session.model.effort : null,
-                    summary: disableSummary ? "none" : "auto",
-                    serviceTier: session.fastMode ? FAST_SERVICE_TIER : null,
-                }, (turnId) => {
-                    // A cancel that raced turn/start is parked on `started` and interrupts from there.
-                    this.turnStarted(runtime, turn, turnId, session.id);
-                }, turn.stop.signal));
-                await Promise.race([turn.started, completed]);
-                return {completed};
-            }), beforeStart.signal);
-            return await result.completed;
-        } finally {
-            turn.abort.signal.removeEventListener("abort", cancelBeforeStart);
-        }
-    }
-
-    private async runCompaction(runtime: SessionRuntime, turn: ActiveTurn): Promise<void> {
-        const threadId = runtime.session.id;
-        turn.resolveStarted(null);
-        const pending = new AbortController();
-        const signal = AbortSignal.any([pending.signal, turn.abort.signal]);
-        const completed = Promise.race([
-            this.codex.awaitNotification("item/completed", params => params.threadId === threadId && params.item.type === "contextCompaction", signal),
-            this.codex.awaitNotification("thread/compacted", params => params.threadId === threadId, signal),
-        ]);
-        void completed.catch(() => {});
-        try {
-            signal.throwIfAborted();
-            await abortable(this.withCodex(() => this.codex.threadCompactStart({threadId})), signal);
-            await completed;
-        } finally {
-            // Codex versions report either event; dispose the losing waiter as well.
-            pending.abort();
-        }
-    }
-
-    /** In plan collaboration mode a finished plan asks the user whether to implement it now. */
-    private async maybeImplementPlan(runtime: SessionRuntime, turn: ActiveTurn, completed: TurnCompletedNotification): Promise<TurnCompletedNotification> {
-        const plan = runtime.bridge.takeCompletedPlan();
-        if (!plan || runtime.session.collaborationMode !== PLAN_COLLABORATION_MODE) return completed;
-        this.completedTurns.delete(turn);
-        const signal = AbortSignal.any([turn.abort.signal, turn.stop.signal]);
-        const approved = await this.requestPlanApproval(runtime, plan, signal);
-        if (!approved || signal.aborted) return completed;
-        await this.setSessionConfigOption({sessionId: runtime.session.id, configId: "collaboration_mode", type: "id", value: DEFAULT_COLLABORATION_MODE});
-        runtime.bridge.beginTurn();
-        turn.resetStarted();
-        const implementation = await this.runCodexTurn(runtime, turn, [{type: "text", text: "Implement the approved plan."}], internalPlanMessageId());
-        await this.drain(runtime);
-        await runtime.bridge.flush();
-        return implementation;
-    }
-
-    private async requestPlanApproval(runtime: SessionRuntime, plan: CompletedPlan, signal: AbortSignal): Promise<boolean> {
-        const toolCallId = `plan-review:${plan.itemId}`;
-        const toolCall = {toolCallId, name: ToolName.PlanReview, title: "Implement this plan?", kind: "switch_mode" as const, status: "pending" as const, rawInput: {plan: plan.text}};
-        try {
-            await runtime.client.update({sessionUpdate: "tool_call_update", ...toolCall});
-            const response = await runtime.client.requestPermission({
-                title: "Implement this plan?",
-                subject: {type: "tool_call", toolCall},
-                options: [
-                    {optionId: IMPLEMENT_PLAN_OPTION, name: "Yes, implement this plan", kind: "allow_once"},
-                    {optionId: REVISE_PLAN_OPTION, name: "No, and tell Codex what to do differently", kind: "reject_once"},
-                ],
-                _meta: {codex: {kind: "plan_review", planItemId: plan.itemId}},
-            }, signal);
-            const approved = response.outcome.outcome === "selected" && (response.outcome as {optionId?: unknown}).optionId === IMPLEMENT_PLAN_OPTION;
-            await runtime.client.update({
-                sessionUpdate: "tool_call_update",
-                toolCallId,
-                status: "completed",
-                rawOutput: approved ? "User approved the plan." : "User kept the session in plan mode.",
-            });
-            return approved;
-        } catch (error) {
-            logger.error("plan approval failed", error, {sessionId: runtime.session.id});
-            await runtime.client.update({sessionUpdate: "tool_call_update", toolCallId, status: signal.aborted ? "cancelled" : "failed"}).catch(() => {});
-            return false;
-        }
-    }
-
-    private async commandText(runtime: SessionRuntime, name: string, fallback: string): Promise<string> {
-        switch (name) {
-            case "status":
-                return statusMessage(runtime.session, runtime.bridge.rateLimits);
-            case "mcp":
-                return await this.withCodex(() => mcpMessage(this.codex, runtime.session));
-            case "skills": {
-                const skills = await this.withCodex(() => this.codex.skillsList({cwds: [runtime.session.cwd, ...runtime.session.additionalDirectories]}));
-                return skillsMessage(skills.data);
-            }
-            default:
-                return fallback;
-        }
-    }
-
-    private async reportIdle(runtime: SessionRuntime, turn: ActiveTurn, reason: StopReason, extra?: Parameters<ClientSession["reportIdle"]>[1]): Promise<void> {
-        if (this.terminalTurns.has(turn)) return;
-        this.terminalTurns.add(turn);
-        await runtime.bridge.finishOpenToolCalls(reason === "cancelled" ? "cancelled" : reason === "end_turn" ? "completed" : "failed");
-        // The client may send its next prompt as soon as it receives idle.
-        if (runtime.session.activeTurn === turn) runtime.session.activeTurn = null;
-        await runtime.client.reportIdle(reason, extra, turn.clientUserMessageId ?? undefined);
-    }
-
-    private async reportTurnFailure(runtime: SessionRuntime, turn: ActiveTurn, error: TurnError): Promise<void> {
-        const {stopReason, ...classification} = classifyTurnError(error.codexErrorInfo);
-        const message = error.additionalDetails ? `${error.message}\n\n${error.additionalDetails}` : error.message;
-        await runtime.client.update({
-            sessionUpdate: "agent_message_chunk",
-            messageId: `codex-error:${runtime.session.id}:${Date.now()}`,
-            content: {type: "text", text: message},
-            _meta: {codex: {error: {...classification, message: error.message, codexErrorInfo: error.codexErrorInfo, additionalDetails: error.additionalDetails}}},
-        });
-        await this.reportIdle(runtime, turn, stopReason, {
-            ...(stopReason === "error" ? {error: {code: -32603, message, data: {codex: {...classification, codexErrorInfo: error.codexErrorInfo}}}} : {}),
-            usage: usageOf(runtime.session),
-            _meta: {codex: {error: {...classification, message: error.message, codexErrorInfo: error.codexErrorInfo}}},
-        });
-    }
-
-    private async publishFallbackTitle(runtime: SessionRuntime, title: string | null): Promise<void> {
-        const {session, client} = runtime;
-        if (session.titleIsExplicit || session.title !== null || title === null) return;
-        session.title = title;
-        await client.update({sessionUpdate: "session_info_update", title});
-    }
-
-    async cancel(params: acp.CancelSessionNotification): Promise<void> {
-        const runtime = this.sessions.get(params.sessionId);
-        const turn = runtime?.session.activeTurn;
-        if (!runtime || !turn) return;
-        if (this.cancelling.has(turn)) return;
-        const interrupt = this.interruptTurn(runtime, turn);
-        const recovery = this.recoverCancellation(runtime, turn, interrupt).finally(() => {
-            if (this.cancelling.get(turn) === recovery) this.cancelling.delete(turn);
-            // A timed-out RPC must not block a later Stop forever.
-            this.forgetInterrupt(turn);
-        });
-        this.cancelling.set(turn, recovery);
-        void recovery.catch(error => logger.error("Cancellation recovery failed", error, {sessionId: params.sessionId}));
-        // Notifications must not wait indefinitely for an unresponsive native RPC.
-        await within(interrupt, this.cancelGraceMs);
-    }
-
-    private async recoverCancellation(runtime: SessionRuntime, turn: ActiveTurn, interrupt: Promise<void>): Promise<void> {
-        const current = (): boolean => !runtime.session.closed && runtime.session.activeTurn === turn;
-        let failure = "Codex still reports an active turn.";
-        for (let attempt = 0; attempt < 2 && current(); attempt++) {
-            if (attempt > 0) {
-                this.forgetInterrupt(turn);
-                interrupt = this.interruptTurn(runtime, turn);
-            }
-            if (await within(Promise.race([turn.finished, interrupt.then(() => turn.finished)]), this.cancelGraceMs) || !current()) return;
-            // A late turn/start can still create work. Only reconcile an identified turn.
-            const turnId = turn.turnId;
-            if (turnId === null) {
-                failure = "Codex has not acknowledged the turn start.";
-                continue;
-            }
-            let snapshot: Thread | undefined;
-            try {
-                const received = await within(this.codex.threadRead({threadId: turn.threadId, includeTurns: false}).then(result => { snapshot = result.thread; }), this.cancelGraceMs);
-                if (!current()) return;
-                if (!received || !snapshot) {
-                    failure = "Codex did not answer the status check.";
-                    continue;
-                }
-                // Interrupt acceptance alone is not completion. Thread status is authoritative
-                // when Codex omits turn/completed (including cancelled MCP calls).
-                if (snapshot.status.type === "idle" || snapshot.status.type === "notLoaded") {
-                    if (snapshot.status.type === "notLoaded") {
-                        runtime.stale = true;
-                        await runtime.client.update({sessionUpdate: "agent_message", messageId: `cancel-unloaded:${turn.turnId}`, content: [{type: "text", text: "Codex unloaded this conversation. Reopen it before sending another message."}], _meta: {codex: {notice: true}}});
-                        if (!current()) return;
-                    }
-                    this.codex.resolveTurnInterrupted(turn.threadId, turnId);
-                    if (await within(turn.finished, this.cancelGraceMs) || !current()) return;
-                    failure = "Codex stopped, but session updates have not finished.";
-                } else {
-                    failure = `Codex still reports thread status "${snapshot.status.type}".`;
-                }
-            } catch (error) {
-                failure = `Could not verify the Codex thread state: ${errorMessage(error)}`;
-                logger.error("Cancellation status check failed", error, {sessionId: runtime.session.id, turnId});
-            }
-        }
-        if (!current()) return;
-        await runtime.client.update({
-            sessionUpdate: "agent_message",
-            messageId: `cancel-pending:${turn.clientUserMessageId ?? turn.turnId}`,
-            content: [{type: "text", text: `Cancellation has not been confirmed. ${failure} Click Stop again to retry.`}],
-            _meta: {codex: {notice: true}},
-        });
-    }
-
-    private async interruptTurn(runtime: SessionRuntime, turn: ActiveTurn): Promise<void> {
-        turn.abort.abort();
-        const turnId = turn.turnId ?? await turn.started;
-        if (turnId === null) return;
-        await this.sendInterrupt(runtime, turn, turnId);
-    }
-
-    private forgetInterrupt(turn: ActiveTurn): void {
-        if (turn.turnId !== null) turn.interrupts.delete(`${turn.threadId}:${turn.turnId}`);
-    }
-
-    private sendInterrupt(runtime: SessionRuntime, turn: ActiveTurn, turnId: string): Promise<void> {
-        const key = `${turn.threadId}:${turnId}`;
-        let pending = turn.interrupts.get(key);
-        if (!pending) {
-            pending = this.codex.turnInterrupt({threadId: turn.threadId, turnId}).then(() => {}, error => {
-                logger.error("turn/interrupt failed", error, {sessionId: runtime.session.id, turnId});
-            }).finally(() => {
-                // Deduplicate in-flight RPCs only; a successful receipt may still need retry.
-                if (turn.interrupts.get(key) === pending) turn.interrupts.delete(key);
-            });
-            turn.interrupts.set(key, pending);
-        }
-        return pending;
-    }
-
-    private turnStarted(runtime: SessionRuntime, turn: ActiveTurn, turnId: string, threadId: string): void {
-        turn.turnId = turnId;
-        turn.threadId = threadId;
-        turn.resolveStarted(turnId);
-        // A close may have already ended local waiting before turn/start finally returns.
-        if (turn.abort.signal.aborted) void this.sendInterrupt(runtime, turn, turnId);
-    }
-
-    // ---- helpers ------------------------------------------------------------------
-
-    private withSkillsContext<T>(cwd: string, additionalDirectories: readonly string[], operation: (skills: Awaited<ReturnType<AppServerClient["skillsList"]>>) => Promise<T>): Promise<T> {
-        const run = async () => {
-            const roots = additionalDirectories.map(root => path.join(root, ".agents", "skills"));
-            if (roots.length !== this.skillRoots.length || roots.some((root, index) => root !== this.skillRoots[index])) {
-                this.changingSkillRoots = true;
-                try {
-                    await this.codex.skillsExtraRootsSet({extraRoots: roots});
-                } finally {
-                    this.changingSkillRoots = false;
-                }
-                this.skillRoots = roots;
-                this.skillSnapshots.clear();
-            }
-            const skills = await this.loadSkills(cwd, additionalDirectories);
-            return await operation(skills);
-        };
-        // Extra roots are process-global. Hold the context through thread/turn start, not inference.
-        const result = this.skillsQueue.then(run, run);
-        this.skillsQueue = result.then(() => {}, () => {});
-        return result;
-    }
-
-    private async loadSkills(cwd: string, additionalDirectories: readonly string[]) {
-        const key = JSON.stringify([cwd, ...additionalDirectories]);
-        let skills = this.skillSnapshots.get(key);
-        if (!skills) {
-            const generation = this.skillsGeneration;
-            skills = await this.withCodex(() => this.codex.skillsList({cwds: [cwd, ...additionalDirectories], forceReload: true}));
-            if (generation === this.skillsGeneration) {
-                if (this.skillSnapshots.size >= 64) this.skillSnapshots.delete(this.skillSnapshots.keys().next().value!);
-                this.skillSnapshots.set(key, skills);
-            }
-        }
-        return skills;
-    }
-
-    private async refreshAvailableCommands(runtime: SessionRuntime): Promise<void> {
-        const run = async () => {
-            const roots = runtime.session.additionalDirectories.map(root => path.join(root, ".agents", "skills"));
-            // A change notification must never itself switch this process-global setting.
-            if (runtime.session.closed || roots.length !== this.skillRoots.length || roots.some((root, i) => root !== this.skillRoots[i])) return undefined;
-            return await this.loadSkills(runtime.session.cwd, runtime.session.additionalDirectories);
-        };
-        const pending = this.skillsQueue.then(run, run);
-        this.skillsQueue = pending.then(() => {}, () => {});
-        try {
-            const skills = await pending;
-            if (skills && !runtime.session.closed) await this.publishAvailableCommands(runtime, skills);
-        } catch (error) {
-            logger.error("refreshing available commands failed", error, {sessionId: runtime.session.id});
-        }
-    }
-
-    private async configuredMcpServerNames(cwd: string): Promise<Set<string>> {
-        const response = await this.codex.configRead({includeLayers: true, cwd});
-        const names = new Set<string>();
-        const sources = [response.config["mcp_servers"], ...(response.layers ?? []).map(layer => isJsonObject(layer.config) ? layer.config["mcp_servers"] : undefined)];
-        for (const source of sources) {
-            if (isJsonObject(source)) for (const name of Object.keys(source)) names.add(name);
-        }
-        return names;
-    }
-
-    /** Recompute transient transport routing on every open/resume; never persist it in user config. */
-    private async responsesConfig(config: JsonObject, modelProvider: string, cwd: string, context?: {
-        account: Awaited<ReturnType<AppServerClient["accountRead"]>>;
-        effective: Awaited<ReturnType<AppServerClient["configRead"]>> | null;
-    }): Promise<JsonObject> {
-        const next = {...config};
-        const configured = next["openai_base_url"];
-        const previous = typeof configured === "string" ? this.responsesUpstreams.get(configured) : undefined;
-        if (previous !== undefined) delete next["openai_base_url"];
-        if (modelProvider !== OPENAI_PROVIDER_ID) return next;
-        const effective = context?.effective ?? await this.codex.configRead({includeLayers: false, cwd});
-        const base = this.providers.threadConfig(null);
-        const explicit = previous ?? next["openai_base_url"] ?? base["openai_base_url"] ?? effective.config["openai_base_url"] ?? this.env["OPENAI_BASE_URL"];
-        const account = context?.account ?? await this.codex.accountRead({refreshToken: false});
-        const chatgpt = account.account?.type === "chatgpt";
-        // An explicit OpenAI base URL overrides the auth-dependent built-in endpoint in Codex.
-        const upstream = typeof explicit === "string" && explicit.length > 0 ? explicit
-            : chatgpt ? "https://chatgpt.com/backend-api/codex"
-                : "https://api.openai.com/v1";
-        const local = await this.responsesProxy.route(upstream);
-        this.responsesUpstreams.set(local, upstream);
-        next["openai_base_url"] = local;
-        return next;
-    }
-
-    private async resolveModelProvider(routing: ProviderRouting = this.providers): Promise<string> {
-        const routed = routing.modelProvider();
-        if (routed) return routed;
-        const config = await this.codex.configRead({includeLayers: false});
-        const provider = config.config["model_provider"];
-        return typeof provider === "string" && provider.length > 0 ? provider : OPENAI_PROVIDER_ID;
-    }
-
-    /** Runs a Codex request, replacing a dead-process transport error with a diagnosable one. */
-    private async withCodex<T>(operation: () => Promise<T>): Promise<T> {
-        try {
-            return await operation();
-        } catch (error) {
-            if (error instanceof acp.RequestError || error instanceof TurnStartRejectedError) throw error;
-            const exitCode = this.process?.exitCode() ?? null;
-            if (exitCode !== null) {
-                const stderr = this.process?.recentStderr() ?? "";
-                throw acp.RequestError.internalError(
-                    {exitCode, stderr},
-                    exitCode === 3221225781
-                        ? "Codex exited: the Visual C++ redistributable is not installed"
-                        : `Codex process exited with code ${exitCode}${stderr ? `:\n${stderr}` : ""}`,
-                );
-            }
-            throw acp.RequestError.internalError({details: errorMessage(error)}, errorMessage(error));
-        }
-    }
-
-    /** A thrown error as a Codex-shaped turn error; a lost connection carries the process's stderr tail. */
-    private failureOf(error: unknown): TurnError {
-        const details = error instanceof Error ? (error as {additionalDetails?: unknown}).additionalDetails : undefined;
-        return {
-            message: this.describeFailure(error),
-            codexErrorInfo: null,
-            additionalDetails: typeof details === "string" && details.length > 0 ? details : null,
-            misalignment: null,
-        };
-    }
-
-    private describeFailure(error: unknown): string {
-        if (error instanceof acp.RequestError) {
-            const details = (error.data as {details?: unknown} | undefined)?.details;
-            return typeof details === "string" && details.length > 0 ? details : error.message;
-        }
-        return errorMessage(error);
-    }
-
-    private exitHandled = false;
-
-    private handleCodexExit(): void {
-        if (this.exitHandled) return;
-        this.exitHandled = true;
-        this.responsesProxy.close();
+        for (const runtime of unavailable) runtime.config = candidate.rebind(runtime.config, this.providers, null)
+        this.providers = candidate
         for (const runtime of this.sessions.values()) {
-            const turn = runtime.session.activeTurn;
-            if (!turn || this.completedTurns.get(turn) === turn.turnId) continue;
-            const stderr = this.process?.recentStderr() || null;
-            // The stop abort wins the race against the synthesized completion below, so the
-            // stderr tail rides on the abort reason too; it is the only diagnostic left.
-            turn.stop.abort(Object.assign(new Error("Connection to Codex was lost"), {additionalDetails: stderr}));
-            turn.resolveStarted(null);
-            if (turn.turnId) {
-                this.codex.failTurn(turn.threadId, turn.turnId, {
-                    message: "Connection to Codex was lost",
-                    codexErrorInfo: null,
-                    additionalDetails: stderr,
-                    misalignment: null,
-                });
-            }
+          const next = staged.get(runtime)
+          if (next) {
+            runtime.config = next.config
+            runtime.modelProvider = targets.get(runtime) ?? nativeProvider
+            runtime.session.model = next.model
+            runtime.stale = false
+          }
+          runtime.session.catalog = nextCatalog
+          runtime.session.gatewayGroups = candidate.gatewayGroups()
+          if (!next && !unavailable.has(runtime))
+            runtime.session.model = resolveModelSelection(
+              nextCatalog,
+              findModel(nextCatalog, runtime.session.model.model) ? runtime.session.model.model : null,
+              runtime.session.model.effort
+            )
+          // Notification delivery cannot roll back an already committed routing transaction.
+          void runtime.client
+            .update(configOptionsFrame(runtime, { routing: { stale: false } }))
+            .catch((error) => logger.error("Provider config notification failed", error))
         }
+      } catch (error) {
+        if (attempted.length === 0 && error instanceof acp.RequestError) throw error
+        const staleSessions: string[] = []
+        for (const runtime of attempted) {
+          try {
+            await this.codex.threadUnsubscribe({ threadId: runtime.session.id })
+            await this.codex.threadResume({
+              threadId: runtime.session.id,
+              cwd: runtime.session.cwd,
+              config: runtime.config,
+              modelProvider: runtime.modelProvider,
+              model: this.providers.upstreamModel(runtime.session.model.model),
+              excludeTurns: true
+            })
+          } catch (rollbackError) {
+            runtime.stale = true
+            staleSessions.push(runtime.session.id)
+            logger.error("Provider rollback failed", rollbackError, { sessionId: runtime.session.id })
+            void runtime.client.update(configOptionsFrame(runtime, { routing: { stale: true } })).catch(() => {})
+          }
+        }
+        throw acp.RequestError.internalError(
+          { staleSessions, attemptedSessions: attempted.map((runtime) => runtime.session.id) },
+          `Provider change failed: ${errorMessage(error)}${staleSessions.length ? "; resume affected sessions or retry the provider change before prompting" : "; previous routing restored"}`
+        )
+      } finally {
+        this.switching = false
+      }
+    })
+    this.providerQueue = pending.catch(() => {})
+    await pending
+  }
+
+  // ---- sessions ---------------------------------------------------------------
+
+  async newSession(params: acp.NewSessionRequest, signal?: AbortSignal): Promise<acp.NewSessionResponse> {
+    const runtime = await this.openSession({ kind: "new", request: params }, signal)
+    return {
+      sessionId: runtime.session.id,
+      configOptions: sessionConfigOptions(runtime.session),
+      _meta: { alwith: { configRevision: runtime.configRevision }, codex: runtime.lineage }
     }
+  }
+
+  async resumeSession(params: acp.ResumeSessionRequest, signal?: AbortSignal): Promise<acp.ResumeSessionResponse> {
+    const runtime = await this.openSession({ kind: "resume", request: params }, signal)
+    const configOptions = sessionConfigOptions(runtime.session)
+    return {
+      configOptions,
+      _meta: {
+        alwith: { configRevision: runtime.configRevision },
+        codex: { ...runtime.lineage, ...(runtime.readOnly ? { readOnly: true, reason: "active_writer" } : {}) }
+      }
+    }
+  }
+
+  async forkSession(params: acp.ForkSessionRequest, signal?: AbortSignal): Promise<acp.ForkSessionResponse> {
+    const runtime = await this.openSession({ kind: "fork", request: params }, signal)
+    return {
+      sessionId: runtime.session.id,
+      configOptions: sessionConfigOptions(runtime.session),
+      _meta: { alwith: { configRevision: runtime.configRevision }, codex: runtime.lineage }
+    }
+  }
+
+  private async openSession(open: OpenRequest, signal?: AbortSignal): Promise<SessionRuntime> {
+    if (signal?.aborted) throw acp.RequestError.requestCancelled(undefined, "Session opening was cancelled")
+    const pending = this.admission(
+      async () => {
+        const runtime = await this.openSessionInternal(open, signal)
+        if (signal?.aborted) {
+          await this.closeRuntime(runtime.session.id)
+          throw acp.RequestError.requestCancelled(undefined, "Session opening was cancelled")
+        }
+        return runtime
+      },
+      open.kind === "new" ? undefined : open.request.sessionId
+    )
+    try {
+      return signal ? await abortable(pending, signal) : await pending
+    } catch (error) {
+      if (signal?.aborted)
+        throw acp.RequestError.requestCancelled(
+          undefined,
+          "Session opening was cancelled; any thread returned later will be unsubscribed"
+        )
+      throw error
+    }
+  }
+
+  private assertUnsubscribeSettled(sessionId: string): void {
+    if (this.pendingUnsubscribes.has(sessionId)) {
+      throw acp.RequestError.invalidRequest(
+        { sessionId },
+        "A previous unsubscribe is still pending; retry after Codex responds or reconnect the agent"
+      )
+    }
+  }
+
+  private async openSessionInternal(open: OpenRequest, signal?: AbortSignal): Promise<SessionRuntime> {
+    const method = { new: "session/new", resume: "session/resume", fork: "session/fork" }[open.kind]
+    const capabilities = this.requireInitialized(method)
+    if (open.kind !== "new") this.assertUnsubscribeSettled(open.request.sessionId)
+    const { request } = open
+    const lastTurnId = open.kind === "fork" ? forkTurnId(request._meta) : undefined
+    if (typeof request.cwd !== "string" || !path.isAbsolute(request.cwd)) {
+      throw acp.RequestError.invalidParams({ cwd: request.cwd }, "cwd must be an absolute path")
+    }
+    if (open.kind === "resume" && open.request.replayFrom != null && open.request.replayFrom.type !== "start") {
+      throw acp.RequestError.invalidParams(
+        { replayFrom: open.request.replayFrom },
+        'Only replayFrom {type: "start"} is supported'
+      )
+    }
+    const seed = open.kind === "new" ? seedHistoryOf(open.request._meta) : []
+    const additionalDirectories = readAdditionalDirectories(request.cwd, request.additionalDirectories)
+    if (open.kind === "resume" && this.sessions.has(open.request.sessionId)) {
+      // A second open for a live session replaces it; close the old runtime first.
+      await this.closeRuntime(open.request.sessionId)
+      this.assertUnsubscribeSettled(open.request.sessionId)
+    }
+    const mcpServers = request.mcpServers ?? []
+    const clientTools = clientToolsOf(request._meta)
+    const host = hostSessionOptions(request)
+    const mode = host.mode ?? initialAgentMode(this.env)
+    const hostThreadOptions = {
+      ...(host.instructions === undefined ? {} : { developerInstructions: host.instructions }),
+      ...(host.mode
+        ? { approvalPolicy: mode.approvalPolicy, approvalsReviewer: mode.approvalsReviewer, sandbox: mode.sandboxMode }
+        : {})
+    }
+
+    // Which provider this thread runs on. Route mode: the gateway, always. Catalog mode:
+    // the gateway serving the model the client asks for, or (resume) the one Codex says
+    // the thread last ran on.
+    const requestedModel = requestedModelOf(request._meta)
+    let gatewayId = this.providers.defaultGatewayId()
+    if (this.providers.active !== null && this.providers.mode === "catalog") {
+      if (requestedModel !== null) gatewayId = this.providers.gatewayIdFor(requestedModel)
+      else if (open.kind === "resume") {
+        const known = await this.withCodex(() =>
+          this.codex.threadRead({ threadId: open.request.sessionId, includeTurns: false })
+        )
+        gatewayId = this.providers.hasGateway(known.thread.modelProvider) ? known.thread.modelProvider : null
+      }
+    }
+    const onGateway = gatewayId !== null
+    // A client-configured gateway carries its own credentials; only native OpenAI routing needs a login.
+    let accountVersion = this.accountGeneration
+    const account = await this.withCodex(() => this.codex.accountRead({ refreshToken: false }))
+    if (!onGateway && account.requiresOpenaiAuth && account.account === null) {
+      throw acp.RequestError.authRequired(undefined, "Log in to Codex first (auth/login)")
+    }
+    const existingMcp =
+      mcpServers.length > 0 ? await this.withCodex(() => this.configuredMcpServerNames(request.cwd)) : new Set<string>()
+    let config = buildThreadConfig(
+      this.providers.threadConfig(gatewayId),
+      request.cwd,
+      additionalDirectories,
+      mcpServers,
+      existingMcp
+    )
+    const mcpStartupGeneration = this.codex.mcpStartupGeneration
+    const effective =
+      gatewayId === null && this.providers.modelProvider() === null
+        ? await this.withCodex(() => this.codex.configRead({ includeLayers: false, cwd: request.cwd }))
+        : null
+    const configuredProvider = effective?.config["model_provider"]
+    const modelProvider =
+      gatewayId ??
+      this.providers.modelProvider() ??
+      (typeof configuredProvider === "string" && configuredProvider.length > 0
+        ? configuredProvider
+        : OPENAI_PROVIDER_ID)
+    config = await this.responsesConfig(config, modelProvider, request.cwd, { account, effective })
+    const startModel = this.providers.upstreamModel(
+      onGateway ? (requestedModel ?? this.providers.gateway(gatewayId)?.model ?? null) : requestedModel
+    )
+
+    let readOnly = false
+    const { thread, skills } = await this.withSkillsContext(request.cwd, additionalDirectories, async (skills) => ({
+      skills,
+      thread: await this.withCodex(async () => {
+        if (signal?.aborted) throw acp.RequestError.requestCancelled(undefined, "Session opening was cancelled")
+        switch (open.kind) {
+          case "new":
+            return await this.codex.threadStart({
+              ...hostThreadOptions,
+              config,
+              cwd: request.cwd,
+              modelProvider,
+              model: startModel,
+              ...(clientTools ? { dynamicTools: dynamicTools(clientTools) } : {})
+            })
+          case "resume":
+            try {
+              // History is paged through thread/turns/list during replay; full hydration here is deprecated.
+              return await this.codex.threadResume({
+                ...hostThreadOptions,
+                threadId: open.request.sessionId,
+                config,
+                cwd: request.cwd,
+                modelProvider,
+                model: startModel,
+                excludeTurns: true
+              })
+            } catch (error) {
+              // Codex's writer lock is a file lock across the Codex home: another Codex
+              // client (ChatGPT app, CLI, app-server) has this thread open, and nothing in
+              // this process can release it. Codex's TUI opens such threads for viewing
+              // through thread/read; so does this session.
+              if (!errorMessage(error).includes("already has an active writer")) throw error
+              readOnly = true
+              return readOnlyThread(
+                (await this.codex.threadRead({ threadId: open.request.sessionId, includeTurns: false })).thread,
+                request.cwd
+              )
+            }
+          case "fork":
+            return await this.codex.threadFork({
+              ...hostThreadOptions,
+              ...(lastTurnId === undefined ? {} : { lastTurnId }),
+              threadId: open.request.sessionId,
+              config,
+              cwd: request.cwd,
+              modelProvider,
+              model: startModel,
+              excludeTurns: true
+            })
+        }
+      })
+    }))
+    const sessionId = thread.thread.id
+    let removeCancellation = () => {}
+    const openingCompletions = new Map<string, TurnCompletedNotification>()
+    const openingStarts = new Set<string>()
+    const stopObservingOpen = this.codex.observeNotifications((notification) => {
+      if (notification.method === "turn/completed" && notification.params.threadId === sessionId) {
+        if (openingCompletions.size >= 32) openingCompletions.delete(openingCompletions.keys().next().value!)
+        openingCompletions.set(notification.params.turn.id, notification.params)
+      }
+      if (
+        notification.method === "turn/started" &&
+        notification.params.threadId === sessionId &&
+        this.sessions.has(sessionId)
+      ) {
+        if (openingStarts.size >= 32) openingStarts.delete(openingStarts.values().next().value!)
+        openingStarts.add(notification.params.turn.id)
+      }
+    })
+    try {
+      if (signal?.aborted) throw acp.RequestError.requestCancelled(undefined, "Session opening was cancelled")
+      const codexCatalog = await this.withCodex(() => this.codex.allModels())
+      let openedAccount = account.account
+      while (accountVersion !== this.accountGeneration) {
+        accountVersion = this.accountGeneration
+        openedAccount = (await this.withCodex(() => this.codex.accountRead({ refreshToken: false }))).account
+      }
+      const catalog = this.providers.catalog(codexCatalog)
+      const model = resolveModelSelection(
+        catalog,
+        this.providers.selectionId(startModel ?? thread.model, gatewayId ?? thread.modelProvider),
+        thread.reasoningEffort
+      )
+      const session: Session = {
+        ...(clientTools ? { clientTools } : {}),
+        id: sessionId,
+        cwd: request.cwd,
+        additionalDirectories,
+        mcpServerNames: mcpServerNames(mcpServers).filter((name) => !existingMcp.has(name)),
+        catalog,
+        gatewayGroups: this.providers.gatewayGroups(),
+        model,
+        mode,
+        collaborationMode: DEFAULT_COLLABORATION_MODE,
+        fastMode: thread.serviceTier === FAST_SERVICE_TIER,
+        account: openedAccount,
+        title: null,
+        titleIsExplicit: false,
+        activeTurn: null,
+        lastUsage: null,
+        contextWindow: null,
+        closed: false
+      }
+      const runtime = this.installRuntime(
+        session,
+        capabilities,
+        config,
+        gatewayId ?? thread.modelProvider,
+        threadLineage(thread.thread),
+        readOnly
+      )
+      const cancelOpening = () => {
+        runtime.session.closed = true
+        runtime.lifetime.abort()
+        runtime.client.dispose()
+      }
+      signal?.addEventListener("abort", cancelOpening, { once: true })
+      removeCancellation = () => signal?.removeEventListener("abort", cancelOpening)
+      if (signal?.aborted) cancelOpening()
+      const replay = open.kind === "fork" || (open.kind === "resume" && open.request.replayFrom?.type === "start")
+      if (open.kind !== "new") {
+        await this.replayHistory(runtime, replay, thread.thread)
+      } else {
+        if (seed.length > 0) {
+          await this.withCodex(() => this.codex.threadInjectItems({ threadId: sessionId, items: seed.map(seedItem) }))
+        }
+      }
+      if (thread.thread.status.type === "active" && runtime.session.activeTurn === null) {
+        const latest = await this.withCodex(() =>
+          this.codex.threadTurnsList({ threadId: session.id, limit: 1, sortDirection: "desc", itemsView: "full" })
+        )
+        const active = latest.data.find((turn) => turn.status === "inProgress")
+        if (active && !(openingStarts.has(active.id) && openingCompletions.has(active.id))) {
+          await assertCommandHistory(this.codex, thread.thread, this.commandReceipts, signal)
+          const completed = openingCompletions.get(active.id)
+          this.observeForeignTurn(
+            runtime,
+            active.id,
+            completed ? Promise.resolve(completed) : undefined,
+            active.items,
+            replay
+          )
+        }
+      }
+      if (mcpServers.length > 0) void this.reportMcpStartup(runtime, mcpStartupGeneration)
+      void this.publishAvailableCommands(runtime, skills)
+      return runtime
+    } catch (error) {
+      // The thread is loaded and subscribed on the Codex side; do not leak it.
+      const runtime = this.sessions.get(sessionId)
+      if (runtime) {
+        runtime.session.closed = true
+        runtime.lifetime.abort()
+        runtime.bridge.dispose()
+        runtime.client.dispose()
+      }
+      this.sessions.delete(sessionId)
+      this.codex.detachThread(sessionId)
+      await within(this.unsubscribeThread(sessionId), this.closeGraceMs).catch(() => {})
+      throw error
+    } finally {
+      removeCancellation()
+      stopObservingOpen()
+    }
+  }
+
+  private installRuntime(
+    session: Session,
+    capabilities: ClientCapabilitySet,
+    config: JsonObject,
+    modelProvider: string | null,
+    lineage: SessionRuntime["lineage"],
+    readOnly = false
+  ): SessionRuntime {
+    const client = new ClientSession(session.id, this.link, capabilities)
+    const bridge = new EventBridge(
+      client,
+      session,
+      this.agents,
+      (itemId, receipt) => {
+        const turn = session.activeTurn
+        const guard = turn ? this.commandGuards.get(turn) : undefined
+        const write = this.commandReceipts!.write(itemId, receipt).then(async () => {
+          if (guard) await this.commandReceipts!.complete(guard)
+        })
+        if (turn) this.commandWrites.set(turn, write)
+        // Keep disk I/O off the notification queue, and observe rejection immediately.
+        // Finalization checks the same promise after all item notifications registered it.
+        void write.catch((error) =>
+          logger.error("Command receipt save failed", error, { sessionId: session.id, itemId })
+        )
+      },
+      (itemId) => abortable(this.commandReceipts!.read(itemId), AbortSignal.timeout(this.cancelGraceMs))
+    )
+    const turnContext = new TurnContext(session.id)
+    const signal = () => {
+      const turn = session.activeTurn
+      return AbortSignal.any([this.codex.disconnectSignal, ...(turn ? [turn.abort.signal, turn.stop.signal] : [])])
+    }
+    const approval = new CodexApprovalHandler(client, turnContext, signal)
+    const elicitation = new CodexElicitationHandler(client, turnContext, signal)
+    const runtime: SessionRuntime = {
+      lineage,
+      config,
+      modelProvider,
+      stale: false,
+      readOnly,
+      session,
+      client,
+      bridge,
+      turnContext,
+      elicitation,
+      lifetime: new AbortController(),
+      queue: Promise.resolve(),
+      configRevision: 0
+    }
+    const tools = new ClientTools(
+      session,
+      client,
+      AbortSignal.any([runtime.lifetime.signal, this.codex.disconnectSignal])
+    )
+    // Frames already queued (e.g. the tool call under review) must reach the client before its prompt.
+    const drained =
+      <P, T>(operation: (params: P) => Promise<T>) =>
+      async (params: P): Promise<T> => {
+        await abortable(this.drain(runtime), this.codex.disconnectSignal)
+        return await operation(params)
+      }
+    this.codex.attachThread(session.id, {
+      tool: (params) => tools.call(params),
+      notification: (notification) => this.enqueue(runtime, notification),
+      approval: {
+        handleCommandExecution: drained((params) => approval.handleCommandExecution(params)),
+        handleFileChange: drained((params) => approval.handleFileChange(params)),
+        handlePermissionsRequest: drained((params) => approval.handlePermissionsRequest(params))
+      },
+      elicitation: {
+        handleElicitation: drained((params) => elicitation.handleElicitation(params)),
+        handleUserInput: drained((params) => elicitation.handleUserInput(params))
+      }
+    })
+    this.sessions.set(session.id, runtime)
+    return runtime
+  }
+
+  private enqueue(runtime: SessionRuntime, notification: ServerNotification): void {
+    if (runtime.lifetime.signal.aborted) return
+    if (notification.method === "turn/started" && runtime.session.activeTurn === null) {
+      this.observeForeignTurn(runtime, notification.params.turn.id)
+    }
+    const turn = runtime.session.activeTurn
+    if (
+      notification.method.startsWith("item/") &&
+      "turnId" in notification.params &&
+      typeof notification.params.turnId === "string"
+    ) {
+      // A start response may trail its first items; filter only once ownership is known.
+      if (!turn || (turn.turnId !== null && notification.params.turnId !== turn.turnId)) return
+    }
+    if (turn && notification.method === "turn/completed") this.completedTurns.set(turn, notification.params.turn.id)
+    if (runtime.lifetime.signal.aborted) return
+    const run = async () => {
+      if (runtime.lifetime.signal.aborted) return
+      try {
+        runtime.turnContext.observe(notification)
+        await runtime.elicitation.observe(notification)
+        await runtime.bridge.handle(notification)
+      } catch (error) {
+        logger.error("notification handling failed", error, {
+          sessionId: runtime.session.id,
+          method: notification.method
+        })
+      }
+    }
+    runtime.queue = runtime.queue.then(run, run)
+  }
+
+  private observeForeignTurn(
+    runtime: SessionRuntime,
+    turnId: string,
+    completion?: Promise<TurnCompletedNotification>,
+    items: readonly ThreadItem[] = [],
+    replayItems = true
+  ): void {
+    if (runtime.session.activeTurn || runtime.session.closed) return
+    const turn = createActiveTurn(runtime.session.id)
+    runtime.session.activeTurn = turn
+    this.turnStarted(runtime, turn, turnId, runtime.session.id)
+    runtime.client.reportRunning()
+    const completed = completion ?? this.codex.awaitTurnCompleted(runtime.session.id, turnId, turn.stop.signal)
+    void this.runPrompt(runtime, turn, { sessionId: runtime.session.id, prompt: [] }, completed, items, replayItems)
+  }
+
+  private async drain(runtime: SessionRuntime): Promise<void> {
+    let current: Promise<void>
+    do {
+      current = runtime.queue
+      await abortable(current, runtime.client.signal)
+    } while (runtime.queue !== current)
+  }
+
+  /**
+   * Publishes the session title and, when asked, replays the transcript. Turns are
+   * paged through thread/turns/list and streamed page by page, so a long session
+   * never needs to be materialized in one response.
+   */
+  private async replayHistory(runtime: SessionRuntime, replay: boolean, thread: Thread): Promise<void> {
+    const { session, client } = runtime
+    let titlePublished = false
+    const publishTitle = async (turns: readonly Turn[]) => {
+      if (titlePublished) return
+      const title = historyTitle(thread, turns)
+      if (title === null && replay) return
+      titlePublished = true
+      session.title = title
+      session.titleIsExplicit = !!thread.name?.trim()
+      if (title) await client.update({ sessionUpdate: "session_info_update", title })
+    }
+    if (!replay) {
+      const firstPage = thread.name?.trim() ? { data: [] as Turn[] } : await this.turnPage(session.id, null)
+      await publishTitle(firstPage.data)
+      return
+    }
+    // Native turn IDs are preserved by fork. Comparing the two native histories locates
+    // the inherited boundary again after restart, without a second provenance store.
+    const parentTurns = new Set<string>()
+    if (thread.forkedFromId !== null) {
+      let parentCursor: string | null = null
+      const seen = new Set<string>()
+      do {
+        const page = await this.withCodex(() =>
+          this.codex.threadTurnsList({
+            threadId: thread.forkedFromId!,
+            cursor: parentCursor,
+            limit: HISTORY_PAGE_SIZE,
+            sortDirection: "asc",
+            itemsView: "summary"
+          })
+        )
+        for (const turn of page.data) parentTurns.add(turn.id)
+        parentCursor = page.nextCursor
+        if (parentCursor !== null) {
+          if (seen.has(parentCursor))
+            throw acp.RequestError.internalError(undefined, "Codex parent history repeated a cursor")
+          seen.add(parentCursor)
+        }
+      } while (parentCursor !== null && !session.closed)
+      runtime.lineage.forkedAtTurnId = null
+    }
+    const cursors = new Set<string>()
+    let cursor: string | null = null
+    do {
+      const page: { data: Turn[]; nextCursor: string | null } = await this.turnPage(session.id, cursor)
+      await assertCommandHistory(this.codex, thread, this.commandReceipts, runtime.lifetime.signal)
+      for (const turn of page.data) {
+        if (parentTurns.has(turn.id)) runtime.lineage.forkedAtTurnId = turn.id
+      }
+      await publishTitle(page.data)
+      const commandReceipts = new Map<string, CommandReceipt>()
+      const userItems = page.data.flatMap((turn) => turn.items.filter((item) => item.type === "userMessage"))
+      const receipts = await Promise.all(userItems.map((item) => this.commandReceipts?.read(item.id)))
+      for (let i = 0; i < userItems.length; i++) {
+        const receipt = receipts[i]
+        if (receipt) commandReceipts.set(userItems[i]!.id, receipt)
+      }
+      await this.agents.load(page.data.flatMap((turn) => turn.items))
+      await client.updateAll(historyUpdates(page.data, this.agents, commandReceipts))
+      cursor = page.nextCursor
+      if (cursor !== null) {
+        if (cursors.has(cursor))
+          throw acp.RequestError.internalError(
+            { sessionId: session.id },
+            "Codex history pagination repeated a cursor; retry after restarting Codex"
+          )
+        cursors.add(cursor)
+      }
+    } while (cursor !== null && !session.closed)
+    await publishTitle([])
+  }
+
+  private async turnPage(
+    threadId: string,
+    cursor: string | null
+  ): Promise<{ data: Turn[]; nextCursor: string | null }> {
+    const page = await this.withCodex(() =>
+      this.codex.threadTurnsList({
+        threadId,
+        cursor,
+        limit: HISTORY_PAGE_SIZE,
+        sortDirection: "asc",
+        itemsView: "full"
+      })
+    )
+    return { data: page.data, nextCursor: page.nextCursor }
+  }
+
+  private async reportMcpStartup(runtime: SessionRuntime, afterGeneration: number): Promise<void> {
+    try {
+      const result = await this.codex.awaitMcpStartup(
+        runtime.session.mcpServerNames,
+        afterGeneration,
+        runtime.lifetime.signal,
+        runtime.session.id
+      )
+      if (runtime.session.closed) return
+      for (const failure of result.failed) {
+        await runtime.client.update(
+          mcpStartupFailed(failure.server, `MCP server "${failure.server}" failed to start: ${failure.error}`)
+        )
+      }
+      for (const server of result.cancelled) {
+        await runtime.client.update(mcpStartupFailed(server, `MCP server "${server}" startup was cancelled.`))
+      }
+    } catch (error) {
+      if (runtime.lifetime.signal.aborted) return
+      logger.error("MCP startup reporting failed", error, { sessionId: runtime.session.id })
+    }
+  }
+
+  private async publishAvailableCommands(
+    runtime: SessionRuntime,
+    snapshot?: Awaited<ReturnType<AppServerClient["skillsList"]>>
+  ): Promise<void> {
+    try {
+      const skills =
+        snapshot ??
+        (await this.codex.skillsList({ cwds: [runtime.session.cwd, ...runtime.session.additionalDirectories] }))
+      if (runtime.session.closed) return
+      await runtime.client.update({
+        sessionUpdate: "available_commands_update",
+        availableCommands: availableCommands(skills.data)
+      })
+      this.publishedSkills.set(runtime, skills)
+    } catch (error) {
+      logger.error("publishing available commands failed", error, { sessionId: runtime.session.id })
+    }
+  }
+
+  async listSessions(params: acp.ListSessionsRequest): Promise<acp.ListSessionsResponse> {
+    this.requireInitialized("session/list")
+    return this.readSessionList(params, false)
+  }
+
+  async sessionList(params: acp.ListSessionsRequest = {}): Promise<acp.ListSessionsResponse> {
+    this.requireInitialized("_codex/session_list")
+    if (Object.values(params).some((value) => value !== undefined)) return this.listSessions(params)
+    return this.readSessionList({}, true)
+  }
+
+  private async readSessionList(params: acp.ListSessionsRequest, all: boolean): Promise<acp.ListSessionsResponse> {
+    const cwd = params.cwd?.trim() || null
+    const archived = archivedFilter(params._meta)
+    const list = (cursor: string | null) =>
+      this.withCodex(() =>
+        this.codex.threadList({
+          cursor,
+          ...(all ? { limit: 100 } : {}),
+          ...(cwd ? { cwd } : {}),
+          sourceKinds: ["cli", "vscode", "exec", "appServer", "unknown"],
+          // Omitting this lets Codex hide threads created through another gateway.
+          modelProviders: [],
+          // Codex lists non-archived threads by default; the archive is a separate page.
+          ...(archived ? { archived: true } : {})
+        })
+      )
+    const response = await list(params.cursor ?? null)
+    if (all) {
+      const threads = new Map(response.data.map((thread) => [thread.id, thread]))
+      const cursors = new Set<string>()
+      while (response.nextCursor !== null) {
+        const cursor = response.nextCursor
+        if (cursors.has(cursor)) throw acp.RequestError.internalError(undefined, "Codex thread list repeated a cursor")
+        cursors.add(cursor)
+        const page = await list(cursor)
+        for (const thread of page.data) threads.set(thread.id, thread)
+        response.nextCursor = page.nextCursor
+      }
+      response.data = [...threads.values()]
+    }
+    const home = this.codexHome
+    if (home === null) throw acp.RequestError.internalError(undefined, "Codex home is unavailable after initialize")
+    const forks = await this.withCodex(() =>
+      nativeForks(
+        home,
+        archived,
+        cwd,
+        async (id) => (await this.codex.threadRead({ threadId: id, includeTurns: false })).thread
+      )
+    )
+    const byId = new Map(forks.map((thread) => [thread.id, thread]))
+    // Native list rows can lose forkedFromId after unload; thread/read retains the rollout lineage.
+    response.data = response.data.map((thread) => byId.get(thread.id) ?? thread)
+    if (!params.cursor) {
+      const missing = new Map(byId)
+      for (const thread of response.data) missing.delete(thread.id)
+      // thread/read may hydrate a non-empty preview while the native list index still
+      // excludes it. Check actual pages, not the hydrated preview; avoid duplicate rows.
+      let cursor = response.nextCursor
+      const cursors = new Set<string>()
+      while (missing.size > 0 && cursor !== null) {
+        if (cursors.has(cursor)) throw acp.RequestError.internalError(undefined, "Codex thread list repeated a cursor")
+        cursors.add(cursor)
+        const page = await list(cursor)
+        for (const thread of page.data) missing.delete(thread.id)
+        cursor = page.nextCursor
+      }
+      response.data.push(...missing.values())
+    }
+    const sessions: acp.SessionInfo[] = []
+    // Full listings can need many title repairs; bound their history reads.
+    const batchSize = all ? 8 : response.data.length
+    for (let offset = 0; offset < response.data.length; offset += batchSize) {
+      sessions.push(
+        ...(await Promise.all(
+          response.data.slice(offset, offset + batchSize).map(async (thread) => ({
+            sessionId: thread.id,
+            cwd: thread.cwd,
+            // Native previews can start with a serialized attachment, or cut it
+            // halfway through a URI. Read the first page only for those rows.
+            title:
+              !thread.name?.trim() &&
+              /^(?:\[@|# Files mentioned by the user:|<send_user_message_question_reply>)/.test(
+                thread.preview.trimStart()
+              )
+                ? historyTitle(thread, (await this.turnPage(thread.id, null)).data)
+                : thread.name?.trim() || thread.preview.trim() || null,
+            updatedAt: new Date(thread.updatedAt * 1000).toISOString(),
+            _meta: { codex: { archived, ...threadLineage(thread) } }
+          }))
+        ))
+      )
+    }
+    return all ? { sessions } : { sessions, nextCursor: response.nextCursor }
+  }
+
+  async closeSession(params: acp.CloseSessionRequest): Promise<acp.CloseSessionResponse> {
+    return await this.admission(() => this.closeSessionInternal(params), params.sessionId)
+  }
+
+  private async closeSessionInternal(params: acp.CloseSessionRequest): Promise<acp.CloseSessionResponse> {
+    this.requireInitialized("session/close")
+    return await this.closeRuntime(params.sessionId)
+  }
+
+  async deleteSession(params: acp.DeleteSessionRequest): Promise<acp.DeleteSessionResponse> {
+    return await this.admission(() => this.deleteSessionInternal(params), params.sessionId)
+  }
+
+  private async deleteSessionInternal(params: acp.DeleteSessionRequest): Promise<acp.DeleteSessionResponse> {
+    this.requireInitialized("session/delete")
+    await this.closeRuntime(params.sessionId)
+    // Real deletion, like Codex desktop's Delete; hiding is `_codex/session_archive`.
+    await this.withCodex(() => this.codex.threadDelete({ threadId: params.sessionId }))
+    return {}
+  }
+
+  async sessionHistory(params: SessionHistoryParams, signal?: AbortSignal): Promise<SessionHistoryResponse> {
+    this.requireInitialized("_codex/session_history")
+    this.checkHistoryIdle(params)
+    const response = await readSessionHistory(this.codex, this.agents, params, signal, this.commandReceipts)
+    this.checkHistoryIdle(params)
+    return { ...response, running: this.sessions.get(params.sessionId)?.session.activeTurn ? true : response.running }
+  }
+
+  async sessionHistoryItems(
+    params: SessionHistoryItemsParams,
+    signal?: AbortSignal
+  ): Promise<SessionHistoryItemsResponse> {
+    this.requireInitialized("_codex/session_history_items")
+    this.checkHistoryIdle(params)
+    const response = await readSessionHistoryItems(this.codex, this.agents, params, signal, this.commandReceipts)
+    this.checkHistoryIdle(params)
+    return { ...response, running: this.sessions.get(params.sessionId)?.session.activeTurn ? true : response.running }
+  }
+
+  private checkHistoryIdle(params: SessionHistoryParams | SessionHistoryItemsParams): void {
+    // Browsing is allowed during a prompt; export must also guard the accepted-but-not-persisted gap.
+    if (params.mode === "export" && this.sessions.get(params.sessionId)?.session.activeTurn) {
+      throw historyError("history_busy", "Session history is still running; retry after the turn finishes", true)
+    }
+  }
+
+  async requestPrediction(params: { sessionId: string; sourceTurnId: string }): Promise<Record<string, never>> {
+    return await this.admission(() => this.requestPredictionInternal(params), params.sessionId)
+  }
+
+  private async requestPredictionInternal(params: {
+    sessionId: string
+    sourceTurnId: string
+  }): Promise<Record<string, never>> {
+    const runtime = this.runtime(params.sessionId, "_codex/session_prediction_request")
+    assertWritable(runtime)
+    if (runtime.session.activeTurn)
+      throw acp.RequestError.invalidRequest(
+        undefined,
+        "Wait for the current turn to finish before requesting a prediction"
+      )
+    if (runtime.modelProvider !== OPENAI_PROVIDER_ID || runtime.session.collaborationMode === PLAN_COLLABORATION_MODE)
+      throw acp.RequestError.invalidRequest(undefined, "Predictions require an OpenAI session outside plan mode")
+    const latest = await this.withCodex(() =>
+      this.codex.threadTurnsList({ threadId: params.sessionId, limit: 1, sortDirection: "desc" })
+    )
+    if (latest.data[0]?.id !== params.sourceTurnId || latest.data[0].status !== "completed")
+      throw acp.RequestError.invalidRequest(undefined, "Predictions require the latest completed turn")
+    if (runtime.session.activeTurn || runtime.lifetime.signal.aborted)
+      throw acp.RequestError.invalidRequest(undefined, "The source session changed; retry after it finishes")
+    const lowEffort = supportedEfforts(findModel(runtime.session.catalog, runtime.session.model.model)).some(
+      (option) => option.reasoningEffort === "low"
+    )
+    this.predictions.start(
+      params.sessionId,
+      params.sourceTurnId,
+      runtime.client,
+      runtime.lifetime.signal,
+      lowEffort ? "low" : undefined
+    )
+    return {}
+  }
+
+  async archiveSession(params: SessionIdParams): Promise<Record<string, never>> {
+    return await this.admission(() => this.archiveSessionInternal(params), params.sessionId)
+  }
+
+  private async archiveSessionInternal(params: SessionIdParams): Promise<Record<string, never>> {
+    this.requireInitialized("_codex/session_archive")
+    await this.closeRuntime(params.sessionId)
+    await this.withCodex(() => this.codex.threadArchive({ threadId: params.sessionId }))
+    return {}
+  }
+
+  /** Codex's durable read receipt; `expectedRevision` is the revision the client last saw. */
+  async updateSessionReadState(params: SessionReadStateUpdateParams): Promise<ThreadReadStateUpdateResponse> {
+    this.requireInitialized("_codex/session_read_state_update")
+    return await this.withCodex(() =>
+      this.codex.threadReadStateUpdate({
+        threadId: params.sessionId,
+        operation: { type: params.operation },
+        expectedRevision: params.expectedRevision
+      })
+    )
+  }
+
+  async unarchiveSession(params: SessionIdParams): Promise<Record<string, never>> {
+    return await this.admission(() => this.unarchiveSessionInternal(params), params.sessionId)
+  }
+
+  private async unarchiveSessionInternal(params: SessionIdParams): Promise<Record<string, never>> {
+    this.requireInitialized("_codex/session_unarchive")
+    await this.withCodex(() => this.codex.threadUnarchive({ threadId: params.sessionId }))
+    return {}
+  }
+
+  // ---- skills and plugins ---------------------------------------------------------
+
+  async skillsList(params: SkillsListParams): Promise<SkillsListResponse> {
+    this.requireInitialized("_codex/skills_list")
+    return await this.withCodex(() => this.codex.skillsList(params))
+  }
+
+  async skillsConfigWrite(params: SkillsConfigWriteParams): Promise<SkillsConfigWriteResponse> {
+    this.requireInitialized("_codex/skills_config_write")
+    const response = await this.withCodex(() => this.codex.skillsConfigWrite(params))
+    this.notifySkillsChanged()
+    return response
+  }
+
+  async pluginSetEnabled(params: PluginSetEnabledParams): Promise<{ enabled: boolean }> {
+    this.requireInitialized("_codex/plugin_set_enabled")
+    if (params.remotePluginId !== undefined) {
+      await this.withCodex(async () => {
+        await setRemotePluginEnabled(this.codex, params.remotePluginId!, params.enabled)
+        await this.codex.pluginReconcile({ reason: "plugin-enabled-changed" })
+        const installed = await this.codex.pluginInstalled({})
+        const plugin = installed.marketplaces
+          .flatMap((market) => market.plugins)
+          .find((plugin) => plugin.remotePluginId === params.remotePluginId)
+        if (!plugin || plugin.enabled !== params.enabled)
+          throw new Error("Remote plugin state could not be synchronized; refresh the plugin catalog")
+      })
+      this.notifySkillsChanged()
+      return { enabled: params.enabled }
+    }
+    const response = await this.withCodex(() =>
+      this.codex.configValueWrite({
+        keyPath: `plugins.${JSON.stringify(params.pluginId)}.enabled`,
+        value: params.enabled,
+        mergeStrategy: "upsert"
+      })
+    )
+    this.notifySkillsChanged()
+    if (response.status === "okOverridden") {
+      throw acp.RequestError.invalidRequest(
+        undefined,
+        "Plugin enablement is overridden by a higher-priority configuration"
+      )
+    }
+    return { enabled: params.enabled }
+  }
+
+  async pluginList(params: PluginListParams): Promise<PluginListResponse> {
+    this.requireInitialized("_codex/plugin_list")
+    return await this.withCodex(() => this.codex.pluginList(params))
+  }
+
+  async pluginInstalled(params: PluginInstalledParams): Promise<PluginInstalledResponse> {
+    this.requireInitialized("_codex/plugin_installed")
+    return await this.withCodex(() => this.codex.pluginInstalled(params))
+  }
+
+  async pluginInstall(params: PluginInstallParams): Promise<PluginInstallResponse> {
+    this.requireInitialized("_codex/plugin_install")
+    const response = await this.withCodex(() => this.codex.pluginInstall(params))
+    this.notifySkillsChanged()
+    return response
+  }
+
+  async pluginUninstall(params: PluginUninstallParams): Promise<Record<string, never>> {
+    this.requireInitialized("_codex/plugin_uninstall")
+    await this.withCodex(() => this.codex.pluginUninstall(params))
+    this.notifySkillsChanged()
+    return {}
+  }
+
+  async pluginRead(params: PluginReadParams): Promise<PluginReadResponse> {
+    this.requireInitialized("_codex/plugin_read")
+    return await this.withCodex(() => this.codex.pluginRead(params))
+  }
+
+  async marketplaceAdd(params: MarketplaceAddParams): Promise<MarketplaceAddResponse> {
+    this.requireInitialized("_codex/marketplace_add")
+    const response = await this.withCodex(() => this.codex.marketplaceAdd(params))
+    this.notifySkillsChanged()
+    return response
+  }
+
+  async marketplaceRemove(params: MarketplaceRemoveParams): Promise<Record<string, never>> {
+    this.requireInitialized("_codex/marketplace_remove")
+    await this.withCodex(() => this.codex.marketplaceRemove(params))
+    this.notifySkillsChanged()
+    return {}
+  }
+
+  async marketplaceUpgrade(params: MarketplaceUpgradeParams): Promise<MarketplaceUpgradeResponse> {
+    this.requireInitialized("_codex/marketplace_upgrade")
+    const response = await this.withCodex(() => this.codex.marketplaceUpgrade(params))
+    this.notifySkillsChanged()
+    return response
+  }
+
+  /**
+   * One signal for both catalogs: Codex's `skills/changed` and every catalog mutation made
+   * through this adapter. Plugins ship skills, so a plugin change is a skills change too.
+   */
+  private notifySkillsChanged(): void {
+    void this.link
+      .notify("_codex/skills_changed", {})
+      .catch((error) => logger.error("skills change notification failed", error))
+  }
+
+  /** Relays a Codex notification to the client under a `_codex/*` name, payload verbatim. */
+  private forward(method: string, params: unknown): void {
+    void this.link.notify(method, params).catch((error) => logger.error(`${method} notification failed`, error))
+  }
+
+  // ---- thread name, account, file search --------------------------------------------
+
+  /**
+   * `_codex/session_rename`: Codex names the thread (`thread/name/set`) and, for a loaded
+   * thread, reports it back as `thread/name/updated`, which the bridge already turns into
+   * `session_info_update`. A thread that is not loaded gets no notification, so the client
+   * updates its own list from the request it made.
+   */
+  async sessionRename(params: SessionRenameParams): Promise<Record<string, never>> {
+    this.requireInitialized("_codex/session_rename")
+    await this.withCodex(() => this.codex.threadSetName({ threadId: params.sessionId, name: params.name }))
+    return {}
+  }
+
+  /** `_alwith/config_snapshot`: the session's options at their current revision. */
+  configSnapshot(params: { sessionId: string }): { configRevision: number; configOptions: acp.SessionConfigOption[] } {
+    const runtime = this.runtime(params.sessionId, "_alwith/config_snapshot")
+    return { configRevision: runtime.configRevision, configOptions: sessionConfigOptions(runtime.session) }
+  }
+
+  async accountRead(): Promise<GetAccountResponse> {
+    this.requireInitialized("_codex/account_read")
+    return await this.withCodex(() => this.codex.accountRead({ refreshToken: false }))
+  }
+
+  async rateLimits(): Promise<GetAccountRateLimitsResponse> {
+    this.requireInitialized("_codex/rate_limits")
+    return await this.withCodex(() => this.codex.accountRateLimitsRead())
+  }
+
+  async fuzzyFileSearch(params: FuzzyFileSearchRequest): Promise<FuzzyFileSearchResponse> {
+    this.requireInitialized("_codex/fuzzy_file_search")
+    const request: FuzzyFileSearchParams = {
+      query: params.query,
+      roots: params.roots,
+      cancellationToken: params.cancellationToken
+    }
+    return await this.withCodex(() => this.codex.fuzzyFileSearch(request))
+  }
+
+  private async closeRuntime(sessionId: string): Promise<acp.CloseSessionResponse> {
+    this.predictions.cancel(sessionId)
+    const deadline = performance.now() + this.closeGraceMs
+    const runtime = this.sessions.get(sessionId)
+    if (!runtime) return {}
+    runtime.session.closed = true
+    runtime.lifetime.abort()
+    const turn = runtime.session.activeTurn
+    if (turn) {
+      void this.interruptTurn(runtime, turn)
+      // Reserve half the total budget for unsubscribe, even if interruption stalls.
+      await within(turn.finished, Math.max(0, this.closeGraceMs / 2))
+      if (runtime.session.activeTurn === turn) {
+        // One best-effort terminal write; disposal releases any backpressured write.
+        await within(
+          this.reportIdle(runtime, turn, "cancelled", { usage: usageOf(runtime.session) }),
+          Math.max(0, (deadline - performance.now()) / 2)
+        ).catch(() => {})
+      }
+      turn.stop.abort()
+    }
+    if (this.sessions.get(sessionId) === runtime) this.sessions.delete(sessionId)
+    this.codex.detachThread(sessionId)
+    runtime.client.dispose()
+    runtime.bridge.dispose()
+    if (turn) {
+      turn.resolveStarted(null)
+      runtime.session.activeTurn = null
+      turn.resolveFinished()
+    }
+    const unsubscribe = runtime.readOnly ? Promise.resolve() : this.unsubscribeThread(sessionId)
+    let remoteUnsubscribe: "confirmed" | "timed_out" | "failed" = "confirmed"
+    try {
+      if (!(await within(unsubscribe, Math.max(0, deadline - performance.now())))) {
+        remoteUnsubscribe = "timed_out"
+      }
+    } catch (error) {
+      remoteUnsubscribe = "failed"
+      logger.error("thread/unsubscribe failed", error, { sessionId })
+    }
+    if (remoteUnsubscribe !== "confirmed")
+      logger.log("session close detached locally", { sessionId, remoteUnsubscribe })
+    return { _meta: { codex: { close: { attempted: true, localDetached: true, remoteUnsubscribe } } } }
+  }
+
+  private unsubscribeThread(sessionId: string): Promise<unknown> {
+    const unsubscribe = this.codex.threadUnsubscribe({ threadId: sessionId })
+    this.pendingUnsubscribes.set(sessionId, unsubscribe)
+    const release = () => {
+      if (this.pendingUnsubscribes.get(sessionId) === unsubscribe) this.pendingUnsubscribes.delete(sessionId)
+    }
+    void unsubscribe.then(release, release)
+    return unsubscribe
+  }
+
+  async setSessionConfigOption(params: acp.SetSessionConfigOptionRequest): Promise<acp.SetSessionConfigOptionResponse> {
+    return await this.admission(() => this.setSessionConfigOptionInternal(params), params.sessionId)
+  }
+
+  private async setSessionConfigOptionInternal(
+    params: acp.SetSessionConfigOptionRequest
+  ): Promise<acp.SetSessionConfigOptionResponse> {
+    this.predictions.cancel(params.sessionId)
+    const runtime = this.runtime(params.sessionId, "session/set_config_option")
+    assertWritable(runtime)
+    if (
+      params.configId === MODEL_CONFIG_ID &&
+      (this.providers.mode === "catalog" || runtime.session.model.model.startsWith("gateway:")) &&
+      typeof params.value === "string"
+    ) {
+      this.providers.upstreamModel(params.value)
+      const target = this.providers.gatewayIdFor(params.value)
+      const destination = target ?? (await this.withCodex(() => this.resolveModelProvider()))
+      if (destination !== runtime.modelProvider) await this.rerouteSession(runtime, target, params.value)
+    }
+    await this.withCodex(() => applyConfigOption(runtime.session, this.codex, params))
+    await runtime.client.update(configOptionsFrame(runtime))
+    return {
+      configOptions: sessionConfigOptions(runtime.session),
+      _meta: { alwith: { configRevision: runtime.configRevision } }
+    }
+  }
+
+  /**
+   * Catalog mode: moves one live thread between Codex's native provider and a gateway.
+   * Codex has no per-turn provider (`turn/start` overrides the model only), so this is the
+   * same unsubscribe + cold resume as an agent-wide provider change. A thread Codex has not
+   * materialized yet (no user message) cannot be resumed; it is materialized first with a
+   * developer note, the way `seedHistory` injects items.
+   */
+  private async rerouteSession(runtime: SessionRuntime, gatewayId: string | null, modelId: string): Promise<void> {
+    const { session } = runtime
+    this.assertRoutingAvailable()
+    if (session.activeTurn !== null) {
+      throw acp.RequestError.invalidRequest(
+        { sessionId: session.id },
+        "The model provider cannot change while a turn is running; cancel it or wait for idle"
+      )
+    }
+    try {
+      await this.codex.threadTurnsList({ threadId: session.id, limit: 1, itemsView: "notLoaded" })
+    } catch {
+      await this.withCodex(() => this.codex.threadInjectItems({ threadId: session.id, items: [providerChangeNote()] }))
+    }
+    const modelProvider = gatewayId ?? (await this.withCodex(() => this.resolveModelProvider()))
+    const config = await this.responsesConfig(
+      this.providers.routeConfig(runtime.config, gatewayId),
+      modelProvider,
+      session.cwd
+    )
+    await this.codex.threadUnsubscribe({ threadId: session.id })
+    try {
+      await this.withCodex(() =>
+        this.codex.threadResume({
+          threadId: session.id,
+          cwd: session.cwd,
+          config,
+          modelProvider,
+          model: this.providers.upstreamModel(modelId),
+          excludeTurns: true
+        })
+      )
+    } catch (error) {
+      try {
+        await this.codex.threadResume({
+          threadId: session.id,
+          cwd: session.cwd,
+          config: runtime.config,
+          modelProvider: runtime.modelProvider,
+          model: this.providers.upstreamModel(session.model.model),
+          excludeTurns: true
+        })
+      } catch (rollbackError) {
+        runtime.stale = true
+        logger.error("Provider rollback failed", rollbackError, { sessionId: session.id })
+      }
+      throw acp.RequestError.internalError(
+        { sessionId: session.id, stale: runtime.stale },
+        `Could not move the session to ${gatewayId !== null ? `gateway "${gatewayId}"` : "Codex's provider"}: ${errorMessage(error)}`
+      )
+    }
+    runtime.config = config
+    runtime.modelProvider = modelProvider
+    runtime.stale = false
+  }
+
+  private runtime(sessionId: string, method: string): SessionRuntime {
+    this.requireInitialized(method)
+    const runtime = this.sessions.get(sessionId)
+    if (!runtime || runtime.session.closed)
+      throw acp.RequestError.invalidParams(
+        { sessionId },
+        `Unknown session "${sessionId}" (missing or closed); create or resume it first`
+      )
+    return runtime
+  }
+
+  // ---- prompts ------------------------------------------------------------------
+
+  async prompt(params: acp.PromptRequest): Promise<acp.PromptResponse> {
+    return await this.promptInternal(params, false, requestedMessageId(params) ?? crypto.randomUUID())
+  }
+
+  /**
+   * `messageId` is minted here and handed to Codex as `clientUserMessageId`, so the receipt
+   * names the user message before Codex materializes it and the later `user_message` echo
+   * (`userMessage.clientId`) claims the same id. Steering keeps the id it was minted with.
+   */
+  private async promptInternal(
+    params: acp.PromptRequest,
+    allowReentry: boolean,
+    messageId: string
+  ): Promise<acp.PromptResponse> {
+    this.predictions.cancel(params.sessionId)
+    this.assertRoutingAvailable()
+    if (!allowReentry && this.sessionMutations.has(params.sessionId))
+      throw acp.RequestError.invalidRequest(
+        { sessionId: params.sessionId },
+        "Session lifecycle or configuration work is in progress; retry when it finishes"
+      )
+    const runtime = this.runtime(params.sessionId, "session/prompt")
+    assertWritable(runtime)
+    if (runtime.stale)
+      throw acp.RequestError.invalidRequest(
+        { sessionId: params.sessionId, _meta: { codex: { routing: { stale: true } } } },
+        "Session routing is stale; resume the session or successfully change providers before prompting"
+      )
+    if (!Array.isArray(params.prompt) || params.prompt.length === 0) {
+      throw acp.RequestError.invalidParams(undefined, "prompt must contain at least one content block")
+    }
+    // The client binds the prompt to the config revision it saw; a mismatch is refused here, in the same
+    // step that admits the prompt, with the actual options beside the refusal.
+    const expectedConfigRevision = expectedConfigRevisionOf(params._meta)
+    if (expectedConfigRevision !== null && expectedConfigRevision !== runtime.configRevision) {
+      throw acp.RequestError.invalidParams(
+        {
+          alwith: {
+            configStale: {
+              expected: expectedConfigRevision,
+              actual: runtime.configRevision,
+              configOptions: sessionConfigOptions(runtime.session)
+            }
+          }
+        },
+        "config/stale"
+      )
+    }
+    const { session } = runtime
+    if (params._meta && typeof params._meta === "object")
+      runtime.bridge.rememberPromptMeta(messageId, params._meta as Record<string, unknown>)
+    this.providers.upstreamModel(session.model.model)
+    const model = findModel(session.catalog, session.model.model)
+    if (!modelSupportsImages(model) && params.prompt.some((block) => block.type === "image")) {
+      throw acp.RequestError.invalidParams(
+        { model: session.model.model },
+        "The current model does not support image input"
+      )
+    }
+    if (session.activeTurn) {
+      return await this.steerActiveTurn(runtime, session.activeTurn, params, messageId)
+    }
+    const turn = createActiveTurn(session.id, messageId)
+    session.activeTurn = turn
+    runtime.client.reportRunning(messageId)
+    void this.runPrompt(runtime, turn, params)
+    return { messageId }
+  }
+
+  /** A prompt during a running turn is injected into it; Codex calls this steering. */
+  private async steerActiveTurn(
+    runtime: SessionRuntime,
+    turn: ActiveTurn,
+    params: acp.PromptRequest,
+    messageId: string
+  ): Promise<acp.PromptResponse> {
+    const turnId = turn.turnId ?? (await turn.started)
+    if (turnId === null || turn.threadId !== runtime.session.id) {
+      throw acp.RequestError.invalidRequest(
+        { sessionId: params.sessionId },
+        "A turn is already running; wait for it to finish or cancel it"
+      )
+    }
+    try {
+      await this.codex.turnSteer({
+        threadId: runtime.session.id,
+        expectedTurnId: turnId,
+        clientUserMessageId: messageId,
+        input: toUserInput(params.prompt)
+      })
+      return { messageId, _meta: { codex: { steered: turnId } } }
+    } catch (error) {
+      // Retry as a new prompt only after a matching completion proves the steer lost the race.
+      if (this.completedTurns.get(turn) === turnId || runtime.session.activeTurn !== turn) {
+        await turn.finished
+        return await this.promptInternal(params, true, messageId)
+      }
+      throw acp.RequestError.invalidRequest(
+        { sessionId: params.sessionId, turnId },
+        `Could not steer the running turn: ${errorMessage(error)}`
+      )
+    }
+  }
+
+  private async runPrompt(
+    runtime: SessionRuntime,
+    turn: ActiveTurn,
+    params: acp.PromptRequest,
+    observed?: Promise<TurnCompletedNotification>,
+    items: readonly ThreadItem[] = [],
+    replayItems = true
+  ): Promise<void> {
+    const { session, bridge } = runtime
+    bridge.beginTurn()
+    let restoreError: Error | undefined
+    if (items.length) {
+      const turnId = turn.turnId
+      if (turnId === null) throw acp.RequestError.internalError(undefined, "Cannot restore items without their turn id")
+      const signal = AbortSignal.any([turn.abort.signal, turn.stop.signal, runtime.lifetime.signal])
+      runtime.queue = runtime.queue.then(async () => {
+        try {
+          await bridge.restore(items, turnId, signal, replayItems)
+        } catch (error) {
+          if (signal.aborted) return
+          restoreError = new Error(
+            "Could not restore command history; check Codex home access and reopen the session.",
+            { cause: error }
+          )
+          logger.error("Restoring active turn history failed", error, { sessionId: session.id, turnId })
+        }
+      })
+    }
+    try {
+      if (!observed) {
+        if (turn.clientUserMessageId === null)
+          throw acp.RequestError.internalError(undefined, "Prompt requires a message receipt")
+        // Record the ACP insertion before promptInternal returns success, independently of Codex.
+        await bridge.insertPrompt(turn.clientUserMessageId, params.prompt)
+      }
+      const command = parseCommand(params.prompt)
+      const outcome = command ? resolveCommand(command, session) : { kind: "prompt" as const }
+      if (!observed && outcome.kind !== "prompt") {
+        const native =
+          outcome.kind === "review" ? "review" : outcome.kind === "config" && outcome.promptText ? "prompt" : null
+        if (turn.clientUserMessageId === null)
+          throw acp.RequestError.internalError(undefined, "Command requires a prompt receipt")
+        if (native) {
+          bridge.rememberCommand(turn.clientUserMessageId, native)
+          await this.prepareCommand(runtime, turn)
+        }
+      }
+      let completed = await abortable(
+        observed ?? this.executePrompt(runtime, turn, command, outcome, params),
+        turn.stop.signal
+      )
+      await this.drain(runtime)
+      await bridge.flush()
+      if (restoreError && !turn.abort.signal.aborted) throw restoreError
+      await this.finishCommandWrite(runtime, turn)
+
+      if (completed?.turn.status === "completed" && !turn.abort.signal.aborted && !this.exitHandled) {
+        completed = await abortable(this.maybeImplementPlan(runtime, turn, completed), turn.stop.signal)
+      }
+      if (completed?.turn.status === "interrupted" || turn.abort.signal.aborted) {
+        await this.reportIdle(runtime, turn, "cancelled", { usage: usageOf(session) })
+        return
+      }
+      if (completed?.turn.status === "failed") {
+        await this.reportTurnFailure(
+          runtime,
+          turn,
+          completed.turn.error ??
+            bridge.takeError() ?? {
+              message: "Turn failed",
+              codexErrorInfo: null,
+              additionalDetails: null,
+              misalignment: null
+            }
+        )
+        return
+      }
+      const pendingError = bridge.takeError()
+      if (pendingError) {
+        await this.reportTurnFailure(runtime, turn, pendingError)
+        return
+      }
+      await this.publishFallbackTitle(runtime, promptTitle(params.prompt))
+      await this.reportIdle(runtime, turn, "end_turn", { usage: usageOf(session) })
+    } catch (error) {
+      if (error instanceof TurnStartRejectedError && turn.turnId === null && !this.commandWrites.has(turn))
+        this.commandsStarted.delete(turn)
+      const guard = this.commandGuards.get(turn)
+      if (guard && !this.commandsStarted.has(turn)) {
+        await this.finishCommandWrite(runtime, turn).catch((cleanupError) =>
+          logger.error("Unused command guard cleanup failed", cleanupError, { sessionId: session.id })
+        )
+      }
+      if (this.terminalTurns.has(turn)) {
+        logger.error("Terminal update failed", error, { sessionId: session.id })
+        return
+      }
+      if (turn.stop.signal.aborted && session.closed) return
+      if (turn.abort.signal.aborted || session.closed) {
+        await this.reportIdle(runtime, turn, "cancelled", { usage: usageOf(session) }).catch(() => {})
+        return
+      }
+      logger.error("prompt failed", error, { sessionId: session.id })
+      await this.reportTurnFailure(runtime, turn, this.failureOf(error)).catch(() => {})
+    } finally {
+      turn.resolveStarted(null)
+      if (session.activeTurn === turn) session.activeTurn = null
+      turn.resolveFinished()
+    }
+  }
+
+  private async prepareCommand(runtime: SessionRuntime, turn: ActiveTurn): Promise<void> {
+    let guard: CommandHistoryGuard | undefined
+    const preparing = this.commandReceipts!.prepare(runtime.session.id).then((value) => {
+      guard = value
+    })
+    try {
+      const signal = AbortSignal.any([turn.abort.signal, turn.stop.signal])
+      if (!(await abortable(within(preparing, this.cancelGraceMs), signal))) {
+        throw new Error(
+          "Protecting command history timed out; check Codex home access and retry. The command was not executed."
+        )
+      }
+      this.commandGuards.set(turn, guard!)
+    } catch (error) {
+      // Preparation alone cannot create native history, even if it settles after cancellation.
+      void preparing
+        .then(async () => {
+          if (guard) await this.commandReceipts!.complete(guard)
+        })
+        .catch((cleanupError) =>
+          logger.error("Command history preparation failed", cleanupError, { sessionId: runtime.session.id })
+        )
+      throw error
+    }
+  }
+
+  private async finishCommandWrite(runtime: SessionRuntime, turn: ActiveTurn): Promise<void> {
+    const guard = this.commandGuards.get(turn)
+    const write =
+      this.commandWrites.get(turn) ??
+      (guard
+        ? this.commandsStarted.has(turn)
+          ? Promise.reject(new Error("Codex did not report the command's native user message."))
+          : this.commandReceipts!.complete(guard)
+        : undefined)
+    if (!write) return
+    try {
+      if (!(await abortable(within(write, this.cancelGraceMs), turn.stop.signal))) {
+        throw new Error("Saving the command receipt timed out.")
+      }
+    } catch (error) {
+      if (turn.stop.signal.aborted) throw error
+      const message = `Could not confirm saved command history. ${errorMessage(error)} History replay is blocked until its receipt mapping is restored; check Codex home access and free space.`
+      if (!turn.abort.signal.aborted) throw acp.RequestError.internalError({ sessionId: runtime.session.id }, message)
+      // Native cancellation is already confirmed; a failed save must not prevent idle.
+      await runtime.client.update({
+        sessionUpdate: "agent_message",
+        messageId: `command-save:${turn.clientUserMessageId ?? turn.turnId}`,
+        content: [{ type: "text", text: message }],
+        _meta: { codex: { notice: true } }
+      })
+    }
+  }
+
+  private async executePrompt(
+    runtime: SessionRuntime,
+    turn: ActiveTurn,
+    command: ReturnType<typeof parseCommand>,
+    outcome: ReturnType<typeof resolveCommand>,
+    params: acp.PromptRequest
+  ): Promise<TurnCompletedNotification | null> {
+    const { session, client } = runtime
+    let completed: TurnCompletedNotification | null = null
+    switch (outcome.kind) {
+      case "prompt":
+        completed = await this.runCodexTurn(runtime, turn, params.prompt)
+        break
+      case "message":
+        await client.update(
+          agentMessage(
+            `command:${command?.name}:${Date.now()}`,
+            await this.commandText(runtime, command?.name ?? "", outcome.text)
+          )
+        )
+        break
+      case "config":
+        await this.setSessionConfigOption({
+          sessionId: session.id,
+          configId: outcome.configId,
+          type: "id",
+          value: outcome.value
+        })
+        if (outcome.promptText) {
+          const promptText = outcome.promptText
+          const commandText = params.prompt.find(acp.ContentBlock.isText)
+          completed = await this.runCodexTurn(
+            runtime,
+            turn,
+            params.prompt.map((block) => (block === commandText ? { ...block, type: "text", text: promptText } : block))
+          )
+        } else {
+          await client.update(
+            agentMessage(
+              `command:${turn.clientUserMessageId}`,
+              `Plan mode ${outcome.value === PLAN_COLLABORATION_MODE ? "enabled" : "disabled"}.`
+            )
+          )
+        }
+        break
+      case "compact":
+        await this.runCompaction(runtime, turn)
+        break
+      case "review":
+        turn.abort.signal.throwIfAborted()
+        this.commandsStarted.add(turn)
+        completed = await this.withCodex(() =>
+          this.codex.runReview(
+            { threadId: session.id, target: outcome.target, delivery: "inline" },
+            (turnId, threadId) => {
+              this.turnStarted(runtime, turn, turnId, threadId)
+            },
+            turn.stop.signal
+          )
+        )
+        break
+      case "logout":
+        await this.withCodex(() => logout(this.codex))
+        await this.refreshAccounts()
+        await client.update(agentMessage(`command:logout:${Date.now()}`, "Logged out of the Codex account."))
+        break
+    }
+    return completed
+  }
+
+  private async runCodexTurn(
+    runtime: SessionRuntime,
+    turn: ActiveTurn,
+    prompt: readonly acp.ContentBlock[],
+    clientUserMessageId = turn.clientUserMessageId
+  ): Promise<TurnCompletedNotification> {
+    const { session } = runtime
+    const model = findModel(session.catalog, session.model.model)
+    const disableSummary = session.account?.type === "apiKey" || modelLacksReasoning(model)
+    let startSent = false
+    const beforeStart = new AbortController()
+    const cancelBeforeStart = () => {
+      if (!startSent) beforeStart.abort(turn.abort.signal.reason)
+    }
+    turn.abort.signal.addEventListener("abort", cancelBeforeStart, { once: true })
+    if (turn.abort.signal.aborted) cancelBeforeStart()
+    try {
+      const result = await abortable(
+        this.withSkillsContext(session.cwd, session.additionalDirectories, async (skills) => {
+          if (this.publishedSkills.get(runtime) !== skills) void this.publishAvailableCommands(runtime, skills)
+          if (turn.abort.signal.aborted || turn.stop.signal.aborted)
+            return { completed: Promise.resolve(interruptedTurn(session.id)) }
+          startSent = true
+          if (this.commandGuards.has(turn)) this.commandsStarted.add(turn)
+          const completed = this.withCodex(() =>
+            this.codex.runTurn(
+              {
+                threadId: session.id,
+                clientUserMessageId,
+                input: toUserInput(prompt),
+                approvalPolicy: session.mode.approvalPolicy,
+                approvalsReviewer: session.mode.approvalsReviewer,
+                sandboxPolicy: withWritableRoots(session.mode.sandboxPolicy, session.additionalDirectories),
+                model: this.providers.upstreamModel(session.model.model),
+                effort: supportedEfforts(model).length > 0 ? session.model.effort : null,
+                summary: disableSummary ? "none" : "auto",
+                serviceTier: session.fastMode ? FAST_SERVICE_TIER : null
+              },
+              (turnId) => {
+                // A cancel that raced turn/start is parked on `started` and interrupts from there.
+                this.turnStarted(runtime, turn, turnId, session.id)
+              },
+              turn.stop.signal
+            )
+          )
+          await Promise.race([turn.started, completed])
+          return { completed }
+        }),
+        beforeStart.signal
+      )
+      return await result.completed
+    } finally {
+      turn.abort.signal.removeEventListener("abort", cancelBeforeStart)
+    }
+  }
+
+  private async runCompaction(runtime: SessionRuntime, turn: ActiveTurn): Promise<void> {
+    const threadId = runtime.session.id
+    turn.resolveStarted(null)
+    const pending = new AbortController()
+    const signal = AbortSignal.any([pending.signal, turn.abort.signal])
+    const completed = Promise.race([
+      this.codex.awaitNotification(
+        "item/completed",
+        (params) => params.threadId === threadId && params.item.type === "contextCompaction",
+        signal
+      ),
+      this.codex.awaitNotification("thread/compacted", (params) => params.threadId === threadId, signal)
+    ])
+    void completed.catch(() => {})
+    try {
+      signal.throwIfAborted()
+      await abortable(
+        this.withCodex(() => this.codex.threadCompactStart({ threadId })),
+        signal
+      )
+      await completed
+    } finally {
+      // Codex versions report either event; dispose the losing waiter as well.
+      pending.abort()
+    }
+  }
+
+  /** In plan collaboration mode a finished plan asks the user whether to implement it now. */
+  private async maybeImplementPlan(
+    runtime: SessionRuntime,
+    turn: ActiveTurn,
+    completed: TurnCompletedNotification
+  ): Promise<TurnCompletedNotification> {
+    const plan = runtime.bridge.takeCompletedPlan()
+    if (!plan || runtime.session.collaborationMode !== PLAN_COLLABORATION_MODE) return completed
+    this.completedTurns.delete(turn)
+    const signal = AbortSignal.any([turn.abort.signal, turn.stop.signal])
+    const approved = await this.requestPlanApproval(runtime, plan, signal)
+    if (!approved || signal.aborted) return completed
+    await this.setSessionConfigOption({
+      sessionId: runtime.session.id,
+      configId: "collaboration_mode",
+      type: "id",
+      value: DEFAULT_COLLABORATION_MODE
+    })
+    runtime.bridge.beginTurn()
+    turn.resetStarted()
+    const implementation = await this.runCodexTurn(
+      runtime,
+      turn,
+      [{ type: "text", text: "Implement the approved plan." }],
+      internalPlanMessageId()
+    )
+    await this.drain(runtime)
+    await runtime.bridge.flush()
+    return implementation
+  }
+
+  private async requestPlanApproval(
+    runtime: SessionRuntime,
+    plan: CompletedPlan,
+    signal: AbortSignal
+  ): Promise<boolean> {
+    const toolCallId = `plan-review:${plan.itemId}`
+    const toolCall = {
+      toolCallId,
+      name: ToolName.PlanReview,
+      title: "Implement this plan?",
+      kind: "switch_mode" as const,
+      status: "pending" as const,
+      rawInput: { plan: plan.text }
+    }
+    try {
+      await runtime.client.update({ sessionUpdate: "tool_call_update", ...toolCall })
+      const response = await runtime.client.requestPermission(
+        {
+          title: "Implement this plan?",
+          subject: { type: "tool_call", toolCall },
+          options: [
+            { optionId: IMPLEMENT_PLAN_OPTION, name: "Yes, implement this plan", kind: "allow_once" },
+            { optionId: REVISE_PLAN_OPTION, name: "No, and tell Codex what to do differently", kind: "reject_once" }
+          ],
+          _meta: { codex: { kind: "plan_review", planItemId: plan.itemId } }
+        },
+        signal
+      )
+      const approved =
+        response.outcome.outcome === "selected" &&
+        (response.outcome as { optionId?: unknown }).optionId === IMPLEMENT_PLAN_OPTION
+      await runtime.client.update({
+        sessionUpdate: "tool_call_update",
+        toolCallId,
+        status: "completed",
+        rawOutput: approved ? "User approved the plan." : "User kept the session in plan mode."
+      })
+      return approved
+    } catch (error) {
+      logger.error("plan approval failed", error, { sessionId: runtime.session.id })
+      await runtime.client
+        .update({ sessionUpdate: "tool_call_update", toolCallId, status: signal.aborted ? "cancelled" : "failed" })
+        .catch(() => {})
+      return false
+    }
+  }
+
+  private async commandText(runtime: SessionRuntime, name: string, fallback: string): Promise<string> {
+    switch (name) {
+      case "status":
+        return statusMessage(runtime.session, runtime.bridge.rateLimits)
+      case "mcp":
+        return await this.withCodex(() => mcpMessage(this.codex, runtime.session))
+      case "skills": {
+        const skills = await this.withCodex(() =>
+          this.codex.skillsList({ cwds: [runtime.session.cwd, ...runtime.session.additionalDirectories] })
+        )
+        return skillsMessage(skills.data)
+      }
+      default:
+        return fallback
+    }
+  }
+
+  private async reportIdle(
+    runtime: SessionRuntime,
+    turn: ActiveTurn,
+    reason: StopReason,
+    extra?: Parameters<ClientSession["reportIdle"]>[1]
+  ): Promise<void> {
+    if (this.terminalTurns.has(turn)) return
+    this.terminalTurns.add(turn)
+    await runtime.bridge.finishOpenToolCalls(
+      reason === "cancelled" ? "cancelled" : reason === "end_turn" ? "completed" : "failed"
+    )
+    // The client may send its next prompt as soon as it receives idle.
+    if (runtime.session.activeTurn === turn) runtime.session.activeTurn = null
+    await runtime.client.reportIdle(reason, extra, turn.clientUserMessageId ?? undefined)
+  }
+
+  private async reportTurnFailure(runtime: SessionRuntime, turn: ActiveTurn, error: TurnError): Promise<void> {
+    const { stopReason, ...classification } = classifyTurnError(error.codexErrorInfo)
+    const message = error.additionalDetails ? `${error.message}\n\n${error.additionalDetails}` : error.message
+    await runtime.client.update({
+      sessionUpdate: "agent_message_chunk",
+      messageId: `codex-error:${runtime.session.id}:${Date.now()}`,
+      content: { type: "text", text: message },
+      _meta: {
+        codex: {
+          error: {
+            ...classification,
+            message: error.message,
+            codexErrorInfo: error.codexErrorInfo,
+            additionalDetails: error.additionalDetails
+          }
+        }
+      }
+    })
+    await this.reportIdle(runtime, turn, stopReason, {
+      ...(stopReason === "error"
+        ? {
+            error: {
+              code: -32603,
+              message,
+              data: { codex: { ...classification, codexErrorInfo: error.codexErrorInfo } }
+            }
+          }
+        : {}),
+      usage: usageOf(runtime.session),
+      _meta: { codex: { error: { ...classification, message: error.message, codexErrorInfo: error.codexErrorInfo } } }
+    })
+  }
+
+  private async publishFallbackTitle(runtime: SessionRuntime, title: string | null): Promise<void> {
+    const { session, client } = runtime
+    if (session.titleIsExplicit || session.title !== null || title === null) return
+    session.title = title
+    await client.update({ sessionUpdate: "session_info_update", title })
+  }
+
+  async cancel(params: acp.CancelSessionNotification): Promise<void> {
+    const runtime = this.sessions.get(params.sessionId)
+    const turn = runtime?.session.activeTurn
+    if (!runtime || !turn) return
+    if (this.cancelling.has(turn)) return
+    const interrupt = this.interruptTurn(runtime, turn)
+    const recovery = this.recoverCancellation(runtime, turn, interrupt).finally(() => {
+      if (this.cancelling.get(turn) === recovery) this.cancelling.delete(turn)
+      // A timed-out RPC must not block a later Stop forever.
+      this.forgetInterrupt(turn)
+    })
+    this.cancelling.set(turn, recovery)
+    void recovery.catch((error) => logger.error("Cancellation recovery failed", error, { sessionId: params.sessionId }))
+    // Notifications must not wait indefinitely for an unresponsive native RPC.
+    await within(interrupt, this.cancelGraceMs)
+  }
+
+  private async recoverCancellation(
+    runtime: SessionRuntime,
+    turn: ActiveTurn,
+    interrupt: Promise<void>
+  ): Promise<void> {
+    const current = (): boolean => !runtime.session.closed && runtime.session.activeTurn === turn
+    let failure = "Codex still reports an active turn."
+    for (let attempt = 0; attempt < 2 && current(); attempt++) {
+      if (attempt > 0) {
+        this.forgetInterrupt(turn)
+        interrupt = this.interruptTurn(runtime, turn)
+      }
+      if (
+        (await within(Promise.race([turn.finished, interrupt.then(() => turn.finished)]), this.cancelGraceMs)) ||
+        !current()
+      )
+        return
+      // A late turn/start can still create work. Only reconcile an identified turn.
+      const turnId = turn.turnId
+      if (turnId === null) {
+        failure = "Codex has not acknowledged the turn start."
+        continue
+      }
+      let snapshot: Thread | undefined
+      try {
+        const received = await within(
+          this.codex.threadRead({ threadId: turn.threadId, includeTurns: false }).then((result) => {
+            snapshot = result.thread
+          }),
+          this.cancelGraceMs
+        )
+        if (!current()) return
+        if (!received || !snapshot) {
+          failure = "Codex did not answer the status check."
+          continue
+        }
+        // Interrupt acceptance alone is not completion. Thread status is authoritative
+        // when Codex omits turn/completed (including cancelled MCP calls).
+        if (snapshot.status.type === "idle" || snapshot.status.type === "notLoaded") {
+          if (snapshot.status.type === "notLoaded") {
+            runtime.stale = true
+            await runtime.client.update({
+              sessionUpdate: "agent_message",
+              messageId: `cancel-unloaded:${turn.turnId}`,
+              content: [
+                { type: "text", text: "Codex unloaded this conversation. Reopen it before sending another message." }
+              ],
+              _meta: { codex: { notice: true } }
+            })
+            if (!current()) return
+          }
+          this.codex.resolveTurnInterrupted(turn.threadId, turnId)
+          if ((await within(turn.finished, this.cancelGraceMs)) || !current()) return
+          failure = "Codex stopped, but session updates have not finished."
+        } else {
+          failure = `Codex still reports thread status "${snapshot.status.type}".`
+        }
+      } catch (error) {
+        failure = `Could not verify the Codex thread state: ${errorMessage(error)}`
+        logger.error("Cancellation status check failed", error, { sessionId: runtime.session.id, turnId })
+      }
+    }
+    if (!current()) return
+    await runtime.client.update({
+      sessionUpdate: "agent_message",
+      messageId: `cancel-pending:${turn.clientUserMessageId ?? turn.turnId}`,
+      content: [{ type: "text", text: `Cancellation has not been confirmed. ${failure} Click Stop again to retry.` }],
+      _meta: { codex: { notice: true } }
+    })
+  }
+
+  private async interruptTurn(runtime: SessionRuntime, turn: ActiveTurn): Promise<void> {
+    turn.abort.abort()
+    const turnId = turn.turnId ?? (await turn.started)
+    if (turnId === null) return
+    await this.sendInterrupt(runtime, turn, turnId)
+  }
+
+  private forgetInterrupt(turn: ActiveTurn): void {
+    if (turn.turnId !== null) turn.interrupts.delete(`${turn.threadId}:${turn.turnId}`)
+  }
+
+  private sendInterrupt(runtime: SessionRuntime, turn: ActiveTurn, turnId: string): Promise<void> {
+    const key = `${turn.threadId}:${turnId}`
+    let pending = turn.interrupts.get(key)
+    if (!pending) {
+      pending = this.codex
+        .turnInterrupt({ threadId: turn.threadId, turnId })
+        .then(
+          () => {},
+          (error) => {
+            logger.error("turn/interrupt failed", error, { sessionId: runtime.session.id, turnId })
+          }
+        )
+        .finally(() => {
+          // Deduplicate in-flight RPCs only; a successful receipt may still need retry.
+          if (turn.interrupts.get(key) === pending) turn.interrupts.delete(key)
+        })
+      turn.interrupts.set(key, pending)
+    }
+    return pending
+  }
+
+  private turnStarted(runtime: SessionRuntime, turn: ActiveTurn, turnId: string, threadId: string): void {
+    turn.turnId = turnId
+    turn.threadId = threadId
+    turn.resolveStarted(turnId)
+    // A close may have already ended local waiting before turn/start finally returns.
+    if (turn.abort.signal.aborted) void this.sendInterrupt(runtime, turn, turnId)
+  }
+
+  // ---- helpers ------------------------------------------------------------------
+
+  private withSkillsContext<T>(
+    cwd: string,
+    additionalDirectories: readonly string[],
+    operation: (skills: Awaited<ReturnType<AppServerClient["skillsList"]>>) => Promise<T>
+  ): Promise<T> {
+    const run = async () => {
+      const roots = additionalDirectories.map((root) => path.join(root, ".agents", "skills"))
+      if (roots.length !== this.skillRoots.length || roots.some((root, index) => root !== this.skillRoots[index])) {
+        this.changingSkillRoots = true
+        try {
+          await this.codex.skillsExtraRootsSet({ extraRoots: roots })
+        } finally {
+          this.changingSkillRoots = false
+        }
+        this.skillRoots = roots
+        this.skillSnapshots.clear()
+      }
+      const skills = await this.loadSkills(cwd, additionalDirectories)
+      return await operation(skills)
+    }
+    // Extra roots are process-global. Hold the context through thread/turn start, not inference.
+    const result = this.skillsQueue.then(run, run)
+    this.skillsQueue = result.then(
+      () => {},
+      () => {}
+    )
+    return result
+  }
+
+  private async loadSkills(cwd: string, additionalDirectories: readonly string[]) {
+    const key = JSON.stringify([cwd, ...additionalDirectories])
+    let skills = this.skillSnapshots.get(key)
+    if (!skills) {
+      const generation = this.skillsGeneration
+      skills = await this.withCodex(() =>
+        this.codex.skillsList({ cwds: [cwd, ...additionalDirectories], forceReload: true })
+      )
+      if (generation === this.skillsGeneration) {
+        if (this.skillSnapshots.size >= 64) this.skillSnapshots.delete(this.skillSnapshots.keys().next().value!)
+        this.skillSnapshots.set(key, skills)
+      }
+    }
+    return skills
+  }
+
+  private async refreshAvailableCommands(runtime: SessionRuntime): Promise<void> {
+    const run = async () => {
+      const roots = runtime.session.additionalDirectories.map((root) => path.join(root, ".agents", "skills"))
+      // A change notification must never itself switch this process-global setting.
+      if (
+        runtime.session.closed ||
+        roots.length !== this.skillRoots.length ||
+        roots.some((root, i) => root !== this.skillRoots[i])
+      )
+        return undefined
+      return await this.loadSkills(runtime.session.cwd, runtime.session.additionalDirectories)
+    }
+    const pending = this.skillsQueue.then(run, run)
+    this.skillsQueue = pending.then(
+      () => {},
+      () => {}
+    )
+    try {
+      const skills = await pending
+      if (skills && !runtime.session.closed) await this.publishAvailableCommands(runtime, skills)
+    } catch (error) {
+      logger.error("refreshing available commands failed", error, { sessionId: runtime.session.id })
+    }
+  }
+
+  private async configuredMcpServerNames(cwd: string): Promise<Set<string>> {
+    const response = await this.codex.configRead({ includeLayers: true, cwd })
+    const names = new Set<string>()
+    const sources = [
+      response.config["mcp_servers"],
+      ...(response.layers ?? []).map((layer) => (isJsonObject(layer.config) ? layer.config["mcp_servers"] : undefined))
+    ]
+    for (const source of sources) {
+      if (isJsonObject(source)) for (const name of Object.keys(source)) names.add(name)
+    }
+    return names
+  }
+
+  /** Recompute transient transport routing on every open/resume; never persist it in user config. */
+  private async responsesConfig(
+    config: JsonObject,
+    modelProvider: string,
+    cwd: string,
+    context?: {
+      account: Awaited<ReturnType<AppServerClient["accountRead"]>>
+      effective: Awaited<ReturnType<AppServerClient["configRead"]>> | null
+    }
+  ): Promise<JsonObject> {
+    const next = { ...config }
+    const configured = next["openai_base_url"]
+    const previous = typeof configured === "string" ? this.responsesUpstreams.get(configured) : undefined
+    if (previous !== undefined) delete next["openai_base_url"]
+    if (modelProvider !== OPENAI_PROVIDER_ID) return next
+    const effective = context?.effective ?? (await this.codex.configRead({ includeLayers: false, cwd }))
+    const base = this.providers.threadConfig(null)
+    const explicit =
+      previous ??
+      next["openai_base_url"] ??
+      base["openai_base_url"] ??
+      effective.config["openai_base_url"] ??
+      this.env["OPENAI_BASE_URL"]
+    const account = context?.account ?? (await this.codex.accountRead({ refreshToken: false }))
+    const chatgpt = account.account?.type === "chatgpt"
+    // An explicit OpenAI base URL overrides the auth-dependent built-in endpoint in Codex.
+    const upstream =
+      typeof explicit === "string" && explicit.length > 0
+        ? explicit
+        : chatgpt
+          ? "https://chatgpt.com/backend-api/codex"
+          : "https://api.openai.com/v1"
+    const local = await this.responsesProxy.route(upstream)
+    this.responsesUpstreams.set(local, upstream)
+    next["openai_base_url"] = local
+    return next
+  }
+
+  private async resolveModelProvider(routing: ProviderRouting = this.providers): Promise<string> {
+    const routed = routing.modelProvider()
+    if (routed) return routed
+    const config = await this.codex.configRead({ includeLayers: false })
+    const provider = config.config["model_provider"]
+    return typeof provider === "string" && provider.length > 0 ? provider : OPENAI_PROVIDER_ID
+  }
+
+  /** Runs a Codex request, replacing a dead-process transport error with a diagnosable one. */
+  private async withCodex<T>(operation: () => Promise<T>): Promise<T> {
+    try {
+      return await operation()
+    } catch (error) {
+      if (error instanceof acp.RequestError || error instanceof TurnStartRejectedError) throw error
+      const exitCode = this.process?.exitCode() ?? null
+      if (exitCode !== null) {
+        const stderr = this.process?.recentStderr() ?? ""
+        throw acp.RequestError.internalError(
+          { exitCode, stderr },
+          exitCode === 3221225781
+            ? "Codex exited: the Visual C++ redistributable is not installed"
+            : `Codex process exited with code ${exitCode}${stderr ? `:\n${stderr}` : ""}`
+        )
+      }
+      throw acp.RequestError.internalError({ details: errorMessage(error) }, errorMessage(error))
+    }
+  }
+
+  /** A thrown error as a Codex-shaped turn error; a lost connection carries the process's stderr tail. */
+  private failureOf(error: unknown): TurnError {
+    const details = error instanceof Error ? (error as { additionalDetails?: unknown }).additionalDetails : undefined
+    return {
+      message: this.describeFailure(error),
+      codexErrorInfo: null,
+      additionalDetails: typeof details === "string" && details.length > 0 ? details : null,
+      misalignment: null
+    }
+  }
+
+  private describeFailure(error: unknown): string {
+    if (error instanceof acp.RequestError) {
+      const details = (error.data as { details?: unknown } | undefined)?.details
+      return typeof details === "string" && details.length > 0 ? details : error.message
+    }
+    return errorMessage(error)
+  }
+
+  private exitHandled = false
+
+  private handleCodexExit(): void {
+    if (this.exitHandled) return
+    this.exitHandled = true
+    this.responsesProxy.close()
+    for (const runtime of this.sessions.values()) {
+      const turn = runtime.session.activeTurn
+      if (!turn || this.completedTurns.get(turn) === turn.turnId) continue
+      const stderr = this.process?.recentStderr() || null
+      // The stop abort wins the race against the synthesized completion below, so the
+      // stderr tail rides on the abort reason too; it is the only diagnostic left.
+      turn.stop.abort(Object.assign(new Error("Connection to Codex was lost"), { additionalDetails: stderr }))
+      turn.resolveStarted(null)
+      if (turn.turnId) {
+        this.codex.failTurn(turn.threadId, turn.turnId, {
+          message: "Connection to Codex was lost",
+          codexErrorInfo: null,
+          additionalDetails: stderr,
+          misalignment: null
+        })
+      }
+    }
+  }
 }
 
 function mcpServerNames(servers: readonly acp.McpServer[]): string[] {
-    return servers.flatMap(server => typeof server.name === "string" ? [sanitizeMcpServerName(server.name)] : []);
+  return servers.flatMap((server) => (typeof server.name === "string" ? [sanitizeMcpServerName(server.name)] : []))
 }
 
 /** `_meta.alwith.expectedConfigRevision` of a prompt, or null when the client did not bind it. */
 function expectedConfigRevisionOf(meta: acp.PromptRequest["_meta"]): number | null {
-    const alwith = (meta as Record<string, unknown> | null | undefined)?.["alwith"] as {expectedConfigRevision?: unknown} | undefined;
-    const expected = alwith?.expectedConfigRevision;
-    if (expected === undefined) return null;
-    if (typeof expected !== "number" || !Number.isInteger(expected)) {
-        throw acp.RequestError.invalidParams({_meta: meta}, "_meta.alwith.expectedConfigRevision must be an integer");
-    }
-    return expected;
+  const alwith = (meta as Record<string, unknown> | null | undefined)?.["alwith"] as
+    { expectedConfigRevision?: unknown } | undefined
+  const expected = alwith?.expectedConfigRevision
+  if (expected === undefined) return null
+  if (typeof expected !== "number" || !Number.isInteger(expected)) {
+    throw acp.RequestError.invalidParams({ _meta: meta }, "_meta.alwith.expectedConfigRevision must be an integer")
+  }
+  return expected
 }
 
 /**
@@ -1922,31 +2598,42 @@ function expectedConfigRevisionOf(meta: acp.PromptRequest["_meta"]): number | nu
  * state frames before the prompt response arrives; the adapter mints one otherwise.
  */
 function requestedMessageId(params: acp.PromptRequest): string | undefined {
-    const alwith = (params._meta as Record<string, unknown> | null | undefined)?.["alwith"] as {messageId?: unknown} | undefined;
-    if (alwith?.messageId === undefined) return undefined;
-    if (typeof alwith.messageId !== "string" || alwith.messageId.length === 0) {
-        throw acp.RequestError.invalidParams(undefined, "_meta.alwith.messageId must be a non-empty string");
-    }
-    return alwith.messageId;
+  const alwith = (params._meta as Record<string, unknown> | null | undefined)?.["alwith"] as
+    { messageId?: unknown } | undefined
+  if (alwith?.messageId === undefined) return undefined
+  if (typeof alwith.messageId !== "string" || alwith.messageId.length === 0) {
+    throw acp.RequestError.invalidParams(undefined, "_meta.alwith.messageId must be a non-empty string")
+  }
+  return alwith.messageId
 }
 
 function agentMessage(messageId: string, text: string): acp.SessionUpdate {
-    return {sessionUpdate: "agent_message_chunk", messageId, content: {type: "text", text}};
+  return { sessionUpdate: "agent_message_chunk", messageId, content: { type: "text", text } }
 }
 
 function usageOf(session: Session): acp.Usage | null {
-    return session.lastUsage ? toAcpUsage(session.lastUsage) : null;
+  return session.lastUsage ? toAcpUsage(session.lastUsage) : null
 }
 
 function interruptedTurn(threadId: string): TurnCompletedNotification {
-    return {
-        threadId,
-        turn: {id: "", rootTurnId: null, items: [], itemsView: "notLoaded", status: "interrupted", error: null, startedAt: null, completedAt: null, durationMs: null},
-    };
+  return {
+    threadId,
+    turn: {
+      id: "",
+      rootTurnId: null,
+      items: [],
+      itemsView: "notLoaded",
+      status: "interrupted",
+      error: null,
+      startedAt: null,
+      completedAt: null,
+      durationMs: null
+    }
+  }
 }
 
 export interface SessionIdParams {
-    sessionId: string;
+  sessionId: string
 }
 
 /**
@@ -1954,107 +2641,120 @@ export interface SessionIdParams {
  * passed through verbatim; only the envelope is checked here, Codex validates the fields.
  */
 export interface SessionRenameParams {
-    sessionId: string;
-    name: string;
+  sessionId: string
+  name: string
 }
 
 /** `_codex/fuzzy_file_search` params: Codex's `fuzzyFileSearch` with an optional cancellation token. */
 export interface FuzzyFileSearchRequest {
-    query: string;
-    roots: string[];
-    cancellationToken: string | null;
+  query: string
+  roots: string[]
+  cancellationToken: string | null
 }
 
 export function parseSessionListParams(raw: unknown): acp.ListSessionsRequest {
-    const params = objectParams<Record<string, unknown>>()(raw);
-    for (const key of ["cwd", "cursor"]) {
-        const value = params[key];
-        if (value !== undefined && value !== null && typeof value !== "string") {
-            throw acp.RequestError.invalidParams({[key]: value}, `${key} must be a string when given`);
-        }
+  const params = objectParams<Record<string, unknown>>()(raw)
+  for (const key of ["cwd", "cursor"]) {
+    const value = params[key]
+    if (value !== undefined && value !== null && typeof value !== "string") {
+      throw acp.RequestError.invalidParams({ [key]: value }, `${key} must be a string when given`)
     }
-    const meta = params["_meta"];
-    if (meta !== undefined && meta !== null && (typeof meta !== "object" || Array.isArray(meta))) {
-        throw acp.RequestError.invalidParams({_meta: meta}, "_meta must be an object when given");
-    }
-    return params as acp.ListSessionsRequest;
+  }
+  const meta = params["_meta"]
+  if (meta !== undefined && meta !== null && (typeof meta !== "object" || Array.isArray(meta))) {
+    throw acp.RequestError.invalidParams({ _meta: meta }, "_meta must be an object when given")
+  }
+  return params as acp.ListSessionsRequest
 }
 
 export function parseSessionRenameParams(raw: unknown): SessionRenameParams {
-    const params = objectParams<{sessionId?: unknown; name?: unknown}>()(raw);
-    if (typeof params.sessionId !== "string" || params.sessionId.length === 0) {
-        throw acp.RequestError.invalidParams({sessionId: params.sessionId}, "sessionId must be a non-empty string");
-    }
-    if (typeof params.name !== "string") throw acp.RequestError.invalidParams({name: params.name}, "name must be a string");
-    return {sessionId: params.sessionId, name: params.name};
+  const params = objectParams<{ sessionId?: unknown; name?: unknown }>()(raw)
+  if (typeof params.sessionId !== "string" || params.sessionId.length === 0) {
+    throw acp.RequestError.invalidParams({ sessionId: params.sessionId }, "sessionId must be a non-empty string")
+  }
+  if (typeof params.name !== "string")
+    throw acp.RequestError.invalidParams({ name: params.name }, "name must be a string")
+  return { sessionId: params.sessionId, name: params.name }
 }
 
 export function parseFuzzyFileSearchParams(raw: unknown): FuzzyFileSearchRequest {
-    const params = objectParams<{query?: unknown; roots?: unknown; cancellationToken?: unknown}>()(raw);
-    if (typeof params.query !== "string") throw acp.RequestError.invalidParams({query: params.query}, "query must be a string");
-    if (!Array.isArray(params.roots) || !params.roots.every(root => typeof root === "string")) {
-        throw acp.RequestError.invalidParams({roots: params.roots}, "roots must be an array of directory paths");
-    }
-    const token = params.cancellationToken;
-    if (token !== undefined && token !== null && typeof token !== "string") {
-        throw acp.RequestError.invalidParams({cancellationToken: token}, "cancellationToken must be a string when given");
-    }
-    return {query: params.query, roots: params.roots as string[], cancellationToken: typeof token === "string" ? token : null};
+  const params = objectParams<{ query?: unknown; roots?: unknown; cancellationToken?: unknown }>()(raw)
+  if (typeof params.query !== "string")
+    throw acp.RequestError.invalidParams({ query: params.query }, "query must be a string")
+  if (!Array.isArray(params.roots) || !params.roots.every((root) => typeof root === "string")) {
+    throw acp.RequestError.invalidParams({ roots: params.roots }, "roots must be an array of directory paths")
+  }
+  const token = params.cancellationToken
+  if (token !== undefined && token !== null && typeof token !== "string") {
+    throw acp.RequestError.invalidParams({ cancellationToken: token }, "cancellationToken must be a string when given")
+  }
+  return {
+    query: params.query,
+    roots: params.roots as string[],
+    cancellationToken: typeof token === "string" ? token : null
+  }
 }
 
 export function objectParams<T extends object>(): (raw: unknown) => T {
-    return raw => {
-        if (raw === undefined || raw === null) return {} as T;
-        if (typeof raw !== "object" || Array.isArray(raw)) {
-            throw acp.RequestError.invalidParams({params: raw}, "expected a params object");
-        }
-        return raw as T;
-    };
+  return (raw) => {
+    if (raw === undefined || raw === null) return {} as T
+    if (typeof raw !== "object" || Array.isArray(raw)) {
+      throw acp.RequestError.invalidParams({ params: raw }, "expected a params object")
+    }
+    return raw as T
+  }
 }
 
 /** `_codex/session_read_state_update` params. */
 export interface SessionReadStateUpdateParams {
-    sessionId: string;
-    operation: "read" | "unread";
-    expectedRevision: string;
+  sessionId: string
+  operation: "read" | "unread"
+  expectedRevision: string
 }
 
 export function parseSessionReadStateUpdateParams(raw: unknown): SessionReadStateUpdateParams {
-    const operation = isJsonObject(raw) ? raw["operation"] : undefined;
-    if (!isJsonObject(raw) || typeof raw["sessionId"] !== "string" || typeof raw["expectedRevision"] !== "string"
-        || (operation !== "read" && operation !== "unread")) {
-        throw acp.RequestError.invalidParams(undefined, "Expected {sessionId, operation: \"read\" | \"unread\", expectedRevision}");
-    }
-    return {sessionId: raw["sessionId"], operation, expectedRevision: raw["expectedRevision"]};
+  const operation = isJsonObject(raw) ? raw["operation"] : undefined
+  if (
+    !isJsonObject(raw) ||
+    typeof raw["sessionId"] !== "string" ||
+    typeof raw["expectedRevision"] !== "string" ||
+    (operation !== "read" && operation !== "unread")
+  ) {
+    throw acp.RequestError.invalidParams(
+      undefined,
+      'Expected {sessionId, operation: "read" | "unread", expectedRevision}'
+    )
+  }
+  return { sessionId: raw["sessionId"], operation, expectedRevision: raw["expectedRevision"] }
 }
 
-export function parsePredictionParams(raw: unknown): {sessionId: string; sourceTurnId: string} {
-    const {sessionId} = parseSessionIdParams(raw);
-    const sourceTurnId = (raw as {sourceTurnId?: unknown}).sourceTurnId;
-    if (typeof sourceTurnId !== "string" || sourceTurnId.length === 0) {
-        throw acp.RequestError.invalidParams(undefined, "Expected {sessionId, sourceTurnId: string}");
-    }
-    return {sessionId, sourceTurnId};
+export function parsePredictionParams(raw: unknown): { sessionId: string; sourceTurnId: string } {
+  const { sessionId } = parseSessionIdParams(raw)
+  const sourceTurnId = (raw as { sourceTurnId?: unknown }).sourceTurnId
+  if (typeof sourceTurnId !== "string" || sourceTurnId.length === 0) {
+    throw acp.RequestError.invalidParams(undefined, "Expected {sessionId, sourceTurnId: string}")
+  }
+  return { sessionId, sourceTurnId }
 }
 
 /** `_codex/session_archive` / `_codex/session_unarchive` params: `{sessionId}`. */
 export function parseSessionIdParams(raw: unknown): SessionIdParams {
-    const sessionId = (raw as {sessionId?: unknown} | null)?.sessionId;
-    if (typeof sessionId !== "string" || sessionId.length === 0) {
-        throw acp.RequestError.invalidParams({params: raw}, "expected {sessionId: string}");
-    }
-    return {sessionId};
+  const sessionId = (raw as { sessionId?: unknown } | null)?.sessionId
+  if (typeof sessionId !== "string" || sessionId.length === 0) {
+    throw acp.RequestError.invalidParams({ params: raw }, "expected {sessionId: string}")
+  }
+  return { sessionId }
 }
 
 /** `session/list` `_meta.codex.archived`: true pages the archive, anything else the live list. */
 function archivedFilter(meta: acp.ListSessionsRequest["_meta"]): boolean {
-    const codex = (meta as {codex?: {archived?: unknown}} | null | undefined)?.codex;
-    return codex?.archived === true;
+  const codex = (meta as { codex?: { archived?: unknown } } | null | undefined)?.codex
+  return codex?.archived === true
 }
 
 export interface SeedMessage {
-    role: "user" | "assistant";
-    text: string;
+  role: "user" | "assistant"
+  text: string
 }
 
 /**
@@ -2062,37 +2762,41 @@ export interface SeedMessage {
  * provider (a thread with no user message has no rollout to resume).
  */
 function providerChangeNote(): JsonValue {
-    return {type: "message", role: "developer", content: [{type: "input_text", text: "The user changed this conversation's model before sending a message."}]};
+  return {
+    type: "message",
+    role: "developer",
+    content: [{ type: "input_text", text: "The user changed this conversation's model before sending a message." }]
+  }
 }
 
 /** A session opened for viewing only: another Codex client holds the thread's writer. */
 function assertWritable(runtime: SessionRuntime): void {
-    if (!runtime.readOnly) return;
-    throw acp.RequestError.invalidRequest({codex: {readOnly: true}}, "Thread is open in another Codex client");
+  if (!runtime.readOnly) return
+  throw acp.RequestError.invalidRequest({ codex: { readOnly: true } }, "Thread is open in another Codex client")
 }
 
 /** What `thread/read` gives a viewing-only session in place of a `thread/resume` response. */
 function readOnlyThread(thread: Thread, cwd: string): ThreadResumeResponse {
-    return {
-        thread,
-        model: thread.model ?? "",
-        modelProvider: thread.modelProvider,
-        serviceTier: null,
-        disabledPluginIds: [],
-        cwd,
-        runtimeWorkspaceRoots: [],
-        instructionSources: [],
-        approvalPolicy: "on-request",
-        approvalsReviewer: "user",
-        sandbox: {type: "readOnly", networkAccess: false},
-        activePermissionProfile: null,
-        reasoningEffort: thread.reasoningEffort,
-        collaborationMode: null,
-        multiAgentMode: "explicitRequestOnly",
-        initialTurnsPage: null,
-        turnsBackwardsCursor: null,
-        itemsBackwardsCursor: null,
-    };
+  return {
+    thread,
+    model: thread.model ?? "",
+    modelProvider: thread.modelProvider,
+    serviceTier: null,
+    disabledPluginIds: [],
+    cwd,
+    runtimeWorkspaceRoots: [],
+    instructionSources: [],
+    approvalPolicy: "on-request",
+    approvalsReviewer: "user",
+    sandbox: { type: "readOnly", networkAccess: false },
+    activePermissionProfile: null,
+    reasoningEffort: thread.reasoningEffort,
+    collaborationMode: null,
+    multiAgentMode: "explicitRequestOnly",
+    initialTurnsPage: null,
+    turnsBackwardsCursor: null,
+    itemsBackwardsCursor: null
+  }
 }
 
 /**
@@ -2100,94 +2804,110 @@ function readOnlyThread(thread: Thread, cwd: string): ThreadResumeResponse {
  * it becomes Codex developer instructions; any other mode or a non-text block is rejected as the
  * protocol requires instead of being treated as append.
  */
-function hostSessionOptions(request: {systemPrompt?: acp.SystemPrompt | null; _meta?: acp.NewSessionRequest["_meta"]}) {
-    const {systemPrompt, _meta: meta} = request;
-    let instructions: string | undefined;
-    if (systemPrompt !== undefined && systemPrompt !== null) {
-        if (systemPrompt.mode !== "append") {
-            throw acp.RequestError.invalidParams({mode: systemPrompt.mode}, "systemPrompt.mode must be \"append\"");
-        }
-        instructions = systemPrompt.content
-            .map(block => {
-                if (block.type !== "text") {
-                    throw acp.RequestError.invalidParams({type: block.type}, "systemPrompt.content only accepts text blocks");
-                }
-                return block.text;
-            })
-            .join("\n\n");
+function hostSessionOptions(request: {
+  systemPrompt?: acp.SystemPrompt | null
+  _meta?: acp.NewSessionRequest["_meta"]
+}) {
+  const { systemPrompt, _meta: meta } = request
+  let instructions: string | undefined
+  if (systemPrompt !== undefined && systemPrompt !== null) {
+    if (systemPrompt.mode !== "append") {
+      throw acp.RequestError.invalidParams({ mode: systemPrompt.mode }, 'systemPrompt.mode must be "append"')
     }
-    const modeId = (meta as {codex?: {mode?: unknown}} | undefined)?.codex?.mode;
-    const mode = typeof modeId === "string" ? findAgentMode(modeId) : undefined;
-    if (modeId !== undefined && !mode) throw acp.RequestError.invalidParams(undefined, "Unknown Codex session mode");
-    return {instructions, mode};
+    instructions = systemPrompt.content
+      .map((block) => {
+        if (block.type !== "text") {
+          throw acp.RequestError.invalidParams({ type: block.type }, "systemPrompt.content only accepts text blocks")
+        }
+        return block.text
+      })
+      .join("\n\n")
+  }
+  const modeId = (meta as { codex?: { mode?: unknown } } | undefined)?.codex?.mode
+  const mode = typeof modeId === "string" ? findAgentMode(modeId) : undefined
+  if (modeId !== undefined && !mode) throw acp.RequestError.invalidParams(undefined, "Unknown Codex session mode")
+  return { instructions, mode }
 }
 
 /** `_meta.alwith.model` on `session/new` / `session/resume` / `session/fork`: the model to open the session with. */
 function requestedModelOf(meta: acp.NewSessionRequest["_meta"]): string | null {
-    const raw = (meta as {alwith?: {model?: unknown}} | null | undefined)?.alwith?.model;
-    return typeof raw === "string" && raw.length > 0 ? raw : null;
+  const raw = (meta as { alwith?: { model?: unknown } } | null | undefined)?.alwith?.model
+  return typeof raw === "string" && raw.length > 0 ? raw : null
 }
 
 /** `session/new` `_meta.codex.seedHistory`: prior conversation to inject as model-visible history. */
 function seedHistoryOf(meta: acp.NewSessionRequest["_meta"]): SeedMessage[] {
-    const raw = (meta as {codex?: {seedHistory?: unknown}} | null | undefined)?.codex?.seedHistory;
-    if (raw === undefined || raw === null) return [];
-    if (!Array.isArray(raw)) throw acp.RequestError.invalidParams({seedHistory: raw}, "seedHistory must be an array of {role, text}");
-    return raw.map((entry, index) => {
-        const role = (entry as {role?: unknown})?.role;
-        const text = (entry as {text?: unknown})?.text;
-        if ((role !== "user" && role !== "assistant") || typeof text !== "string") {
-            throw acp.RequestError.invalidParams({index, entry}, "seedHistory entries are {role: \"user\" | \"assistant\", text: string}");
-        }
-        return {role, text};
-    });
+  const raw = (meta as { codex?: { seedHistory?: unknown } } | null | undefined)?.codex?.seedHistory
+  if (raw === undefined || raw === null) return []
+  if (!Array.isArray(raw))
+    throw acp.RequestError.invalidParams({ seedHistory: raw }, "seedHistory must be an array of {role, text}")
+  return raw.map((entry, index) => {
+    const role = (entry as { role?: unknown })?.role
+    const text = (entry as { text?: unknown })?.text
+    if ((role !== "user" && role !== "assistant") || typeof text !== "string") {
+      throw acp.RequestError.invalidParams(
+        { index, entry },
+        'seedHistory entries are {role: "user" | "assistant", text: string}'
+      )
+    }
+    return { role, text }
+  })
 }
 
 /** Responses API message item for thread/inject_items. */
 function seedItem(message: SeedMessage): JsonValue {
-    return {
-        type: "message",
-        role: message.role,
-        content: [{type: message.role === "user" ? "input_text" : "output_text", text: message.text}],
-    };
+  return {
+    type: "message",
+    role: message.role,
+    content: [{ type: message.role === "user" ? "input_text" : "output_text", text: message.text }]
+  }
 }
 
 /** A single local deadline; late settlement remains observed after timeout. */
 async function within(operation: Promise<unknown>, ms: number): Promise<boolean> {
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    try {
-        return await Promise.race([
-            operation.then(() => true),
-            new Promise<false>(resolve => { timer = setTimeout(() => resolve(false), ms); }),
-        ]);
-    } finally { clearTimeout(timer); }
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([
+      operation.then(() => true),
+      new Promise<false>((resolve) => {
+        timer = setTimeout(() => resolve(false), ms)
+      })
+    ])
+  } finally {
+    clearTimeout(timer)
+  }
 }
 
 function threadLineage(thread: Thread): SessionRuntime["lineage"] {
-    return {nativeSessionId: thread.sessionId, forkedFromId: thread.forkedFromId};
+  return { nativeSessionId: thread.sessionId, forkedFromId: thread.forkedFromId }
 }
 
 function forkTurnId(meta: acp.ForkSessionRequest["_meta"]): string | undefined {
-    const value = (meta as {codex?: {lastTurnId?: unknown}} | null | undefined)?.codex?.lastTurnId;
-    if (value === undefined) return undefined;
-    if (typeof value !== "string" || value.trim().length === 0) {
-        throw acp.RequestError.invalidParams(undefined, "lastTurnId must be a non-empty Codex turn id");
-    }
-    return value;
+  const value = (meta as { codex?: { lastTurnId?: unknown } } | null | undefined)?.codex?.lastTurnId
+  if (value === undefined) return undefined
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw acp.RequestError.invalidParams(undefined, "lastTurnId must be a non-empty Codex turn id")
+  }
+  return value
 }
 
-export type PluginSetEnabledParams = {pluginId: string; enabled: boolean; remotePluginId?: string};
+export type PluginSetEnabledParams = { pluginId: string; enabled: boolean; remotePluginId?: string }
 
 /** Validate the narrow plugin mutation before constructing a TOML key path. */
 export function parsePluginSetEnabledParams(value: unknown): PluginSetEnabledParams {
-    if (typeof value !== "object" || value === null) throw acp.RequestError.invalidParams(undefined, "Expected pluginId and enabled");
-    const params = value as Record<string, unknown>;
-    if (typeof params["pluginId"] !== "string" || !params["pluginId"].trim() || typeof params["enabled"] !== "boolean") {
-        throw acp.RequestError.invalidParams(undefined, "Expected a non-empty pluginId and boolean enabled");
-    }
-    const remotePluginId = params["remotePluginId"];
-    if (remotePluginId !== undefined && (typeof remotePluginId !== "string" || !remotePluginId.trim())) {
-        throw acp.RequestError.invalidParams(undefined, "Expected a non-empty remotePluginId");
-    }
-    return {pluginId: params["pluginId"], enabled: params["enabled"], ...(typeof remotePluginId === "string" ? {remotePluginId} : {})};
+  if (typeof value !== "object" || value === null)
+    throw acp.RequestError.invalidParams(undefined, "Expected pluginId and enabled")
+  const params = value as Record<string, unknown>
+  if (typeof params["pluginId"] !== "string" || !params["pluginId"].trim() || typeof params["enabled"] !== "boolean") {
+    throw acp.RequestError.invalidParams(undefined, "Expected a non-empty pluginId and boolean enabled")
+  }
+  const remotePluginId = params["remotePluginId"]
+  if (remotePluginId !== undefined && (typeof remotePluginId !== "string" || !remotePluginId.trim())) {
+    throw acp.RequestError.invalidParams(undefined, "Expected a non-empty remotePluginId")
+  }
+  return {
+    pluginId: params["pluginId"],
+    enabled: params["enabled"],
+    ...(typeof remotePluginId === "string" ? { remotePluginId } : {})
+  }
 }

@@ -21,16 +21,7 @@
     "max": 4.130291
   },
   "heapSamplesBytes": [
-    61192816,
-    88761736,
-    81771352,
-    115710704,
-    124098368,
-    121493032,
-    127505864,
-    128831032,
-    138418152,
-    165490776
+    61192816, 88761736, 81771352, 115710704, 124098368, 121493032, 127505864, 128831032, 138418152, 165490776
   ],
   "scope": "In-process adapter plus client validation; excludes model/network/stdio latency. Heap samples are observational, without forced GC."
 }

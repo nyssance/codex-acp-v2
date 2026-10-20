@@ -1,1482 +1,2391 @@
-import * as acp from "@agentclientprotocol/sdk/experimental/v2/unstable";
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
-import {pathToFileURL} from "node:url";
-import {describe, expect, it} from "vitest";
-import type {ThreadStartParams, TurnStartParams} from "../app-server/v2";
-import {createTestAgent, CWD, expectRejects, itemCompleted, itemStarted, model, thread, threadResponse, THREAD_ID, turn, turnCompleted, TURN_ID} from "./harness";
+import fs from "node:fs"
+import os from "node:os"
+import path from "node:path"
+import { pathToFileURL } from "node:url"
+
+import * as acp from "@agentclientprotocol/sdk/experimental/v2/unstable"
+import { describe, expect, it } from "vitest"
+
+import type { ThreadStartParams, TurnStartParams } from "../app-server/v2"
+import {
+  createTestAgent,
+  CWD,
+  expectRejects,
+  itemCompleted,
+  itemStarted,
+  model,
+  thread,
+  THREAD_ID,
+  threadResponse,
+  turn,
+  TURN_ID,
+  turnCompleted
+} from "./harness"
 
 describe("host session options", () => {
-    it("passes host instructions and the explicit permission preset to new and resumed threads", async () => {
-        const t = createTestAgent();
-        await t.initialize();
-        const meta = {codex: {mode: "read-only"}};
-        const systemPrompt = {mode: "append" as const, content: [{type: "text" as const, text: "Only edit through Board tools."}]};
-        const created = await t.agent.newSession({cwd: CWD, systemPrompt, _meta: meta});
-        expect(t.codex.lastParams("thread/start")).toMatchObject({developerInstructions: "Only edit through Board tools.", approvalPolicy: "on-request", approvalsReviewer: "user", sandbox: "workspace-write"});
-        await t.agent.closeSession({sessionId: created.sessionId});
-        await t.agent.resumeSession({sessionId: created.sessionId, cwd: CWD, systemPrompt, _meta: meta});
-        expect(t.codex.lastParams("thread/resume")).toMatchObject({developerInstructions: "Only edit through Board tools.", approvalsReviewer: "user"});
-        await expectRejects(t.agent.newSession({cwd: CWD, _meta: {codex: {mode: "invalid"}}}), -32602, "mode");
-        await expectRejects(
-            t.agent.newSession({cwd: CWD, systemPrompt: {mode: "override", content: [{type: "text", text: "x"}]}}),
-            -32602,
-            "systemPrompt.mode",
-        );
-    });
-});
+  it("passes host instructions and the explicit permission preset to new and resumed threads", async () => {
+    const t = createTestAgent()
+    await t.initialize()
+    const meta = { codex: { mode: "read-only" } }
+    const systemPrompt = {
+      mode: "append" as const,
+      content: [{ type: "text" as const, text: "Only edit through Board tools." }]
+    }
+    const created = await t.agent.newSession({ cwd: CWD, systemPrompt, _meta: meta })
+    expect(t.codex.lastParams("thread/start")).toMatchObject({
+      developerInstructions: "Only edit through Board tools.",
+      approvalPolicy: "on-request",
+      approvalsReviewer: "user",
+      sandbox: "workspace-write"
+    })
+    await t.agent.closeSession({ sessionId: created.sessionId })
+    await t.agent.resumeSession({ sessionId: created.sessionId, cwd: CWD, systemPrompt, _meta: meta })
+    expect(t.codex.lastParams("thread/resume")).toMatchObject({
+      developerInstructions: "Only edit through Board tools.",
+      approvalsReviewer: "user"
+    })
+    await expectRejects(t.agent.newSession({ cwd: CWD, _meta: { codex: { mode: "invalid" } } }), -32602, "mode")
+    await expectRejects(
+      t.agent.newSession({ cwd: CWD, systemPrompt: { mode: "override", content: [{ type: "text", text: "x" }] } }),
+      -32602,
+      "systemPrompt.mode"
+    )
+  })
+})
 
 describe("initialize", () => {
-    it("advertises v2 capabilities and auth methods", async () => {
-        const t = createTestAgent();
-        const response = await t.initialize({elicitation: {url: {}, form: {}}});
-        expect(response.protocolVersion).toBe(2);
-        expect(response.info.name).toBe("codex-acp-v2-test");
-        expect(response.capabilities?.session).toEqual({
-            prompt: {image: {}, embeddedContext: {}},
-            mcp: {stdio: {}, http: {}},
-            fork: {},
-            delete: {},
-            additionalDirectories: {},
-            systemPrompt: {},
-        });
-        expect(response.authMethods?.map(method => method.methodId)).toEqual(["api-key", "chat-gpt", "chat-gpt-device-code"]);
-        expect(t.codex.lastParams<{clientInfo: {name: string}}>("initialize").clientInfo.name).toBe("test-client");
-    });
+  it("advertises v2 capabilities and auth methods", async () => {
+    const t = createTestAgent()
+    const response = await t.initialize({ elicitation: { url: {}, form: {} } })
+    expect(response.protocolVersion).toBe(2)
+    expect(response.info.name).toBe("codex-acp-v2-test")
+    expect(response.capabilities?.session).toEqual({
+      prompt: { image: {}, embeddedContext: {} },
+      mcp: { stdio: {}, http: {} },
+      fork: {},
+      delete: {},
+      additionalDirectories: {},
+      systemPrompt: {}
+    })
+    expect(response.authMethods?.map((method) => method.methodId)).toEqual([
+      "api-key",
+      "chat-gpt",
+      "chat-gpt-device-code"
+    ])
+    expect(t.codex.lastParams<{ clientInfo: { name: string } }>("initialize").clientInfo.name).toBe("test-client")
+  })
 
-    it("is idempotent: a re-attached client can initialize again", async () => {
-        const t = createTestAgent();
-        await t.initialize();
-        const again = await t.initialize({elicitation: {form: {}}});
-        expect(again.protocolVersion).toBe(2);
-        expect(t.codex.calls("initialize")).toHaveLength(1);
-    });
+  it("is idempotent: a re-attached client can initialize again", async () => {
+    const t = createTestAgent()
+    await t.initialize()
+    const again = await t.initialize({ elicitation: { form: {} } })
+    expect(again.protocolVersion).toBe(2)
+    expect(t.codex.calls("initialize")).toHaveLength(1)
+  })
 
-    it("omits the device-code method when the client cannot open URLs", async () => {
-        const t = createTestAgent({env: {NO_BROWSER: "1"}});
-        const response = await t.initialize();
-        expect(response.authMethods?.map(method => method.methodId)).toEqual(["api-key"]);
-    });
+  it("omits the device-code method when the client cannot open URLs", async () => {
+    const t = createTestAgent({ env: { NO_BROWSER: "1" } })
+    const response = await t.initialize()
+    expect(response.authMethods?.map((method) => method.methodId)).toEqual(["api-key"])
+  })
 
-    it("rejects other protocol versions", async () => {
-        const t = createTestAgent();
-        await expectRejects(t.agent.initialize({protocolVersion: 1, info: {name: "x", version: "1"}}), -32602, "protocol version");
-    });
+  it("rejects other protocol versions", async () => {
+    const t = createTestAgent()
+    await expectRejects(
+      t.agent.initialize({ protocolVersion: 1, info: { name: "x", version: "1" } }),
+      -32602,
+      "protocol version"
+    )
+  })
 
-    it("gates every session method behind initialize", async () => {
-        const t = createTestAgent();
-        await expectRejects(t.agent.newSession({cwd: CWD}), -32600, "initialize");
-        await expectRejects(t.agent.prompt({sessionId: "s", prompt: []}), -32600, "initialize");
-    });
-});
+  it("gates every session method behind initialize", async () => {
+    const t = createTestAgent()
+    await expectRejects(t.agent.newSession({ cwd: CWD }), -32600, "initialize")
+    await expectRejects(t.agent.prompt({ sessionId: "s", prompt: [] }), -32600, "initialize")
+  })
+})
 
 describe("session/new", () => {
-    it("starts a Codex thread with trusted roots, extra sandbox roots, and MCP servers", async () => {
-        const t = createTestAgent();
-        await t.initialize();
-        const response = await t.agent.newSession({
-            cwd: CWD,
-            additionalDirectories: ["/workspace/lib"],
-            mcpServers: [
-                {type: "stdio", name: "chrome bridge", command: "/usr/bin/bridge", args: ["--x"], env: [{name: "A", value: "1"}]},
-                {type: "http", name: "remote", url: "https://mcp.example.com", headers: [{name: "Authorization", value: "Bearer t"}]},
-            ],
-        });
-        expect(response.sessionId).toBe(THREAD_ID);
-        const params = t.codex.lastParams<ThreadStartParams>("thread/start");
-        expect(params.cwd).toBe(CWD);
-        expect(params.config).toMatchObject({
-            projects: {[CWD]: {trust_level: "trusted"}, "/workspace/lib": {trust_level: "trusted"}},
-            sandbox_workspace_write: {writable_roots: ["/workspace/lib"]},
-            mcp_servers: {
-                chrome_bridge: {command: "/usr/bin/bridge", args: ["--x"], env: {A: "1"}},
-                remote: {url: "https://mcp.example.com", http_headers: {Authorization: "Bearer t"}},
-            },
-        });
-        expect(response.configOptions?.map(option => option.configId)).toEqual(["mode", "model", "effort", "collaboration_mode", "fast_mode"]);
-        const modeOption = response.configOptions?.find(option => option.configId === "mode");
-        expect(modeOption).toMatchObject({category: "mode", type: "select", currentValue: "agent"});
-        const effortOption = response.configOptions?.find(option => option.configId === "effort");
-        expect(effortOption).toMatchObject({category: "thought_level", currentValue: "medium"});
-    });
+  it("starts a Codex thread with trusted roots, extra sandbox roots, and MCP servers", async () => {
+    const t = createTestAgent()
+    await t.initialize()
+    const response = await t.agent.newSession({
+      cwd: CWD,
+      additionalDirectories: ["/workspace/lib"],
+      mcpServers: [
+        {
+          type: "stdio",
+          name: "chrome bridge",
+          command: "/usr/bin/bridge",
+          args: ["--x"],
+          env: [{ name: "A", value: "1" }]
+        },
+        {
+          type: "http",
+          name: "remote",
+          url: "https://mcp.example.com",
+          headers: [{ name: "Authorization", value: "Bearer t" }]
+        }
+      ]
+    })
+    expect(response.sessionId).toBe(THREAD_ID)
+    const params = t.codex.lastParams<ThreadStartParams>("thread/start")
+    expect(params.cwd).toBe(CWD)
+    expect(params.config).toMatchObject({
+      projects: { [CWD]: { trust_level: "trusted" }, "/workspace/lib": { trust_level: "trusted" } },
+      sandbox_workspace_write: { writable_roots: ["/workspace/lib"] },
+      mcp_servers: {
+        chrome_bridge: { command: "/usr/bin/bridge", args: ["--x"], env: { A: "1" } },
+        remote: { url: "https://mcp.example.com", http_headers: { Authorization: "Bearer t" } }
+      }
+    })
+    expect(response.configOptions?.map((option) => option.configId)).toEqual([
+      "mode",
+      "model",
+      "effort",
+      "collaboration_mode",
+      "fast_mode"
+    ])
+    const modeOption = response.configOptions?.find((option) => option.configId === "mode")
+    expect(modeOption).toMatchObject({ category: "mode", type: "select", currentValue: "agent" })
+    const effortOption = response.configOptions?.find((option) => option.configId === "effort")
+    expect(effortOption).toMatchObject({ category: "thought_level", currentValue: "medium" })
+  })
 
-    it("skips client MCP servers that collide with user configuration", async () => {
-        const t = createTestAgent();
-        t.codex.respond("config/read", () => ({config: {mcp_servers: {remote: {url: "x"}}}, origins: {}, layers: []}));
-        await t.initialize();
-        await t.agent.newSession({cwd: CWD, mcpServers: [{type: "http", name: "remote", url: "https://other"}]});
-        const params = t.codex.lastParams<ThreadStartParams>("thread/start");
-        expect(params.config?.["mcp_servers"]).toBeUndefined();
-    });
+  it("skips client MCP servers that collide with user configuration", async () => {
+    const t = createTestAgent()
+    t.codex.respond("config/read", () => ({
+      config: { mcp_servers: { remote: { url: "x" } } },
+      origins: {},
+      layers: []
+    }))
+    await t.initialize()
+    await t.agent.newSession({ cwd: CWD, mcpServers: [{ type: "http", name: "remote", url: "https://other" }] })
+    const params = t.codex.lastParams<ThreadStartParams>("thread/start")
+    expect(params.config?.["mcp_servers"]).toBeUndefined()
+  })
 
-    it("publishes available commands including skills after the session opens", async () => {
-        const t = createTestAgent();
-        t.codex.respond("skills/list", () => ({data: [{cwd: CWD, skills: [{name: "deploy", description: "Deploy", path: "/s", scope: "user", enabled: true, pluginId: null}], errors: []}]}));
-        await t.initialize();
-        await t.agent.newSession({cwd: CWD});
-        await t.settle();
-        const commands = t.client.updatesOf("available_commands_update").at(-1)?.availableCommands.map(command => command.name);
-        expect(commands).toContain("review");
-        expect(commands).toContain("$deploy");
-    });
+  it("publishes available commands including skills after the session opens", async () => {
+    const t = createTestAgent()
+    t.codex.respond("skills/list", () => ({
+      data: [
+        {
+          cwd: CWD,
+          skills: [{ name: "deploy", description: "Deploy", path: "/s", scope: "user", enabled: true, pluginId: null }],
+          errors: []
+        }
+      ]
+    }))
+    await t.initialize()
+    await t.agent.newSession({ cwd: CWD })
+    await t.settle()
+    const commands = t.client
+      .updatesOf("available_commands_update")
+      .at(-1)
+      ?.availableCommands.map((command) => command.name)
+    expect(commands).toContain("review")
+    expect(commands).toContain("$deploy")
+  })
 
-    it("requires authentication and a valid cwd", async () => {
-        const t = createTestAgent();
-        await t.initialize();
-        await expectRejects(t.agent.newSession({cwd: "relative"}), -32602, "absolute");
-        t.codex.respond("account/read", () => ({account: null, requiresOpenaiAuth: true}));
-        await expectRejects(t.agent.newSession({cwd: CWD}), -32000, "Log in");
-    });
+  it("requires authentication and a valid cwd", async () => {
+    const t = createTestAgent()
+    await t.initialize()
+    await expectRejects(t.agent.newSession({ cwd: "relative" }), -32602, "absolute")
+    t.codex.respond("account/read", () => ({ account: null, requiresOpenaiAuth: true }))
+    await expectRejects(t.agent.newSession({ cwd: CWD }), -32000, "Log in")
+  })
 
-    it("reports MCP servers that fail to start as failed tool calls", async () => {
-        const t = createTestAgent();
-        await t.initialize();
-        await t.agent.newSession({cwd: CWD, mcpServers: [{type: "stdio", name: "broken", command: "/bin/false"}]});
-        t.codex.emit({method: "mcpServer/startupStatus/updated", params: {threadId: THREAD_ID, name: "broken", status: "failed", error: "exit 1", failureReason: null}});
-        await t.settle();
-        const failure = t.client.updatesOf("tool_call_update").find(update => update.name === "mcp_startup");
-        expect(failure).toMatchObject({status: "failed", title: "Start MCP server broken"});
-    });
-});
+  it("reports MCP servers that fail to start as failed tool calls", async () => {
+    const t = createTestAgent()
+    await t.initialize()
+    await t.agent.newSession({ cwd: CWD, mcpServers: [{ type: "stdio", name: "broken", command: "/bin/false" }] })
+    t.codex.emit({
+      method: "mcpServer/startupStatus/updated",
+      params: { threadId: THREAD_ID, name: "broken", status: "failed", error: "exit 1", failureReason: null }
+    })
+    await t.settle()
+    const failure = t.client.updatesOf("tool_call_update").find((update) => update.name === "mcp_startup")
+    expect(failure).toMatchObject({ status: "failed", title: "Start MCP server broken" })
+  })
+})
 
 describe("session/prompt", () => {
-    it("acknowledges immediately, streams the turn, and closes it with idle + usage", async () => {
-        const t = createTestAgent();
-        await t.initialize();
-        await t.openSession();
-        const response = await t.agent.prompt({sessionId: THREAD_ID, prompt: [{type: "text", text: "hello"}], _meta: {alwith: {providerId: "codex"}}});
-        expect(response).toEqual({messageId: expect.any(String)});
-        await t.settle();
-        expect(t.client.states()).toEqual(["running"]);
-        const start = t.codex.lastParams<TurnStartParams>("turn/start");
-        // The receipt names the user message before Codex materializes it.
-        expect(start.clientUserMessageId).toBe(response.messageId);
-        expect(start).toMatchObject({
-            threadId: THREAD_ID,
-            input: [{type: "text", text: "hello", text_elements: []}],
-            model: "gpt-5",
-            effort: "medium",
-            approvalPolicy: "on-request",
-            approvalsReviewer: "auto_review",
-            summary: "auto",
-            serviceTier: null,
-        });
+  it("acknowledges immediately, streams the turn, and closes it with idle + usage", async () => {
+    const t = createTestAgent()
+    await t.initialize()
+    await t.openSession()
+    const response = await t.agent.prompt({
+      sessionId: THREAD_ID,
+      prompt: [{ type: "text", text: "hello" }],
+      _meta: { alwith: { providerId: "codex" } }
+    })
+    expect(response).toEqual({ messageId: expect.any(String) })
+    await t.settle()
+    expect(t.client.states()).toEqual(["running"])
+    const start = t.codex.lastParams<TurnStartParams>("turn/start")
+    // The receipt names the user message before Codex materializes it.
+    expect(start.clientUserMessageId).toBe(response.messageId)
+    expect(start).toMatchObject({
+      threadId: THREAD_ID,
+      input: [{ type: "text", text: "hello", text_elements: [] }],
+      model: "gpt-5",
+      effort: "medium",
+      approvalPolicy: "on-request",
+      approvalsReviewer: "auto_review",
+      summary: "auto",
+      serviceTier: null
+    })
 
-        itemStarted(t.codex, {type: "agentMessage", id: "msg-1", text: "", phase: "final_answer", memoryCitation: null, delivery: null, questions: null});
-        t.codex.emit({method: "item/agentMessage/delta", params: {threadId: THREAD_ID, turnId: TURN_ID, itemId: "msg-1", delta: "Hi"}});
-        t.codex.emit({method: "item/agentMessage/delta", params: {threadId: THREAD_ID, turnId: TURN_ID, itemId: "msg-1", delta: " there"}});
-        t.codex.emit({method: "thread/tokenUsage/updated", params: {threadId: THREAD_ID, turnId: TURN_ID, tokenUsage: {
-            total: {totalTokens: 100, inputTokens: 80, cachedInputTokens: 20, cacheWriteInputTokens: 0, outputTokens: 20, reasoningOutputTokens: 5},
-            last: {totalTokens: 100, inputTokens: 80, cachedInputTokens: 20, cacheWriteInputTokens: 0, outputTokens: 20, reasoningOutputTokens: 5},
-            modelContextWindow: 1000,
-        }}});
-        turnCompleted(t.codex);
-        await t.settle();
+    itemStarted(t.codex, {
+      type: "agentMessage",
+      id: "msg-1",
+      text: "",
+      phase: "final_answer",
+      memoryCitation: null,
+      delivery: null,
+      questions: null
+    })
+    t.codex.emit({
+      method: "item/agentMessage/delta",
+      params: { threadId: THREAD_ID, turnId: TURN_ID, itemId: "msg-1", delta: "Hi" }
+    })
+    t.codex.emit({
+      method: "item/agentMessage/delta",
+      params: { threadId: THREAD_ID, turnId: TURN_ID, itemId: "msg-1", delta: " there" }
+    })
+    t.codex.emit({
+      method: "thread/tokenUsage/updated",
+      params: {
+        threadId: THREAD_ID,
+        turnId: TURN_ID,
+        tokenUsage: {
+          total: {
+            totalTokens: 100,
+            inputTokens: 80,
+            cachedInputTokens: 20,
+            cacheWriteInputTokens: 0,
+            outputTokens: 20,
+            reasoningOutputTokens: 5
+          },
+          last: {
+            totalTokens: 100,
+            inputTokens: 80,
+            cachedInputTokens: 20,
+            cacheWriteInputTokens: 0,
+            outputTokens: 20,
+            reasoningOutputTokens: 5
+          },
+          modelContextWindow: 1000
+        }
+      }
+    })
+    turnCompleted(t.codex)
+    await t.settle()
 
-        const chunks = t.client.updatesOf("agent_message_chunk");
-        expect(chunks.map(chunk => (chunk.content as {text: string}).text)).toEqual(["Hi", " there"]);
-        expect(chunks[0]).toMatchObject({messageId: "msg-1", _meta: {codex: {phase: "final_answer"}}});
-        expect(t.client.updatesOf("usage_update")[0]).toMatchObject({used: 100, size: 1000});
-        expect(t.client.updatesOf("session_info_update").at(-1)).toMatchObject({title: "hello"});
-        const idle = t.client.updatesOf("state_update").at(-1);
-        expect(idle).toMatchObject({
-            state: "idle",
-            stopReason: "end_turn",
-            usage: {totalTokens: 100, inputTokens: 60, outputTokens: 20, thoughtTokens: 5, cachedReadTokens: 20, cachedWriteTokens: 0},
-        });
-        expect(t.client.states()).toEqual(["running", "idle"]);
-    });
+    const chunks = t.client.updatesOf("agent_message_chunk")
+    expect(chunks.map((chunk) => (chunk.content as { text: string }).text)).toEqual(["Hi", " there"])
+    expect(chunks[0]).toMatchObject({ messageId: "msg-1", _meta: { codex: { phase: "final_answer" } } })
+    expect(t.client.updatesOf("usage_update")[0]).toMatchObject({ used: 100, size: 1000 })
+    expect(t.client.updatesOf("session_info_update").at(-1)).toMatchObject({ title: "hello" })
+    const idle = t.client.updatesOf("state_update").at(-1)
+    expect(idle).toMatchObject({
+      state: "idle",
+      stopReason: "end_turn",
+      usage: {
+        totalTokens: 100,
+        inputTokens: 60,
+        outputTokens: 20,
+        thoughtTokens: 5,
+        cachedReadTokens: 20,
+        cachedWriteTokens: 0
+      }
+    })
+    expect(t.client.states()).toEqual(["running", "idle"])
+  })
 
-    it("honours a host-named receipt and stamps it on every state frame of that turn", async () => {
-        const t = createTestAgent();
-        const initialized = await t.initialize();
-        await t.openSession();
-        expect(initialized).toMatchObject({capabilities: {_meta: {alwith: {turns: {version: 2}}}}});
-        const response = await t.agent.prompt({sessionId: THREAD_ID, prompt: [{type: "text", text: "hello"}], _meta: {alwith: {messageId: "host-receipt-1"}}});
-        expect(response).toEqual({messageId: "host-receipt-1"});
-        await t.settle();
-        expect(t.codex.lastParams<TurnStartParams>("turn/start").clientUserMessageId).toBe("host-receipt-1");
-        turnCompleted(t.codex);
-        await t.settle();
-        expect(t.client.updatesOf("state_update").map(update => [update.state, (update._meta as {alwith: {messageId: string}}).alwith.messageId]))
-            .toEqual([["running", "host-receipt-1"], ["idle", "host-receipt-1"]]);
-        await expect(t.agent.prompt({sessionId: THREAD_ID, prompt: [{type: "text", text: "x"}], _meta: {alwith: {messageId: ""}}}))
-            .rejects.toMatchObject({code: -32602});
-    });
+  it("honours a host-named receipt and stamps it on every state frame of that turn", async () => {
+    const t = createTestAgent()
+    const initialized = await t.initialize()
+    await t.openSession()
+    expect(initialized).toMatchObject({ capabilities: { _meta: { alwith: { turns: { version: 2 } } } } })
+    const response = await t.agent.prompt({
+      sessionId: THREAD_ID,
+      prompt: [{ type: "text", text: "hello" }],
+      _meta: { alwith: { messageId: "host-receipt-1" } }
+    })
+    expect(response).toEqual({ messageId: "host-receipt-1" })
+    await t.settle()
+    expect(t.codex.lastParams<TurnStartParams>("turn/start").clientUserMessageId).toBe("host-receipt-1")
+    turnCompleted(t.codex)
+    await t.settle()
+    expect(
+      t.client
+        .updatesOf("state_update")
+        .map((update) => [update.state, (update._meta as { alwith: { messageId: string } }).alwith.messageId])
+    ).toEqual([
+      ["running", "host-receipt-1"],
+      ["idle", "host-receipt-1"]
+    ])
+    await expect(
+      t.agent.prompt({
+        sessionId: THREAD_ID,
+        prompt: [{ type: "text", text: "x" }],
+        _meta: { alwith: { messageId: "" } }
+      })
+    ).rejects.toMatchObject({ code: -32602 })
+  })
 
-    it("echoes the prompt's _meta on the user_message under the receipt id, once", async () => {
-        const t = createTestAgent();
-        await t.initialize();
-        await t.openSession();
-        const meta = {alwith: {messageId: "host-receipt-2"}, board: {nodeIds: ["n1", "n2"], skillName: "storyboard"}};
-        await t.agent.prompt({sessionId: THREAD_ID, prompt: [{type: "text", text: "hello"}], _meta: meta});
-        await t.settle();
-        itemStarted(t.codex, {type: "userMessage", id: "u2", clientId: "host-receipt-2", content: [{type: "text", text: "hello", text_elements: []}]});
-        await t.settle();
-        expect(t.client.updatesOf("user_message")[0]).toMatchObject({messageId: "host-receipt-2", _meta: meta});
-        // Codex may report the same item again (history snapshot); the metadata rides the live echo only.
-        itemStarted(t.codex, {type: "userMessage", id: "u2", clientId: "host-receipt-2", content: [{type: "text", text: "hello", text_elements: []}]});
-        await t.settle();
-        expect(t.client.updatesOf("user_message").filter(update => update._meta?.["board"])).toHaveLength(1);
-        expect(t.client.updatesOf("user_message").every(update => update.messageId === "host-receipt-2")).toBe(true);
-        turnCompleted(t.codex);
-        await t.settle();
-    });
+  it("echoes the prompt's _meta on the user_message under the receipt id, once", async () => {
+    const t = createTestAgent()
+    await t.initialize()
+    await t.openSession()
+    const meta = { alwith: { messageId: "host-receipt-2" }, board: { nodeIds: ["n1", "n2"], skillName: "storyboard" } }
+    await t.agent.prompt({ sessionId: THREAD_ID, prompt: [{ type: "text", text: "hello" }], _meta: meta })
+    await t.settle()
+    itemStarted(t.codex, {
+      type: "userMessage",
+      id: "u2",
+      clientId: "host-receipt-2",
+      content: [{ type: "text", text: "hello", text_elements: [] }]
+    })
+    await t.settle()
+    expect(t.client.updatesOf("user_message")[0]).toMatchObject({ messageId: "host-receipt-2", _meta: meta })
+    // Codex may report the same item again (history snapshot); the metadata rides the live echo only.
+    itemStarted(t.codex, {
+      type: "userMessage",
+      id: "u2",
+      clientId: "host-receipt-2",
+      content: [{ type: "text", text: "hello", text_elements: [] }]
+    })
+    await t.settle()
+    expect(t.client.updatesOf("user_message").filter((update) => update._meta?.["board"])).toHaveLength(1)
+    expect(t.client.updatesOf("user_message").every((update) => update.messageId === "host-receipt-2")).toBe(true)
+    turnCompleted(t.codex)
+    await t.settle()
+  })
 
-    it("surfaces a failed turn as an error message and idle with error metadata", async () => {
-        const t = createTestAgent();
-        await t.initialize();
-        await t.openSession();
-        await t.agent.prompt({sessionId: THREAD_ID, prompt: [{type: "text", text: "go"}]});
-        await t.settle();
-        turnCompleted(t.codex, {status: "failed", error: {message: "Rate limited", codexErrorInfo: "rateLimitExceeded", additionalDetails: null, misalignment: null}});
-        await t.settle();
-        const errorChunk = t.client.updatesOf("agent_message_chunk").at(-1);
-        expect(errorChunk).toMatchObject({content: {type: "text", text: "Rate limited"}, _meta: {codex: {error: {codexErrorInfo: "rateLimitExceeded"}}}});
-        expect(t.client.updatesOf("state_update").at(-1)).toMatchObject({state: "idle", stopReason: "error", error: {code: -32603, message: "Rate limited", data: {codex: {category: "rate_limit", retryable: true}}}, _meta: {codex: {error: {message: "Rate limited"}}}});
-    });
+  it("surfaces a failed turn as an error message and idle with error metadata", async () => {
+    const t = createTestAgent()
+    await t.initialize()
+    await t.openSession()
+    await t.agent.prompt({ sessionId: THREAD_ID, prompt: [{ type: "text", text: "go" }] })
+    await t.settle()
+    turnCompleted(t.codex, {
+      status: "failed",
+      error: {
+        message: "Rate limited",
+        codexErrorInfo: "rateLimitExceeded",
+        additionalDetails: null,
+        misalignment: null
+      }
+    })
+    await t.settle()
+    const errorChunk = t.client.updatesOf("agent_message_chunk").at(-1)
+    expect(errorChunk).toMatchObject({
+      content: { type: "text", text: "Rate limited" },
+      _meta: { codex: { error: { codexErrorInfo: "rateLimitExceeded" } } }
+    })
+    expect(t.client.updatesOf("state_update").at(-1)).toMatchObject({
+      state: "idle",
+      stopReason: "error",
+      error: { code: -32603, message: "Rate limited", data: { codex: { category: "rate_limit", retryable: true } } },
+      _meta: { codex: { error: { message: "Rate limited" } } }
+    })
+  })
 
-    it("turns a turn/start failure into an error report instead of a hung session", async () => {
-        const t = createTestAgent();
-        await t.initialize();
-        await t.openSession();
-        t.codex.respond("turn/start", () => {
-            throw new Error("boom");
-        });
-        await t.agent.prompt({sessionId: THREAD_ID, prompt: [{type: "text", text: "go"}]});
-        await t.settle();
-        expect(t.client.states()).toEqual(["running", "idle"]);
-        expect(t.client.updatesOf("agent_message_chunk").at(-1)?.content).toEqual({type: "text", text: "boom"});
-        // the session is usable again
-        t.codex.respond("turn/start", () => ({turn: turn({status: "inProgress"})}));
-        await expect(t.agent.prompt({sessionId: THREAD_ID, prompt: [{type: "text", text: "again"}]})).resolves.toEqual({messageId: expect.any(String)});
-    });
+  it("turns a turn/start failure into an error report instead of a hung session", async () => {
+    const t = createTestAgent()
+    await t.initialize()
+    await t.openSession()
+    t.codex.respond("turn/start", () => {
+      throw new Error("boom")
+    })
+    await t.agent.prompt({ sessionId: THREAD_ID, prompt: [{ type: "text", text: "go" }] })
+    await t.settle()
+    expect(t.client.states()).toEqual(["running", "idle"])
+    expect(t.client.updatesOf("agent_message_chunk").at(-1)?.content).toEqual({ type: "text", text: "boom" })
+    // the session is usable again
+    t.codex.respond("turn/start", () => ({ turn: turn({ status: "inProgress" }) }))
+    await expect(t.agent.prompt({ sessionId: THREAD_ID, prompt: [{ type: "text", text: "again" }] })).resolves.toEqual({
+      messageId: expect.any(String)
+    })
+  })
 
-    it("steers the running turn when a second prompt arrives", async () => {
-        const t = createTestAgent();
-        await t.initialize();
-        await t.openSession();
-        await t.agent.prompt({sessionId: THREAD_ID, prompt: [{type: "text", text: "first"}]});
-        await t.settle();
-        const response = await t.agent.prompt({sessionId: THREAD_ID, prompt: [{type: "text", text: "also this"}]});
-        expect(response).toEqual({messageId: expect.any(String), _meta: {codex: {steered: TURN_ID}}});
-        expect(t.codex.lastParams<{expectedTurnId: string; clientUserMessageId: string; input: unknown[]}>("turn/steer")).toMatchObject({expectedTurnId: TURN_ID, clientUserMessageId: response.messageId, input: [{type: "text", text: "also this"}]});
-    });
+  it("steers the running turn when a second prompt arrives", async () => {
+    const t = createTestAgent()
+    await t.initialize()
+    await t.openSession()
+    await t.agent.prompt({ sessionId: THREAD_ID, prompt: [{ type: "text", text: "first" }] })
+    await t.settle()
+    const response = await t.agent.prompt({ sessionId: THREAD_ID, prompt: [{ type: "text", text: "also this" }] })
+    expect(response).toEqual({ messageId: expect.any(String), _meta: { codex: { steered: TURN_ID } } })
+    expect(
+      t.codex.lastParams<{ expectedTurnId: string; clientUserMessageId: string; input: unknown[] }>("turn/steer")
+    ).toMatchObject({
+      expectedTurnId: TURN_ID,
+      clientUserMessageId: response.messageId,
+      input: [{ type: "text", text: "also this" }]
+    })
+  })
 
-    it("rejects image prompts for text-only models and empty prompts", async () => {
-        const t = createTestAgent({catalog: [model({inputModalities: ["text"]})]});
-        await t.initialize();
-        await t.openSession();
-        await expectRejects(t.agent.prompt({sessionId: THREAD_ID, prompt: []}), -32602, "at least one");
-        await expectRejects(t.agent.prompt({sessionId: THREAD_ID, prompt: [{type: "image", data: "aGk=", mimeType: "image/png"}]}), -32602, "image");
-    });
+  it("rejects image prompts for text-only models and empty prompts", async () => {
+    const t = createTestAgent({ catalog: [model({ inputModalities: ["text"] })] })
+    await t.initialize()
+    await t.openSession()
+    await expectRejects(t.agent.prompt({ sessionId: THREAD_ID, prompt: [] }), -32602, "at least one")
+    await expectRejects(
+      t.agent.prompt({ sessionId: THREAD_ID, prompt: [{ type: "image", data: "aGk=", mimeType: "image/png" }] }),
+      -32602,
+      "image"
+    )
+  })
 
-    it("disables reasoning summaries for API-key accounts and honours fast mode", async () => {
-        const t = createTestAgent();
-        t.codex.respond("account/read", () => ({account: {type: "apiKey"}, requiresOpenaiAuth: true}));
-        await t.initialize();
-        await t.openSession();
-        await t.agent.setSessionConfigOption({sessionId: THREAD_ID, configId: "fast_mode", type: "boolean", value: true});
-        await t.agent.prompt({sessionId: THREAD_ID, prompt: [{type: "text", text: "go"}]});
-        await t.settle();
-        expect(t.codex.lastParams<TurnStartParams>("turn/start")).toMatchObject({summary: "none", serviceTier: "fast"});
-    });
-});
+  it("disables reasoning summaries for API-key accounts and honours fast mode", async () => {
+    const t = createTestAgent()
+    t.codex.respond("account/read", () => ({ account: { type: "apiKey" }, requiresOpenaiAuth: true }))
+    await t.initialize()
+    await t.openSession()
+    await t.agent.setSessionConfigOption({ sessionId: THREAD_ID, configId: "fast_mode", type: "boolean", value: true })
+    await t.agent.prompt({ sessionId: THREAD_ID, prompt: [{ type: "text", text: "go" }] })
+    await t.settle()
+    expect(t.codex.lastParams<TurnStartParams>("turn/start")).toMatchObject({ summary: "none", serviceTier: "fast" })
+  })
+})
 
 describe("session/cancel", () => {
-    it("interrupts the turn, cancels open tool calls, and reports idle with stopReason cancelled", async () => {
-        const t = createTestAgent();
-        await t.initialize();
-        await t.openSession();
-        await t.agent.prompt({sessionId: THREAD_ID, prompt: [{type: "text", text: "long task"}]});
-        await t.settle();
-        itemStarted(t.codex, {type: "commandExecution", id: "c-open", pluginId: null, scriptPath: null, command: "sleep 100", cwd: CWD, processId: null, source: "agent", status: "inProgress", commandActions: [], aggregatedOutput: null, exitCode: null, durationMs: null});
-        itemStarted(t.codex, {type: "commandExecution", id: "c-done", pluginId: null, scriptPath: null, command: "ls", cwd: CWD, processId: null, source: "agent", status: "inProgress", commandActions: [], aggregatedOutput: null, exitCode: null, durationMs: null});
-        itemCompleted(t.codex, {type: "commandExecution", id: "c-done", pluginId: null, scriptPath: null, command: "ls", cwd: CWD, processId: null, source: "agent", status: "completed", commandActions: [], aggregatedOutput: "", exitCode: 0, durationMs: 1});
-        await t.settle();
-        await t.agent.cancel({sessionId: THREAD_ID});
-        expect(t.codex.lastParams<{turnId: string}>("turn/interrupt")).toEqual({threadId: THREAD_ID, turnId: TURN_ID});
-        turnCompleted(t.codex, {status: "interrupted"});
-        await t.settle();
-        expect(t.client.states()).toEqual(["running", "idle"]);
-        const updates = t.client.updates();
-        const cancelledFrames = updates.filter(update => update.sessionUpdate === "tool_call_update" && (update as {status?: string}).status === "cancelled");
-        expect(cancelledFrames.map(update => (update as {toolCallId: string}).toolCallId)).toEqual(["c-open"]);
-        expect(updates.indexOf(cancelledFrames[0]!)).toBeLessThan(updates.length - 1);
-        expect(t.client.updatesOf("state_update").at(-1)).toMatchObject({stopReason: "cancelled"});
-    });
+  it("interrupts the turn, cancels open tool calls, and reports idle with stopReason cancelled", async () => {
+    const t = createTestAgent()
+    await t.initialize()
+    await t.openSession()
+    await t.agent.prompt({ sessionId: THREAD_ID, prompt: [{ type: "text", text: "long task" }] })
+    await t.settle()
+    itemStarted(t.codex, {
+      type: "commandExecution",
+      id: "c-open",
+      pluginId: null,
+      scriptPath: null,
+      command: "sleep 100",
+      cwd: CWD,
+      processId: null,
+      source: "agent",
+      status: "inProgress",
+      commandActions: [],
+      aggregatedOutput: null,
+      exitCode: null,
+      durationMs: null
+    })
+    itemStarted(t.codex, {
+      type: "commandExecution",
+      id: "c-done",
+      pluginId: null,
+      scriptPath: null,
+      command: "ls",
+      cwd: CWD,
+      processId: null,
+      source: "agent",
+      status: "inProgress",
+      commandActions: [],
+      aggregatedOutput: null,
+      exitCode: null,
+      durationMs: null
+    })
+    itemCompleted(t.codex, {
+      type: "commandExecution",
+      id: "c-done",
+      pluginId: null,
+      scriptPath: null,
+      command: "ls",
+      cwd: CWD,
+      processId: null,
+      source: "agent",
+      status: "completed",
+      commandActions: [],
+      aggregatedOutput: "",
+      exitCode: 0,
+      durationMs: 1
+    })
+    await t.settle()
+    await t.agent.cancel({ sessionId: THREAD_ID })
+    expect(t.codex.lastParams<{ turnId: string }>("turn/interrupt")).toEqual({ threadId: THREAD_ID, turnId: TURN_ID })
+    turnCompleted(t.codex, { status: "interrupted" })
+    await t.settle()
+    expect(t.client.states()).toEqual(["running", "idle"])
+    const updates = t.client.updates()
+    const cancelledFrames = updates.filter(
+      (update) => update.sessionUpdate === "tool_call_update" && (update as { status?: string }).status === "cancelled"
+    )
+    expect(cancelledFrames.map((update) => (update as { toolCallId: string }).toolCallId)).toEqual(["c-open"])
+    expect(updates.indexOf(cancelledFrames[0]!)).toBeLessThan(updates.length - 1)
+    expect(t.client.updatesOf("state_update").at(-1)).toMatchObject({ stopReason: "cancelled" })
+  })
 
-    it("waits for turn/start before interrupting when cancelled early", async () => {
-        const t = createTestAgent();
-        let releaseStart: () => void = () => {};
-        t.codex.respond("turn/start", () => new Promise(resolve => {
-            releaseStart = () => resolve({turn: turn({status: "inProgress"})});
-        }));
-        await t.initialize();
-        await t.openSession();
-        await t.agent.prompt({sessionId: THREAD_ID, prompt: [{type: "text", text: "x"}]});
-        await t.settle();
-        expect(t.codex.calls("turn/start")).toHaveLength(1);
-        const cancelled = t.agent.cancel({sessionId: THREAD_ID});
-        await t.settle();
-        expect(t.codex.calls("turn/interrupt")).toHaveLength(0);
-        releaseStart();
-        await cancelled;
-        expect(t.codex.calls("turn/interrupt")).toHaveLength(1);
-        turnCompleted(t.codex, {status: "interrupted"});
-        await t.settle();
-        expect(t.client.updatesOf("state_update").at(-1)).toMatchObject({state: "idle", stopReason: "cancelled"});
-    });
+  it("waits for turn/start before interrupting when cancelled early", async () => {
+    const t = createTestAgent()
+    let releaseStart: () => void = () => {}
+    t.codex.respond(
+      "turn/start",
+      () =>
+        new Promise((resolve) => {
+          releaseStart = () => resolve({ turn: turn({ status: "inProgress" }) })
+        })
+    )
+    await t.initialize()
+    await t.openSession()
+    await t.agent.prompt({ sessionId: THREAD_ID, prompt: [{ type: "text", text: "x" }] })
+    await t.settle()
+    expect(t.codex.calls("turn/start")).toHaveLength(1)
+    const cancelled = t.agent.cancel({ sessionId: THREAD_ID })
+    await t.settle()
+    expect(t.codex.calls("turn/interrupt")).toHaveLength(0)
+    releaseStart()
+    await cancelled
+    expect(t.codex.calls("turn/interrupt")).toHaveLength(1)
+    turnCompleted(t.codex, { status: "interrupted" })
+    await t.settle()
+    expect(t.client.updatesOf("state_update").at(-1)).toMatchObject({ state: "idle", stopReason: "cancelled" })
+  })
 
-    it("never starts the turn when cancelled before turn/start is sent", async () => {
-        const t = createTestAgent();
-        await t.initialize();
-        await t.openSession();
-        // Hold the skills refresh that precedes turn/start so the cancel lands before it.
-        let releaseSkills: () => void = () => {};
-        t.codex.respond("skills/list", () => new Promise(resolve => {
-            releaseSkills = () => resolve({data: []});
-        }));
-        t.codex.emit({method: "skills/changed", params: {}});
-        await t.agent.prompt({sessionId: THREAD_ID, prompt: [{type: "text", text: "x"}]});
-        await t.settle();
-        const cancelled = t.agent.cancel({sessionId: THREAD_ID});
-        releaseSkills();
-        await cancelled;
-        await t.settle();
-        expect(t.codex.calls("turn/start")).toHaveLength(0);
-        expect(t.codex.calls("turn/interrupt")).toHaveLength(0);
-        expect(t.client.updatesOf("state_update").at(-1)).toMatchObject({state: "idle", stopReason: "cancelled"});
-    });
+  it("never starts the turn when cancelled before turn/start is sent", async () => {
+    const t = createTestAgent()
+    await t.initialize()
+    await t.openSession()
+    // Hold the skills refresh that precedes turn/start so the cancel lands before it.
+    let releaseSkills: () => void = () => {}
+    t.codex.respond(
+      "skills/list",
+      () =>
+        new Promise((resolve) => {
+          releaseSkills = () => resolve({ data: [] })
+        })
+    )
+    t.codex.emit({ method: "skills/changed", params: {} })
+    await t.agent.prompt({ sessionId: THREAD_ID, prompt: [{ type: "text", text: "x" }] })
+    await t.settle()
+    const cancelled = t.agent.cancel({ sessionId: THREAD_ID })
+    releaseSkills()
+    await cancelled
+    await t.settle()
+    expect(t.codex.calls("turn/start")).toHaveLength(0)
+    expect(t.codex.calls("turn/interrupt")).toHaveLength(0)
+    expect(t.client.updatesOf("state_update").at(-1)).toMatchObject({ state: "idle", stopReason: "cancelled" })
+  })
 
-    it("is a no-op without an active turn", async () => {
-        const t = createTestAgent();
-        await t.initialize();
-        await t.openSession();
-        await t.agent.cancel({sessionId: THREAD_ID});
-        await t.agent.cancel({sessionId: "unknown"});
-        expect(t.codex.calls("turn/interrupt")).toHaveLength(0);
-    });
-});
+  it("is a no-op without an active turn", async () => {
+    const t = createTestAgent()
+    await t.initialize()
+    await t.openSession()
+    await t.agent.cancel({ sessionId: THREAD_ID })
+    await t.agent.cancel({ sessionId: "unknown" })
+    expect(t.codex.calls("turn/interrupt")).toHaveLength(0)
+  })
+})
 
 describe("session/set_config_option", () => {
-    it("applies model, effort, mode, and fast mode and broadcasts the option list", async () => {
-        const t = createTestAgent({catalog: [model(), model({id: "gpt-5-mini", displayName: "GPT-5 mini", isDefault: false, serviceTiers: [], supportedReasoningEfforts: [{reasoningEffort: "low", description: ""}], defaultReasoningEffort: "low"})]});
-        await t.initialize();
-        await t.openSession();
-        await t.agent.setSessionConfigOption({sessionId: THREAD_ID, configId: "fast_mode", type: "boolean", value: true});
-        const response = await t.agent.setSessionConfigOption({sessionId: THREAD_ID, configId: "model", type: "id", value: "gpt-5-mini"});
-        const byId = Object.fromEntries(response.configOptions.map(option => [option.configId, option]));
-        expect(byId["model"]).toMatchObject({currentValue: "gpt-5-mini"});
-        expect(byId["effort"]).toMatchObject({currentValue: "low"});
-        expect(byId["fast_mode"]).toBeUndefined();
-        expect(t.client.updatesOf("config_option_update")).toHaveLength(2);
-        await t.agent.setSessionConfigOption({sessionId: THREAD_ID, configId: "mode", type: "id", value: "read-only"});
-        await t.agent.prompt({sessionId: THREAD_ID, prompt: [{type: "text", text: "go"}]});
-        await t.settle();
-        expect(t.codex.lastParams<TurnStartParams>("turn/start")).toMatchObject({model: "gpt-5-mini", effort: "low", approvalsReviewer: "user", serviceTier: null});
-    });
+  it("applies model, effort, mode, and fast mode and broadcasts the option list", async () => {
+    const t = createTestAgent({
+      catalog: [
+        model(),
+        model({
+          id: "gpt-5-mini",
+          displayName: "GPT-5 mini",
+          isDefault: false,
+          serviceTiers: [],
+          supportedReasoningEfforts: [{ reasoningEffort: "low", description: "" }],
+          defaultReasoningEffort: "low"
+        })
+      ]
+    })
+    await t.initialize()
+    await t.openSession()
+    await t.agent.setSessionConfigOption({ sessionId: THREAD_ID, configId: "fast_mode", type: "boolean", value: true })
+    const response = await t.agent.setSessionConfigOption({
+      sessionId: THREAD_ID,
+      configId: "model",
+      type: "id",
+      value: "gpt-5-mini"
+    })
+    const byId = Object.fromEntries(response.configOptions.map((option) => [option.configId, option]))
+    expect(byId["model"]).toMatchObject({ currentValue: "gpt-5-mini" })
+    expect(byId["effort"]).toMatchObject({ currentValue: "low" })
+    expect(byId["fast_mode"]).toBeUndefined()
+    expect(t.client.updatesOf("config_option_update")).toHaveLength(2)
+    await t.agent.setSessionConfigOption({ sessionId: THREAD_ID, configId: "mode", type: "id", value: "read-only" })
+    await t.agent.prompt({ sessionId: THREAD_ID, prompt: [{ type: "text", text: "go" }] })
+    await t.settle()
+    expect(t.codex.lastParams<TurnStartParams>("turn/start")).toMatchObject({
+      model: "gpt-5-mini",
+      effort: "low",
+      approvalsReviewer: "user",
+      serviceTier: null
+    })
+  })
 
-    it("pushes collaboration mode to Codex thread settings", async () => {
-        const t = createTestAgent();
-        await t.initialize();
-        await t.openSession();
-        await t.agent.setSessionConfigOption({sessionId: THREAD_ID, configId: "collaboration_mode", type: "id", value: "plan"});
-        expect(t.codex.lastParams<{collaborationMode: {mode: string}}>("thread/settings/update")).toMatchObject({threadId: THREAD_ID, collaborationMode: {mode: "plan"}});
-    });
+  it("pushes collaboration mode to Codex thread settings", async () => {
+    const t = createTestAgent()
+    await t.initialize()
+    await t.openSession()
+    await t.agent.setSessionConfigOption({
+      sessionId: THREAD_ID,
+      configId: "collaboration_mode",
+      type: "id",
+      value: "plan"
+    })
+    expect(t.codex.lastParams<{ collaborationMode: { mode: string } }>("thread/settings/update")).toMatchObject({
+      threadId: THREAD_ID,
+      collaborationMode: { mode: "plan" }
+    })
+  })
 
-    it("rejects unknown options and unsupported values", async () => {
-        const t = createTestAgent();
-        await t.initialize();
-        await t.openSession();
-        await expectRejects(t.agent.setSessionConfigOption({sessionId: THREAD_ID, configId: "nope", type: "id", value: "x"}), -32602, "Unknown config option");
-        await expectRejects(t.agent.setSessionConfigOption({sessionId: THREAD_ID, configId: "effort", type: "id", value: "ultra"}), -32602, "does not support");
-        await expectRejects(t.agent.setSessionConfigOption({sessionId: "missing", configId: "mode", type: "id", value: "agent"}), -32602, "Unknown session");
-    });
-});
+  it("rejects unknown options and unsupported values", async () => {
+    const t = createTestAgent()
+    await t.initialize()
+    await t.openSession()
+    await expectRejects(
+      t.agent.setSessionConfigOption({ sessionId: THREAD_ID, configId: "nope", type: "id", value: "x" }),
+      -32602,
+      "Unknown config option"
+    )
+    await expectRejects(
+      t.agent.setSessionConfigOption({ sessionId: THREAD_ID, configId: "effort", type: "id", value: "ultra" }),
+      -32602,
+      "does not support"
+    )
+    await expectRejects(
+      t.agent.setSessionConfigOption({ sessionId: "missing", configId: "mode", type: "id", value: "agent" }),
+      -32602,
+      "Unknown session"
+    )
+  })
+})
 
 describe("resume, fork, list, close, delete", () => {
-    const history = [
-        {type: "userMessage" as const, id: "u1", clientId: null, content: [{type: "text" as const, text: "make it work", text_elements: []}]},
-        {type: "agentMessage" as const, id: "a1", text: "Done.", phase: "final_answer" as const, memoryCitation: null, delivery: null, questions: null},
-    ];
+  const history = [
+    {
+      type: "userMessage" as const,
+      id: "u1",
+      clientId: null,
+      content: [{ type: "text" as const, text: "make it work", text_elements: [] }]
+    },
+    {
+      type: "agentMessage" as const,
+      id: "a1",
+      text: "Done.",
+      phase: "final_answer" as const,
+      memoryCitation: null,
+      delivery: null,
+      questions: null
+    }
+  ]
 
-    it("replays history before resolving session/resume with replayFrom start", async () => {
-        const t = createTestAgent();
-        t.codex.respond("thread/turns/list", () => ({data: [turn({items: history})], nextCursor: null, backwardsCursor: null}));
-        await t.initialize();
-        const response = await t.agent.resumeSession({sessionId: THREAD_ID, cwd: CWD, replayFrom: {type: "start"}});
-        expect(t.codex.lastParams<{excludeTurns?: boolean}>("thread/resume").excludeTurns).toBe(true);
-        expect(response.configOptions?.length).toBeGreaterThan(0);
-        expect(t.client.updates().filter(update => update.sessionUpdate !== "available_commands_update").map(update => update.sessionUpdate)).toEqual(["session_info_update", "user_message", "agent_message"]);
-        expect(t.client.updatesOf("session_info_update")[0]).toMatchObject({title: "make it work"});
-        expect(t.client.updatesOf("user_message")[0]).toMatchObject({messageId: "u1", content: [{type: "text", text: "make it work"}]});
-    });
+  it("replays history before resolving session/resume with replayFrom start", async () => {
+    const t = createTestAgent()
+    t.codex.respond("thread/turns/list", () => ({
+      data: [turn({ items: history })],
+      nextCursor: null,
+      backwardsCursor: null
+    }))
+    await t.initialize()
+    const response = await t.agent.resumeSession({ sessionId: THREAD_ID, cwd: CWD, replayFrom: { type: "start" } })
+    expect(t.codex.lastParams<{ excludeTurns?: boolean }>("thread/resume").excludeTurns).toBe(true)
+    expect(response.configOptions?.length).toBeGreaterThan(0)
+    expect(
+      t.client
+        .updates()
+        .filter((update) => update.sessionUpdate !== "available_commands_update")
+        .map((update) => update.sessionUpdate)
+    ).toEqual(["session_info_update", "user_message", "agent_message"])
+    expect(t.client.updatesOf("session_info_update")[0]).toMatchObject({ title: "make it work" })
+    expect(t.client.updatesOf("user_message")[0]).toMatchObject({
+      messageId: "u1",
+      content: [{ type: "text", text: "make it work" }]
+    })
+  })
 
-    it("restores context only when replayFrom is null", async () => {
-        const t = createTestAgent();
-        t.codex.respond("thread/resume", (params) => threadResponse({id: params.threadId, name: "Named"}));
-        await t.initialize();
-        await t.agent.resumeSession({sessionId: THREAD_ID, cwd: CWD, replayFrom: null});
-        expect(t.client.updates().filter(update => update.sessionUpdate !== "available_commands_update").map(update => update.sessionUpdate)).toEqual(["session_info_update"]);
-        expect(t.client.updatesOf("session_info_update")[0]).toMatchObject({title: "Named"});
-        expect(t.codex.calls("thread/turns/list")).toHaveLength(0);
-    });
+  it("restores context only when replayFrom is null", async () => {
+    const t = createTestAgent()
+    t.codex.respond("thread/resume", (params) => threadResponse({ id: params.threadId, name: "Named" }))
+    await t.initialize()
+    await t.agent.resumeSession({ sessionId: THREAD_ID, cwd: CWD, replayFrom: null })
+    expect(
+      t.client
+        .updates()
+        .filter((update) => update.sessionUpdate !== "available_commands_update")
+        .map((update) => update.sessionUpdate)
+    ).toEqual(["session_info_update"])
+    expect(t.client.updatesOf("session_info_update")[0]).toMatchObject({ title: "Named" })
+    expect(t.codex.calls("thread/turns/list")).toHaveLength(0)
+  })
 
-    it("forks into a new session and replays the copied transcript", async () => {
-        const t = createTestAgent();
-        t.codex.respond("thread/fork", () => threadResponse({id: "thread-fork"}));
-        t.codex.respond("thread/turns/list", (params) => ({data: params.threadId === "thread-fork" ? [turn({items: history})] : [], nextCursor: null, backwardsCursor: null}));
-        await t.initialize();
-        const response = await t.agent.forkSession({sessionId: THREAD_ID, cwd: CWD});
-        expect(response.sessionId).toBe("thread-fork");
-        expect(t.client.updates().every(update => update.sessionId === "thread-fork")).toBe(true);
-        expect(t.client.updatesOf("agent_message")).toHaveLength(1);
-    });
+  it("forks into a new session and replays the copied transcript", async () => {
+    const t = createTestAgent()
+    t.codex.respond("thread/fork", () => threadResponse({ id: "thread-fork" }))
+    t.codex.respond("thread/turns/list", (params) => ({
+      data: params.threadId === "thread-fork" ? [turn({ items: history })] : [],
+      nextCursor: null,
+      backwardsCursor: null
+    }))
+    await t.initialize()
+    const response = await t.agent.forkSession({ sessionId: THREAD_ID, cwd: CWD })
+    expect(response.sessionId).toBe("thread-fork")
+    expect(t.client.updates().every((update) => update.sessionId === "thread-fork")).toBe(true)
+    expect(t.client.updatesOf("agent_message")).toHaveLength(1)
+  })
 
-    it("streams long histories page by page", async () => {
-        const t = createTestAgent();
-        const pages: Record<string, {data: ReturnType<typeof turn>[]; nextCursor: string | null}> = {
-            first: {data: [turn({id: "t1", items: [history[0]!]})], nextCursor: "c2"},
-            c2: {data: [turn({id: "t2", items: [history[1]!]})], nextCursor: null},
-        };
-        t.codex.respond("thread/turns/list", (params) => ({...pages[params.cursor ?? "first"], backwardsCursor: null}));
-        await t.initialize();
-        await t.agent.resumeSession({sessionId: THREAD_ID, cwd: CWD, replayFrom: {type: "start"}});
-        const calls = t.codex.calls("thread/turns/list").map(call => (call.params as {cursor: string | null; limit: number; sortDirection: string}));
-        expect(calls.map(call => call.cursor)).toEqual([null, "c2"]);
-        expect(calls[0]).toMatchObject({limit: 50, sortDirection: "asc"});
-        expect(t.client.updates().filter(update => update.sessionUpdate !== "available_commands_update").map(update => update.sessionUpdate)).toEqual(["session_info_update", "user_message", "agent_message"]);
-    });
+  it("streams long histories page by page", async () => {
+    const t = createTestAgent()
+    const pages: Record<string, { data: ReturnType<typeof turn>[]; nextCursor: string | null }> = {
+      first: { data: [turn({ id: "t1", items: [history[0]!] })], nextCursor: "c2" },
+      c2: { data: [turn({ id: "t2", items: [history[1]!] })], nextCursor: null }
+    }
+    t.codex.respond("thread/turns/list", (params) => ({ ...pages[params.cursor ?? "first"], backwardsCursor: null }))
+    await t.initialize()
+    await t.agent.resumeSession({ sessionId: THREAD_ID, cwd: CWD, replayFrom: { type: "start" } })
+    const calls = t.codex
+      .calls("thread/turns/list")
+      .map((call) => call.params as { cursor: string | null; limit: number; sortDirection: string })
+    expect(calls.map((call) => call.cursor)).toEqual([null, "c2"])
+    expect(calls[0]).toMatchObject({ limit: 50, sortDirection: "asc" })
+    expect(
+      t.client
+        .updates()
+        .filter((update) => update.sessionUpdate !== "available_commands_update")
+        .map((update) => update.sessionUpdate)
+    ).toEqual(["session_info_update", "user_message", "agent_message"])
+  })
 
-    it("lists sessions as ACP session info", async () => {
-        const t = createTestAgent();
-        t.codex.respond("thread/list", () => ({data: [thread({name: "Alpha"}), thread({id: "t2", preview: "second prompt"})], nextCursor: "c2", backwardsCursor: null}));
-        await t.initialize();
-        const response = await t.agent.listSessions({cwd: CWD});
-        expect(response.sessions).toEqual([
-            {sessionId: THREAD_ID, cwd: CWD, title: "Alpha", updatedAt: new Date(1_700_000_100 * 1000).toISOString(), _meta: {codex: {archived: false, nativeSessionId: THREAD_ID, forkedFromId: null}}},
-            {sessionId: "t2", cwd: CWD, title: "second prompt", updatedAt: new Date(1_700_000_100 * 1000).toISOString(), _meta: {codex: {archived: false, nativeSessionId: THREAD_ID, forkedFromId: null}}},
-        ]);
-        expect(response.nextCursor).toBe("c2");
-        expect(t.codex.lastParams<{cwd: string}>("thread/list").cwd).toBe(CWD);
-    });
+  it("lists sessions as ACP session info", async () => {
+    const t = createTestAgent()
+    t.codex.respond("thread/list", () => ({
+      data: [thread({ name: "Alpha" }), thread({ id: "t2", preview: "second prompt" })],
+      nextCursor: "c2",
+      backwardsCursor: null
+    }))
+    await t.initialize()
+    const response = await t.agent.listSessions({ cwd: CWD })
+    expect(response.sessions).toEqual([
+      {
+        sessionId: THREAD_ID,
+        cwd: CWD,
+        title: "Alpha",
+        updatedAt: new Date(1_700_000_100 * 1000).toISOString(),
+        _meta: { codex: { archived: false, nativeSessionId: THREAD_ID, forkedFromId: null } }
+      },
+      {
+        sessionId: "t2",
+        cwd: CWD,
+        title: "second prompt",
+        updatedAt: new Date(1_700_000_100 * 1000).toISOString(),
+        _meta: { codex: { archived: false, nativeSessionId: THREAD_ID, forkedFromId: null } }
+      }
+    ])
+    expect(response.nextCursor).toBe("c2")
+    expect(t.codex.lastParams<{ cwd: string }>("thread/list").cwd).toBe(CWD)
+  })
 
-    it("close interrupts an active turn, waits for it, and unsubscribes", async () => {
-        const t = createTestAgent();
-        await t.initialize();
-        await t.openSession();
-        await t.agent.prompt({sessionId: THREAD_ID, prompt: [{type: "text", text: "x"}]});
-        await t.settle();
-        t.codex.respond("turn/interrupt", () => {
-            setTimeout(() => turnCompleted(t.codex, {status: "interrupted"}), 0);
-            return {};
-        });
-        await t.agent.closeSession({sessionId: THREAD_ID});
-        expect(t.client.updatesOf("state_update").at(-1)).toMatchObject({state: "idle", stopReason: "cancelled"});
-        expect(t.codex.calls("thread/unsubscribe")).toHaveLength(1);
-        await expectRejects(t.agent.prompt({sessionId: THREAD_ID, prompt: [{type: "text", text: "x"}]}), -32602, "Unknown session");
-    });
+  it("close interrupts an active turn, waits for it, and unsubscribes", async () => {
+    const t = createTestAgent()
+    await t.initialize()
+    await t.openSession()
+    await t.agent.prompt({ sessionId: THREAD_ID, prompt: [{ type: "text", text: "x" }] })
+    await t.settle()
+    t.codex.respond("turn/interrupt", () => {
+      setTimeout(() => turnCompleted(t.codex, { status: "interrupted" }), 0)
+      return {}
+    })
+    await t.agent.closeSession({ sessionId: THREAD_ID })
+    expect(t.client.updatesOf("state_update").at(-1)).toMatchObject({ state: "idle", stopReason: "cancelled" })
+    expect(t.codex.calls("thread/unsubscribe")).toHaveLength(1)
+    await expectRejects(
+      t.agent.prompt({ sessionId: THREAD_ID, prompt: [{ type: "text", text: "x" }] }),
+      -32602,
+      "Unknown session"
+    )
+  })
 
-    it("delete closes and deletes the thread for real (Codex desktop's Delete)", async () => {
-        const t = createTestAgent();
-        await t.initialize();
-        await t.openSession();
-        await t.agent.deleteSession({sessionId: THREAD_ID});
-        expect(t.codex.calls("thread/unsubscribe")).toHaveLength(1);
-        expect(t.codex.lastParams<{threadId: string}>("thread/delete")).toEqual({threadId: THREAD_ID});
-        expect(t.codex.calls("thread/archive")).toHaveLength(0);
-    });
+  it("delete closes and deletes the thread for real (Codex desktop's Delete)", async () => {
+    const t = createTestAgent()
+    await t.initialize()
+    await t.openSession()
+    await t.agent.deleteSession({ sessionId: THREAD_ID })
+    expect(t.codex.calls("thread/unsubscribe")).toHaveLength(1)
+    expect(t.codex.lastParams<{ threadId: string }>("thread/delete")).toEqual({ threadId: THREAD_ID })
+    expect(t.codex.calls("thread/archive")).toHaveLength(0)
+  })
 
-    it("declares the archive extension and archives / unarchives on the _codex/* surface", async () => {
-        const t = createTestAgent();
-        const init = await t.initialize();
-        expect((init.capabilities?._meta as {codex?: {archive?: boolean}})?.codex?.archive).toBe(true);
-        await t.openSession();
-        await t.agent.archiveSession({sessionId: THREAD_ID});
-        expect(t.codex.calls("thread/unsubscribe")).toHaveLength(1);
-        expect(t.codex.lastParams<{threadId: string}>("thread/archive")).toEqual({threadId: THREAD_ID});
-        await t.agent.unarchiveSession({sessionId: THREAD_ID});
-        expect(t.codex.lastParams<{threadId: string}>("thread/unarchive")).toEqual({threadId: THREAD_ID});
-    });
+  it("declares the archive extension and archives / unarchives on the _codex/* surface", async () => {
+    const t = createTestAgent()
+    const init = await t.initialize()
+    expect((init.capabilities?._meta as { codex?: { archive?: boolean } })?.codex?.archive).toBe(true)
+    await t.openSession()
+    await t.agent.archiveSession({ sessionId: THREAD_ID })
+    expect(t.codex.calls("thread/unsubscribe")).toHaveLength(1)
+    expect(t.codex.lastParams<{ threadId: string }>("thread/archive")).toEqual({ threadId: THREAD_ID })
+    await t.agent.unarchiveSession({ sessionId: THREAD_ID })
+    expect(t.codex.lastParams<{ threadId: string }>("thread/unarchive")).toEqual({ threadId: THREAD_ID })
+  })
 
-    it("forwards Codex's durable read state and lets the client update it", async () => {
-        const t = createTestAgent();
-        const init = await t.initialize();
-        expect((init.capabilities?._meta as {codex?: {readState?: boolean}})?.codex?.readState).toBe(true);
-        await t.openSession();
-        const readState = {firstUnread: {type: "turn" as const, turnId: TURN_ID}, revision: "r7"};
-        t.codex.emit({method: "thread/readState/changed", params: {threadId: THREAD_ID, readState}});
-        await t.settle();
-        expect(t.client.updatesOf("session_info_update").at(-1)).toMatchObject({sessionId: THREAD_ID, _meta: {codex: {readState}}});
-        t.codex.respond("thread/readState/update", () => ({readState: {firstUnread: null, revision: "r8"}}));
-        const response = await t.agent.updateSessionReadState({sessionId: THREAD_ID, operation: "read", expectedRevision: "r7"});
-        expect(t.codex.lastParams<unknown>("thread/readState/update")).toEqual({threadId: THREAD_ID, operation: {type: "read"}, expectedRevision: "r7"});
-        expect(response).toEqual({readState: {firstUnread: null, revision: "r8"}});
-    });
+  it("forwards Codex's durable read state and lets the client update it", async () => {
+    const t = createTestAgent()
+    const init = await t.initialize()
+    expect((init.capabilities?._meta as { codex?: { readState?: boolean } })?.codex?.readState).toBe(true)
+    await t.openSession()
+    const readState = { firstUnread: { type: "turn" as const, turnId: TURN_ID }, revision: "r7" }
+    t.codex.emit({ method: "thread/readState/changed", params: { threadId: THREAD_ID, readState } })
+    await t.settle()
+    expect(t.client.updatesOf("session_info_update").at(-1)).toMatchObject({
+      sessionId: THREAD_ID,
+      _meta: { codex: { readState } }
+    })
+    t.codex.respond("thread/readState/update", () => ({ readState: { firstUnread: null, revision: "r8" } }))
+    const response = await t.agent.updateSessionReadState({
+      sessionId: THREAD_ID,
+      operation: "read",
+      expectedRevision: "r7"
+    })
+    expect(t.codex.lastParams<unknown>("thread/readState/update")).toEqual({
+      threadId: THREAD_ID,
+      operation: { type: "read" },
+      expectedRevision: "r7"
+    })
+    expect(response).toEqual({ readState: { firstUnread: null, revision: "r8" } })
+  })
 
-    it("session/new with _meta.codex.seedHistory injects the prior conversation before the first turn", async () => {
-        const t = createTestAgent();
-        const init = await t.initialize();
-        expect((init.capabilities?._meta as {codex?: {seedHistory?: boolean}})?.codex?.seedHistory).toBe(true);
-        await t.openSession({_meta: {codex: {seedHistory: [{role: "user", text: "hello"}, {role: "assistant", text: "hi there"}]}}});
-        expect(t.codex.lastParams<{threadId: string; items: unknown[]}>("thread/inject_items")).toEqual({
-            threadId: THREAD_ID,
-            items: [
-                {type: "message", role: "user", content: [{type: "input_text", text: "hello"}]},
-                {type: "message", role: "assistant", content: [{type: "output_text", text: "hi there"}]},
-            ],
-        });
-        await expectRejects(t.agent.newSession({cwd: CWD, mcpServers: [], _meta: {codex: {seedHistory: [{role: "system", text: "x"}]}}}), -32602, "seedHistory");
-    });
-
-    it("session/list includes sessions across model providers, including the archive", async () => {
-        const t = createTestAgent();
-        t.codex.respond("thread/list", params => ({
-            data: Array.isArray(params.modelProviders) && params.modelProviders.length === 0
-                ? [thread({modelProvider: "custom-gateway"})] : [],
-            nextCursor: null, backwardsCursor: null,
-        }));
-        await t.initialize();
-        for (const archived of [false, true]) {
-            const result = await t.agent.listSessions({_meta: {codex: {archived}}});
-            expect(result.sessions.map(session => session.sessionId)).toEqual([THREAD_ID]);
+  it("session/new with _meta.codex.seedHistory injects the prior conversation before the first turn", async () => {
+    const t = createTestAgent()
+    const init = await t.initialize()
+    expect((init.capabilities?._meta as { codex?: { seedHistory?: boolean } })?.codex?.seedHistory).toBe(true)
+    await t.openSession({
+      _meta: {
+        codex: {
+          seedHistory: [
+            { role: "user", text: "hello" },
+            { role: "assistant", text: "hi there" }
+          ]
         }
-    });
+      }
+    })
+    expect(t.codex.lastParams<{ threadId: string; items: unknown[] }>("thread/inject_items")).toEqual({
+      threadId: THREAD_ID,
+      items: [
+        { type: "message", role: "user", content: [{ type: "input_text", text: "hello" }] },
+        { type: "message", role: "assistant", content: [{ type: "output_text", text: "hi there" }] }
+      ]
+    })
+    await expectRejects(
+      t.agent.newSession({
+        cwd: CWD,
+        mcpServers: [],
+        _meta: { codex: { seedHistory: [{ role: "system", text: "x" }] } }
+      }),
+      -32602,
+      "seedHistory"
+    )
+  })
 
-    it("session/list pages the archive only when _meta.codex.archived is true", async () => {
-        const t = createTestAgent();
-        t.codex.respond("thread/list", () => ({data: [thread()], nextCursor: null, backwardsCursor: null}));
-        await t.initialize();
-        const live = await t.agent.listSessions({});
-        expect(t.codex.lastParams<{archived?: boolean}>("thread/list").archived).toBeUndefined();
-        expect(live.sessions[0]?._meta).toMatchObject({codex: {archived: false}});
-        const archived = await t.agent.listSessions({_meta: {codex: {archived: true}}});
-        expect(t.codex.lastParams<{archived?: boolean}>("thread/list").archived).toBe(true);
-        expect(archived.sessions[0]?._meta).toMatchObject({codex: {archived: true}});
-    });
-});
+  it("session/list includes sessions across model providers, including the archive", async () => {
+    const t = createTestAgent()
+    t.codex.respond("thread/list", (params) => ({
+      data:
+        Array.isArray(params.modelProviders) && params.modelProviders.length === 0
+          ? [thread({ modelProvider: "custom-gateway" })]
+          : [],
+      nextCursor: null,
+      backwardsCursor: null
+    }))
+    await t.initialize()
+    for (const archived of [false, true]) {
+      const result = await t.agent.listSessions({ _meta: { codex: { archived } } })
+      expect(result.sessions.map((session) => session.sessionId)).toEqual([THREAD_ID])
+    }
+  })
+
+  it("session/list pages the archive only when _meta.codex.archived is true", async () => {
+    const t = createTestAgent()
+    t.codex.respond("thread/list", () => ({ data: [thread()], nextCursor: null, backwardsCursor: null }))
+    await t.initialize()
+    const live = await t.agent.listSessions({})
+    expect(t.codex.lastParams<{ archived?: boolean }>("thread/list").archived).toBeUndefined()
+    expect(live.sessions[0]?._meta).toMatchObject({ codex: { archived: false } })
+    const archived = await t.agent.listSessions({ _meta: { codex: { archived: true } } })
+    expect(t.codex.lastParams<{ archived?: boolean }>("thread/list").archived).toBe(true)
+    expect(archived.sessions[0]?._meta).toMatchObject({ codex: { archived: true } })
+  })
+})
 
 describe("skills and plugins", () => {
-    it("declares the extension and passes skills requests through to Codex", async () => {
-        const t = createTestAgent();
-        const init = await t.initialize();
-        const meta = init.capabilities?._meta as {codex?: {skills?: boolean; plugins?: boolean}};
-        expect(meta.codex?.skills).toBe(true);
-        expect(meta.codex?.plugins).toBe(true);
-        const listed = {data: [{cwd: CWD, skills: [{name: "review", description: "Review code", path: "/skills/review", scope: "user", enabled: true}], errors: []}]};
-        t.codex.respond("skills/list", () => listed);
-        t.codex.respond("skills/config/write", () => ({effectiveEnabled: false}));
-        expect(await t.agent.skillsList({cwds: [CWD], forceReload: true})).toEqual(listed);
-        expect(t.codex.lastParams("skills/list")).toEqual({cwds: [CWD], forceReload: true});
-        expect(await t.agent.skillsConfigWrite({name: "review", enabled: false})).toEqual({effectiveEnabled: false});
-        expect(t.codex.lastParams("skills/config/write")).toEqual({name: "review", enabled: false});
-        await t.settle();
-        expect(t.client.notifications.filter(entry => entry.method === "_codex/skills_changed")).toHaveLength(1);
-    });
+  it("declares the extension and passes skills requests through to Codex", async () => {
+    const t = createTestAgent()
+    const init = await t.initialize()
+    const meta = init.capabilities?._meta as { codex?: { skills?: boolean; plugins?: boolean } }
+    expect(meta.codex?.skills).toBe(true)
+    expect(meta.codex?.plugins).toBe(true)
+    const listed = {
+      data: [
+        {
+          cwd: CWD,
+          skills: [
+            { name: "review", description: "Review code", path: "/skills/review", scope: "user", enabled: true }
+          ],
+          errors: []
+        }
+      ]
+    }
+    t.codex.respond("skills/list", () => listed)
+    t.codex.respond("skills/config/write", () => ({ effectiveEnabled: false }))
+    expect(await t.agent.skillsList({ cwds: [CWD], forceReload: true })).toEqual(listed)
+    expect(t.codex.lastParams("skills/list")).toEqual({ cwds: [CWD], forceReload: true })
+    expect(await t.agent.skillsConfigWrite({ name: "review", enabled: false })).toEqual({ effectiveEnabled: false })
+    expect(t.codex.lastParams("skills/config/write")).toEqual({ name: "review", enabled: false })
+    await t.settle()
+    expect(t.client.notifications.filter((entry) => entry.method === "_codex/skills_changed")).toHaveLength(1)
+  })
 
-    it("passes plugin catalog and install requests through and signals a skills change after mutations", async () => {
-        const t = createTestAgent();
-        await t.initialize();
-        const catalog = {marketplaces: [], marketplaceLoadErrors: [], featuredPluginIds: ["p1"]};
-        const installed = {marketplaces: [], marketplaceLoadErrors: []};
-        t.codex.respond("plugin/list", () => catalog);
-        t.codex.respond("plugin/installed", () => installed);
-        t.codex.respond("plugin/install", () => ({authPolicy: "none", appsNeedingAuth: []}));
-        t.codex.respond("plugin/uninstall", () => ({}));
-        t.codex.respond("plugin/read", () => ({plugin: {id: "p1", name: "One"}}));
-        expect(await t.agent.pluginList({forceRefetch: true})).toEqual(catalog);
-        expect(t.codex.lastParams("plugin/list")).toEqual({forceRefetch: true});
-        expect(await t.agent.pluginInstalled({cwds: [CWD]})).toEqual(installed);
-        expect(await t.agent.pluginInstall({pluginName: "one", remoteMarketplaceName: "official"})).toEqual({authPolicy: "none", appsNeedingAuth: []});
-        expect(t.codex.lastParams("plugin/install")).toEqual({pluginName: "one", remoteMarketplaceName: "official"});
-        expect(await t.agent.pluginUninstall({pluginId: "p1"})).toEqual({});
-        expect(t.codex.lastParams("plugin/uninstall")).toEqual({pluginId: "p1"});
-        expect(await t.agent.pluginRead({pluginName: "one"})).toEqual({plugin: {id: "p1", name: "One"}});
-        await t.settle();
-        expect(t.client.notifications.filter(entry => entry.method === "_codex/skills_changed")).toHaveLength(2);
-    });
+  it("passes plugin catalog and install requests through and signals a skills change after mutations", async () => {
+    const t = createTestAgent()
+    await t.initialize()
+    const catalog = { marketplaces: [], marketplaceLoadErrors: [], featuredPluginIds: ["p1"] }
+    const installed = { marketplaces: [], marketplaceLoadErrors: [] }
+    t.codex.respond("plugin/list", () => catalog)
+    t.codex.respond("plugin/installed", () => installed)
+    t.codex.respond("plugin/install", () => ({ authPolicy: "none", appsNeedingAuth: [] }))
+    t.codex.respond("plugin/uninstall", () => ({}))
+    t.codex.respond("plugin/read", () => ({ plugin: { id: "p1", name: "One" } }))
+    expect(await t.agent.pluginList({ forceRefetch: true })).toEqual(catalog)
+    expect(t.codex.lastParams("plugin/list")).toEqual({ forceRefetch: true })
+    expect(await t.agent.pluginInstalled({ cwds: [CWD] })).toEqual(installed)
+    expect(await t.agent.pluginInstall({ pluginName: "one", remoteMarketplaceName: "official" })).toEqual({
+      authPolicy: "none",
+      appsNeedingAuth: []
+    })
+    expect(t.codex.lastParams("plugin/install")).toEqual({ pluginName: "one", remoteMarketplaceName: "official" })
+    expect(await t.agent.pluginUninstall({ pluginId: "p1" })).toEqual({})
+    expect(t.codex.lastParams("plugin/uninstall")).toEqual({ pluginId: "p1" })
+    expect(await t.agent.pluginRead({ pluginName: "one" })).toEqual({ plugin: { id: "p1", name: "One" } })
+    await t.settle()
+    expect(t.client.notifications.filter((entry) => entry.method === "_codex/skills_changed")).toHaveLength(2)
+  })
 
-    it("passes marketplace requests through and forwards Codex skills/changed", async () => {
-        const t = createTestAgent();
-        await t.initialize();
-        t.codex.respond("marketplace/add", () => ({marketplaceName: "acme", installedRoot: "/plugins/acme", alreadyAdded: false}));
-        t.codex.respond("marketplace/remove", () => ({}));
-        t.codex.respond("marketplace/upgrade", () => ({selectedMarketplaces: ["acme"], upgradedRoots: [], errors: []}));
-        expect(await t.agent.marketplaceAdd({source: "github:acme/plugins"})).toMatchObject({marketplaceName: "acme"});
-        expect(t.codex.lastParams("marketplace/add")).toEqual({source: "github:acme/plugins"});
-        expect(await t.agent.marketplaceUpgrade({marketplaceName: "acme"})).toMatchObject({selectedMarketplaces: ["acme"]});
-        expect(await t.agent.marketplaceRemove({marketplaceName: "acme"})).toEqual({});
-        await t.settle();
-        const changes = () => t.client.notifications.filter(entry => entry.method === "_codex/skills_changed").length;
-        expect(changes()).toBe(3);
-        t.codex.emit({method: "skills/changed", params: {}});
-        await t.settle();
-        expect(changes()).toBe(4);
-    });
+  it("passes marketplace requests through and forwards Codex skills/changed", async () => {
+    const t = createTestAgent()
+    await t.initialize()
+    t.codex.respond("marketplace/add", () => ({
+      marketplaceName: "acme",
+      installedRoot: "/plugins/acme",
+      alreadyAdded: false
+    }))
+    t.codex.respond("marketplace/remove", () => ({}))
+    t.codex.respond("marketplace/upgrade", () => ({ selectedMarketplaces: ["acme"], upgradedRoots: [], errors: [] }))
+    expect(await t.agent.marketplaceAdd({ source: "github:acme/plugins" })).toMatchObject({ marketplaceName: "acme" })
+    expect(t.codex.lastParams("marketplace/add")).toEqual({ source: "github:acme/plugins" })
+    expect(await t.agent.marketplaceUpgrade({ marketplaceName: "acme" })).toMatchObject({
+      selectedMarketplaces: ["acme"]
+    })
+    expect(await t.agent.marketplaceRemove({ marketplaceName: "acme" })).toEqual({})
+    await t.settle()
+    const changes = () => t.client.notifications.filter((entry) => entry.method === "_codex/skills_changed").length
+    expect(changes()).toBe(3)
+    t.codex.emit({ method: "skills/changed", params: {} })
+    await t.settle()
+    expect(changes()).toBe(4)
+  })
 
-    it("rejects skills and plugin requests before initialize and propagates Codex errors", async () => {
-        const t = createTestAgent();
-        await expectRejects(t.agent.pluginList({}), -32600);
-        await t.initialize();
-        t.codex.respond("plugin/install", () => { throw new Error("marketplace unreachable"); });
-        await expect(t.agent.pluginInstall({pluginName: "one"})).rejects.toThrow("marketplace unreachable");
-        await t.settle();
-        expect(t.client.notifications.filter(entry => entry.method === "_codex/skills_changed")).toHaveLength(0);
-    });
-});
+  it("rejects skills and plugin requests before initialize and propagates Codex errors", async () => {
+    const t = createTestAgent()
+    await expectRejects(t.agent.pluginList({}), -32600)
+    await t.initialize()
+    t.codex.respond("plugin/install", () => {
+      throw new Error("marketplace unreachable")
+    })
+    await expect(t.agent.pluginInstall({ pluginName: "one" })).rejects.toThrow("marketplace unreachable")
+    await t.settle()
+    expect(t.client.notifications.filter((entry) => entry.method === "_codex/skills_changed")).toHaveLength(0)
+  })
+})
 
 describe("auth", () => {
-    it("logs in with an API key from the environment", async () => {
-        const t = createTestAgent({env: {CODEX_API_KEY: "sk-test"}});
-        t.codex.respond("account/login/start", () => {
-            setTimeout(() => t.codex.emit({method: "account/login/completed", params: {loginId: null, success: true, error: null, onboardingEntrypoint: null}}), 0);
-            return {type: "apiKey"};
-        });
-        await t.initialize();
-        await expect(t.agent.login({methodId: "api-key"})).resolves.toEqual({});
-        expect(t.codex.lastParams<{type: string; apiKey: string}>("account/login/start")).toEqual({type: "apiKey", apiKey: "sk-test"});
-    });
+  it("logs in with an API key from the environment", async () => {
+    const t = createTestAgent({ env: { CODEX_API_KEY: "sk-test" } })
+    t.codex.respond("account/login/start", () => {
+      setTimeout(
+        () =>
+          t.codex.emit({
+            method: "account/login/completed",
+            params: { loginId: null, success: true, error: null, onboardingEntrypoint: null }
+          }),
+        0
+      )
+      return { type: "apiKey" }
+    })
+    await t.initialize()
+    await expect(t.agent.login({ methodId: "api-key" })).resolves.toEqual({})
+    expect(t.codex.lastParams<{ type: string; apiKey: string }>("account/login/start")).toEqual({
+      type: "apiKey",
+      apiKey: "sk-test"
+    })
+  })
 
-    it("reports a missing API key as invalid params and unknown methods explicitly", async () => {
-        const t = createTestAgent();
-        await t.initialize();
-        await expectRejects(t.agent.login({methodId: "api-key"}), -32602, "No API key");
-        await expectRejects(t.agent.login({methodId: "magic"}), -32602, "Unknown auth method");
-    });
+  it("reports a missing API key as invalid params and unknown methods explicitly", async () => {
+    const t = createTestAgent()
+    await t.initialize()
+    await expectRejects(t.agent.login({ methodId: "api-key" }), -32602, "No API key")
+    await expectRejects(t.agent.login({ methodId: "magic" }), -32602, "Unknown auth method")
+  })
 
-    it("logs out and refreshes the account on open sessions", async () => {
-        const t = createTestAgent();
-        await t.initialize();
-        await t.openSession();
-        t.codex.respond("account/logout", () => {
-            setTimeout(() => t.codex.emit({method: "account/updated", params: {authMode: null, planType: null}}), 0);
-            return {};
-        });
-        t.codex.respond("account/read", () => ({account: null, requiresOpenaiAuth: true}));
-        await expect(t.agent.logout({})).resolves.toEqual({});
-        expect(t.codex.calls("account/logout")).toHaveLength(1);
-    });
-});
+  it("logs out and refreshes the account on open sessions", async () => {
+    const t = createTestAgent()
+    await t.initialize()
+    await t.openSession()
+    t.codex.respond("account/logout", () => {
+      setTimeout(() => t.codex.emit({ method: "account/updated", params: { authMode: null, planType: null } }), 0)
+      return {}
+    })
+    t.codex.respond("account/read", () => ({ account: null, requiresOpenaiAuth: true }))
+    await expect(t.agent.logout({})).resolves.toEqual({})
+    expect(t.codex.calls("account/logout")).toHaveLength(1)
+  })
+})
 
 describe("slash commands", () => {
-    it("answers /status locally without starting a turn", async () => {
-        const t = createTestAgent();
-        await t.initialize();
-        await t.openSession();
-        await t.agent.prompt({sessionId: THREAD_ID, prompt: [{type: "text", text: "/status"}]});
-        await t.settle();
-        expect(t.codex.calls("turn/start")).toHaveLength(0);
-        const text = (t.client.updatesOf("agent_message_chunk")[0]?.content as {text: string}).text;
-        expect(text).toContain("**Model:** gpt-5 (medium)");
-        expect(t.client.states()).toEqual(["running", "idle"]);
-    });
+  it("answers /status locally without starting a turn", async () => {
+    const t = createTestAgent()
+    await t.initialize()
+    await t.openSession()
+    await t.agent.prompt({ sessionId: THREAD_ID, prompt: [{ type: "text", text: "/status" }] })
+    await t.settle()
+    expect(t.codex.calls("turn/start")).toHaveLength(0)
+    const text = (t.client.updatesOf("agent_message_chunk")[0]?.content as { text: string }).text
+    expect(text).toContain("**Model:** gpt-5 (medium)")
+    expect(t.client.states()).toEqual(["running", "idle"])
+  })
 
-    it("toggles plan mode with /plan", async () => {
-        const t = createTestAgent();
-        await t.initialize();
-        await t.openSession();
-        await t.agent.prompt({sessionId: THREAD_ID, prompt: [{type: "text", text: "/plan"}]});
-        await t.settle();
-        expect(t.codex.lastParams<{collaborationMode: {mode: string}}>("thread/settings/update").collaborationMode.mode).toBe("plan");
-        expect(t.client.updatesOf("config_option_update").at(-1)?.configOptions.find(option => option.configId === "collaboration_mode")).toMatchObject({currentValue: "plan"});
-    });
+  it("toggles plan mode with /plan", async () => {
+    const t = createTestAgent()
+    await t.initialize()
+    await t.openSession()
+    await t.agent.prompt({ sessionId: THREAD_ID, prompt: [{ type: "text", text: "/plan" }] })
+    await t.settle()
+    expect(
+      t.codex.lastParams<{ collaborationMode: { mode: string } }>("thread/settings/update").collaborationMode.mode
+    ).toBe("plan")
+    expect(
+      t.client
+        .updatesOf("config_option_update")
+        .at(-1)
+        ?.configOptions.find((option) => option.configId === "collaboration_mode")
+    ).toMatchObject({ currentValue: "plan" })
+  })
 
-    it("runs /compact and waits for the compaction item", async () => {
-        const t = createTestAgent();
-        await t.initialize();
-        await t.openSession();
-        t.codex.respond("thread/compact/start", () => {
-            setTimeout(() => itemCompleted(t.codex, {type: "contextCompaction", id: "c1"}), 0);
-            return {};
-        });
-        await t.agent.prompt({sessionId: THREAD_ID, prompt: [{type: "text", text: "/compact"}]});
-        await t.settle();
-        expect(t.client.updatesOf("compaction_update").at(-1)).toMatchObject({sessionUpdate: "compaction_update", compactionId: "c1", status: "completed"});
-        expect(t.client.states()).toEqual(["running", "idle"]);
-    });
+  it("runs /compact and waits for the compaction item", async () => {
+    const t = createTestAgent()
+    await t.initialize()
+    await t.openSession()
+    t.codex.respond("thread/compact/start", () => {
+      setTimeout(() => itemCompleted(t.codex, { type: "contextCompaction", id: "c1" }), 0)
+      return {}
+    })
+    await t.agent.prompt({ sessionId: THREAD_ID, prompt: [{ type: "text", text: "/compact" }] })
+    await t.settle()
+    expect(t.client.updatesOf("compaction_update").at(-1)).toMatchObject({
+      sessionUpdate: "compaction_update",
+      compactionId: "c1",
+      status: "completed"
+    })
+    expect(t.client.states()).toEqual(["running", "idle"])
+  })
 
-    it("passes unknown slash commands to Codex as prompts", async () => {
-        const t = createTestAgent();
-        await t.initialize();
-        await t.openSession();
-        await t.agent.prompt({sessionId: THREAD_ID, prompt: [{type: "text", text: "/mystery do it"}]});
-        await t.settle();
-        expect(t.codex.lastParams<TurnStartParams>("turn/start").input).toEqual([{type: "text", text: "/mystery do it", text_elements: []}]);
-    });
-});
+  it("passes unknown slash commands to Codex as prompts", async () => {
+    const t = createTestAgent()
+    await t.initialize()
+    await t.openSession()
+    await t.agent.prompt({ sessionId: THREAD_ID, prompt: [{ type: "text", text: "/mystery do it" }] })
+    await t.settle()
+    expect(t.codex.lastParams<TurnStartParams>("turn/start").input).toEqual([
+      { type: "text", text: "/mystery do it", text_elements: [] }
+    ])
+  })
+})
 
 describe("plan mode", () => {
-    it("asks to implement a completed plan and runs the implementation turn on approval", async () => {
-        const t = createTestAgent();
-        await t.initialize();
-        await t.openSession();
-        await t.agent.setSessionConfigOption({sessionId: THREAD_ID, configId: "collaboration_mode", type: "id", value: "plan"});
-        t.client.clear();
-        t.client.permissionResponder = () => ({outcome: {outcome: "selected", optionId: "implement_plan"}});
-        let starts = 0;
-        t.codex.respond("turn/start", () => ({turn: turn({id: `turn-${++starts}`, status: "inProgress"})}));
-        await t.agent.prompt({sessionId: THREAD_ID, prompt: [{type: "text", text: "plan it"}]});
-        await t.settle();
-        itemCompleted(t.codex, {type: "plan", id: "plan-1", text: "1. do x"}, "turn-1");
-        t.codex.emit({method: "turn/completed", params: {threadId: THREAD_ID, turn: turn({id: "turn-1"})}});
-        await t.settle();
-        const request = t.client.permissionRequests()[0];
-        expect(request).toMatchObject({title: "Implement this plan?", subject: {type: "tool_call", toolCall: {kind: "switch_mode", rawInput: {plan: "1. do x"}}}});
-        expect(t.client.updatesOf("tool_call_update").find(update => update.toolCallId === "plan-review:plan-1"))
-            .toMatchObject({name: "plan_review", title: "Implement this plan?", kind: "switch_mode", status: "pending"});
-        expect(t.client.updatesOf("plan_update")[0]).toMatchObject({plan: {type: "markdown", planId: "plan-1", content: "1. do x"}});
-        expect(starts).toBe(2);
-        expect(t.codex.lastParams<TurnStartParams>("turn/start").input).toEqual([{type: "text", text: "Implement the approved plan.", text_elements: []}]);
-        t.codex.emit({method: "turn/completed", params: {threadId: THREAD_ID, turn: turn({id: "turn-2"})}});
-        await t.settle();
-        expect(t.client.states()).toEqual(["running", "requires_action", "running", "idle"]);
-        expect(t.client.updatesOf("config_option_update").at(-1)?.configOptions.find(option => option.configId === "collaboration_mode")).toMatchObject({currentValue: "default"});
-    });
-});
+  it("asks to implement a completed plan and runs the implementation turn on approval", async () => {
+    const t = createTestAgent()
+    await t.initialize()
+    await t.openSession()
+    await t.agent.setSessionConfigOption({
+      sessionId: THREAD_ID,
+      configId: "collaboration_mode",
+      type: "id",
+      value: "plan"
+    })
+    t.client.clear()
+    t.client.permissionResponder = () => ({ outcome: { outcome: "selected", optionId: "implement_plan" } })
+    let starts = 0
+    t.codex.respond("turn/start", () => ({ turn: turn({ id: `turn-${++starts}`, status: "inProgress" }) }))
+    await t.agent.prompt({ sessionId: THREAD_ID, prompt: [{ type: "text", text: "plan it" }] })
+    await t.settle()
+    itemCompleted(t.codex, { type: "plan", id: "plan-1", text: "1. do x" }, "turn-1")
+    t.codex.emit({ method: "turn/completed", params: { threadId: THREAD_ID, turn: turn({ id: "turn-1" }) } })
+    await t.settle()
+    const request = t.client.permissionRequests()[0]
+    expect(request).toMatchObject({
+      title: "Implement this plan?",
+      subject: { type: "tool_call", toolCall: { kind: "switch_mode", rawInput: { plan: "1. do x" } } }
+    })
+    expect(
+      t.client.updatesOf("tool_call_update").find((update) => update.toolCallId === "plan-review:plan-1")
+    ).toMatchObject({ name: "plan_review", title: "Implement this plan?", kind: "switch_mode", status: "pending" })
+    expect(t.client.updatesOf("plan_update")[0]).toMatchObject({
+      plan: { type: "markdown", planId: "plan-1", content: "1. do x" }
+    })
+    expect(starts).toBe(2)
+    expect(t.codex.lastParams<TurnStartParams>("turn/start").input).toEqual([
+      { type: "text", text: "Implement the approved plan.", text_elements: [] }
+    ])
+    t.codex.emit({ method: "turn/completed", params: { threadId: THREAD_ID, turn: turn({ id: "turn-2" }) } })
+    await t.settle()
+    expect(t.client.states()).toEqual(["running", "requires_action", "running", "idle"])
+    expect(
+      t.client
+        .updatesOf("config_option_update")
+        .at(-1)
+        ?.configOptions.find((option) => option.configId === "collaboration_mode")
+    ).toMatchObject({ currentValue: "default" })
+  })
+})
 
 describe("codex process loss", () => {
-    it("keeps the stderr tail as the error details when the process dies mid-turn", async () => {
-        const t = createTestAgent({codexStderr: "thread 'main' panicked at core.rs:12"});
-        await t.initialize();
-        await t.openSession();
-        await t.agent.prompt({sessionId: THREAD_ID, prompt: [{type: "text", text: "x"}]});
-        await t.settle();
-        t.codex.close();
-        await t.settle();
-        expect(t.client.updatesOf("agent_message_chunk").at(-1)).toMatchObject({
-            content: {type: "text", text: "Connection to Codex was lost\n\nthread 'main' panicked at core.rs:12"},
-            _meta: {codex: {error: {message: "Connection to Codex was lost", additionalDetails: "thread 'main' panicked at core.rs:12"}}},
-        });
-        expect(t.client.updatesOf("state_update").at(-1)).toMatchObject({state: "idle", stopReason: "error"});
-    });
+  it("keeps the stderr tail as the error details when the process dies mid-turn", async () => {
+    const t = createTestAgent({ codexStderr: "thread 'main' panicked at core.rs:12" })
+    await t.initialize()
+    await t.openSession()
+    await t.agent.prompt({ sessionId: THREAD_ID, prompt: [{ type: "text", text: "x" }] })
+    await t.settle()
+    t.codex.close()
+    await t.settle()
+    expect(t.client.updatesOf("agent_message_chunk").at(-1)).toMatchObject({
+      content: { type: "text", text: "Connection to Codex was lost\n\nthread 'main' panicked at core.rs:12" },
+      _meta: {
+        codex: {
+          error: { message: "Connection to Codex was lost", additionalDetails: "thread 'main' panicked at core.rs:12" }
+        }
+      }
+    })
+    expect(t.client.updatesOf("state_update").at(-1)).toMatchObject({ state: "idle", stopReason: "error" })
+  })
 
-    it("fails the active turn with a connection error", async () => {
-        const t = createTestAgent();
-        await t.initialize();
-        await t.openSession();
-        await t.agent.prompt({sessionId: THREAD_ID, prompt: [{type: "text", text: "x"}]});
-        await t.settle();
-        t.codex.close();
-        await t.settle();
-        expect(t.client.updatesOf("agent_message_chunk").at(-1)?.content).toEqual({type: "text", text: "Connection to Codex was lost"});
-        expect(t.client.updatesOf("state_update").at(-1)).toMatchObject({state: "idle", stopReason: "error"});
-    });
-});
+  it("fails the active turn with a connection error", async () => {
+    const t = createTestAgent()
+    await t.initialize()
+    await t.openSession()
+    await t.agent.prompt({ sessionId: THREAD_ID, prompt: [{ type: "text", text: "x" }] })
+    await t.settle()
+    t.codex.close()
+    await t.settle()
+    expect(t.client.updatesOf("agent_message_chunk").at(-1)?.content).toEqual({
+      type: "text",
+      text: "Connection to Codex was lost"
+    })
+    expect(t.client.updatesOf("state_update").at(-1)).toMatchObject({ state: "idle", stopReason: "error" })
+  })
+})
 
 describe("history mapping", () => {
-    it("replays tool calls, terminals, and reasoning from a loaded thread", async () => {
-        const t = createTestAgent();
-        t.codex.respond("thread/turns/list", () => ({
-            nextCursor: null,
-            backwardsCursor: null,
-            data: [turn({items: [
-                {type: "reasoning", id: "r1", summary: ["thinking"], content: []},
-                {type: "commandExecution", id: "c1", pluginId: null, scriptPath: null, command: "ls", cwd: CWD, processId: null, source: "agent", status: "completed", commandActions: [], aggregatedOutput: "a\nb\n", exitCode: 0, durationMs: 3},
-                {type: "fileChange", id: "f1", changes: [{path: `${CWD}/a.txt`, kind: {type: "add"}, diff: "hello\n"}], status: "completed"},
-            ]})],
-        }));
-        await t.initialize();
-        await t.agent.resumeSession({sessionId: THREAD_ID, cwd: CWD, replayFrom: {type: "start"}});
-        const kinds = t.client.updates().filter(update => update.sessionUpdate !== "available_commands_update").map(update => update.sessionUpdate);
-        expect(kinds).toEqual(["agent_thought", "terminal_update", "tool_call_update", "tool_call_update", "tool_call_update"]);
-        expect(t.client.updatesOf("terminal_update")[0]).toMatchObject({terminalId: "c1", command: "ls", output: {data: Buffer.from("a\nb\n").toString("base64")}, exitStatus: {exitCode: 0}});
-        expect(t.client.updatesOf("tool_call_update").at(-1)).toMatchObject({toolCallId: "f1", name: "apply_patch", status: "completed", content: [{type: "diff", changes: [{operation: "add", path: `${CWD}/a.txt`}]}]});
-    });
-});
+  it("replays tool calls, terminals, and reasoning from a loaded thread", async () => {
+    const t = createTestAgent()
+    t.codex.respond("thread/turns/list", () => ({
+      nextCursor: null,
+      backwardsCursor: null,
+      data: [
+        turn({
+          items: [
+            { type: "reasoning", id: "r1", summary: ["thinking"], content: [] },
+            {
+              type: "commandExecution",
+              id: "c1",
+              pluginId: null,
+              scriptPath: null,
+              command: "ls",
+              cwd: CWD,
+              processId: null,
+              source: "agent",
+              status: "completed",
+              commandActions: [],
+              aggregatedOutput: "a\nb\n",
+              exitCode: 0,
+              durationMs: 3
+            },
+            {
+              type: "fileChange",
+              id: "f1",
+              changes: [{ path: `${CWD}/a.txt`, kind: { type: "add" }, diff: "hello\n" }],
+              status: "completed"
+            }
+          ]
+        })
+      ]
+    }))
+    await t.initialize()
+    await t.agent.resumeSession({ sessionId: THREAD_ID, cwd: CWD, replayFrom: { type: "start" } })
+    const kinds = t.client
+      .updates()
+      .filter((update) => update.sessionUpdate !== "available_commands_update")
+      .map((update) => update.sessionUpdate)
+    expect(kinds).toEqual([
+      "agent_thought",
+      "terminal_update",
+      "tool_call_update",
+      "tool_call_update",
+      "tool_call_update"
+    ])
+    expect(t.client.updatesOf("terminal_update")[0]).toMatchObject({
+      terminalId: "c1",
+      command: "ls",
+      output: { data: Buffer.from("a\nb\n").toString("base64") },
+      exitStatus: { exitCode: 0 }
+    })
+    expect(t.client.updatesOf("tool_call_update").at(-1)).toMatchObject({
+      toolCallId: "f1",
+      name: "apply_patch",
+      status: "completed",
+      content: [{ type: "diff", changes: [{ operation: "add", path: `${CWD}/a.txt` }] }]
+    })
+  })
+})
 
 describe("providers", () => {
-    const gateway = {providerId: "openai", apiType: "openai" as const, baseUrl: "https://gw.example.com/v1", headers: {authorization: "Bearer k"}};
+  const gateway = {
+    providerId: "openai",
+    apiType: "openai" as const,
+    baseUrl: "https://gw.example.com/v1",
+    headers: { authorization: "Bearer k" }
+  }
 
-    it("advertises the providers capability and lists the OpenAI slot", async () => {
-        const t = createTestAgent();
-        const init = await t.initialize();
-        expect(init.capabilities?.providers).toEqual({});
-        expect(t.agent.listProviders({})).toEqual({
-            providers: [{providerId: "openai", supported: ["openai"], required: false, current: {apiType: "openai", baseUrl: "https://api.openai.com/v1"}}],
-        });
-    });
+  it("advertises the providers capability and lists the OpenAI slot", async () => {
+    const t = createTestAgent()
+    const init = await t.initialize()
+    expect(init.capabilities?.providers).toEqual({})
+    expect(t.agent.listProviders({})).toEqual({
+      providers: [
+        {
+          providerId: "openai",
+          supported: ["openai"],
+          required: false,
+          current: { apiType: "openai", baseUrl: "https://api.openai.com/v1" }
+        }
+      ]
+    })
+  })
 
-    it("routes new threads through the gateway and skips the OpenAI login check", async () => {
-        const t = createTestAgent();
-        t.codex.respond("account/read", () => ({account: null, requiresOpenaiAuth: true}));
-        await t.initialize();
-        await t.agent.setProvider({...gateway, _meta: {codex: {name: "My gateway"}}});
-        expect(t.agent.listProviders({}).providers[0]?.current).toEqual({apiType: "openai", baseUrl: "https://gw.example.com/v1"});
-        await t.agent.newSession({cwd: CWD});
-        const params = t.codex.lastParams<ThreadStartParams>("thread/start");
-        expect(params.modelProvider).toBe("custom-gateway");
-        expect(params.config?.["model_providers"]).toEqual({
-            "custom-gateway": {
-                name: "My gateway",
-                base_url: "https://gw.example.com/v1",
-                wire_api: "responses",
-                http_headers: {"X-Client-Feature-ID": "codex", authorization: "Bearer k"},
-            },
-        });
-    });
+  it("routes new threads through the gateway and skips the OpenAI login check", async () => {
+    const t = createTestAgent()
+    t.codex.respond("account/read", () => ({ account: null, requiresOpenaiAuth: true }))
+    await t.initialize()
+    await t.agent.setProvider({ ...gateway, _meta: { codex: { name: "My gateway" } } })
+    expect(t.agent.listProviders({}).providers[0]?.current).toEqual({
+      apiType: "openai",
+      baseUrl: "https://gw.example.com/v1"
+    })
+    await t.agent.newSession({ cwd: CWD })
+    const params = t.codex.lastParams<ThreadStartParams>("thread/start")
+    expect(params.modelProvider).toBe("custom-gateway")
+    expect(params.config?.["model_providers"]).toEqual({
+      "custom-gateway": {
+        name: "My gateway",
+        base_url: "https://gw.example.com/v1",
+        wire_api: "responses",
+        http_headers: { "X-Client-Feature-ID": "codex", authorization: "Bearer k" }
+      }
+    })
+  })
 
-    it("uses the client's model catalog and selected model when provided", async () => {
-        const t = createTestAgent();
-        await t.initialize();
-        await t.agent.setProvider({...gateway, _meta: {alwith: {model: "deepseek-chat", models: [{id: "deepseek-chat", label: "DeepSeek"}, {id: "deepseek-reasoner"}]}}});
-        const response = await t.agent.newSession({cwd: CWD});
-        const modelOption = response.configOptions?.find(option => option.configId === "model") as {currentValue: string; options: Array<{value: string; name: string}>};
-        expect(modelOption.currentValue).toBe("deepseek-chat");
-        expect(modelOption.options.map(option => [option.value, option.name])).toEqual([["deepseek-chat", "DeepSeek"], ["deepseek-reasoner", "deepseek-reasoner"]]);
-        await t.agent.prompt({sessionId: THREAD_ID, prompt: [{type: "text", text: "hi"}]});
-        await t.settle();
-        expect(t.codex.lastParams<TurnStartParams>("turn/start").model).toBe("deepseek-chat");
-    });
-
-    it("rebinds open sessions in place and broadcasts their options", async () => {
-        const t = createTestAgent();
-        await t.initialize();
-        await t.openSession();
-        await t.agent.setProvider(gateway);
-        const resume = t.codex.lastParams<{threadId: string; modelProvider: string | null; excludeTurns?: boolean; config?: Record<string, unknown>}>("thread/resume");
-        expect(resume).toMatchObject({threadId: THREAD_ID, modelProvider: "custom-gateway", excludeTurns: true});
-        expect(resume.config?.["model_providers"]).toBeDefined();
-        expect(t.client.updatesOf("config_option_update")).toHaveLength(1);
-        await t.agent.disableProvider({providerId: "openai"});
-        expect(t.codex.lastParams<{modelProvider: string | null}>("thread/resume").modelProvider).toBe("openai");
-        expect(t.agent.listProviders({}).providers[0]?.current?.baseUrl).toBe("https://api.openai.com/v1");
-    });
-
-    it("refuses to switch routing while a turn is running", async () => {
-        const t = createTestAgent();
-        await t.initialize();
-        await t.openSession();
-        await t.agent.prompt({sessionId: THREAD_ID, prompt: [{type: "text", text: "go"}]});
-        await t.settle();
-        await expectRejects(t.agent.setProvider(gateway), -32600, "turn is running");
-        expect(t.codex.calls("thread/resume")).toHaveLength(0);
-    });
-
-    it("validates provider requests", async () => {
-        const t = createTestAgent();
-        await t.initialize();
-        await expectRejects(t.agent.setProvider({...gateway, providerId: "anthropic"}), -32602, "Unknown providerId");
-        await expectRejects(t.agent.setProvider({...gateway, apiType: "anthropic"}), -32602, "OpenAI protocol");
-        await expectRejects(t.agent.setProvider({...gateway, baseUrl: "not a url"}), -32602, "http(s)");
-        await expect(t.agent.disableProvider({providerId: "whatever"})).resolves.toEqual({});
-    });
-
-    // ---- gateway config hints ----------------------------------------------------
-
-    function catalogFile(): string {
-        const file = path.join(os.tmpdir(), `codex-acp-catalog-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.json`);
-        fs.writeFileSync(file, JSON.stringify({models: [{
-            slug: "deepseek-flash", display_name: "DeepSeek-Flash", description: "Flash", default_reasoning_level: "high",
-            supported_reasoning_levels: [{effort: "low", description: "Fast"}, {effort: "high", description: "Deep"}, {effort: "max", description: "Max"}],
-            input_modalities: ["text", "image"],
-        }]}));
-        return file;
+  it("uses the client's model catalog and selected model when provided", async () => {
+    const t = createTestAgent()
+    await t.initialize()
+    await t.agent.setProvider({
+      ...gateway,
+      _meta: {
+        alwith: {
+          model: "deepseek-chat",
+          models: [{ id: "deepseek-chat", label: "DeepSeek" }, { id: "deepseek-reasoner" }]
+        }
+      }
+    })
+    const response = await t.agent.newSession({ cwd: CWD })
+    const modelOption = response.configOptions?.find((option) => option.configId === "model") as {
+      currentValue: string
+      options: Array<{ value: string; name: string }>
     }
+    expect(modelOption.currentValue).toBe("deepseek-chat")
+    expect(modelOption.options.map((option) => [option.value, option.name])).toEqual([
+      ["deepseek-chat", "DeepSeek"],
+      ["deepseek-reasoner", "deepseek-reasoner"]
+    ])
+    await t.agent.prompt({ sessionId: THREAD_ID, prompt: [{ type: "text", text: "hi" }] })
+    await t.settle()
+    expect(t.codex.lastParams<TurnStartParams>("turn/start").model).toBe("deepseek-chat")
+  })
 
-    function deepseek(mode: "route" | "catalog", file = catalogFile()) {
-        return {
-            providerId: "openai", apiType: "openai" as const, baseUrl: "https://api.deepseek.com/",
-            _meta: {
-                codex: {name: "DeepSeek", mode, bearerToken: "sk-test", config: {model_catalog_json: file, web_search: "disabled"}},
-                alwith: {models: [{id: "deepseek-flash"}]},
-            },
-        };
+  it("rebinds open sessions in place and broadcasts their options", async () => {
+    const t = createTestAgent()
+    await t.initialize()
+    await t.openSession()
+    await t.agent.setProvider(gateway)
+    const resume = t.codex.lastParams<{
+      threadId: string
+      modelProvider: string | null
+      excludeTurns?: boolean
+      config?: Record<string, unknown>
+    }>("thread/resume")
+    expect(resume).toMatchObject({ threadId: THREAD_ID, modelProvider: "custom-gateway", excludeTurns: true })
+    expect(resume.config?.["model_providers"]).toBeDefined()
+    expect(t.client.updatesOf("config_option_update")).toHaveLength(1)
+    await t.agent.disableProvider({ providerId: "openai" })
+    expect(t.codex.lastParams<{ modelProvider: string | null }>("thread/resume").modelProvider).toBe("openai")
+    expect(t.agent.listProviders({}).providers[0]?.current?.baseUrl).toBe("https://api.openai.com/v1")
+  })
+
+  it("refuses to switch routing while a turn is running", async () => {
+    const t = createTestAgent()
+    await t.initialize()
+    await t.openSession()
+    await t.agent.prompt({ sessionId: THREAD_ID, prompt: [{ type: "text", text: "go" }] })
+    await t.settle()
+    await expectRejects(t.agent.setProvider(gateway), -32600, "turn is running")
+    expect(t.codex.calls("thread/resume")).toHaveLength(0)
+  })
+
+  it("validates provider requests", async () => {
+    const t = createTestAgent()
+    await t.initialize()
+    await expectRejects(t.agent.setProvider({ ...gateway, providerId: "anthropic" }), -32602, "Unknown providerId")
+    await expectRejects(t.agent.setProvider({ ...gateway, apiType: "anthropic" }), -32602, "OpenAI protocol")
+    await expectRejects(t.agent.setProvider({ ...gateway, baseUrl: "not a url" }), -32602, "http(s)")
+    await expect(t.agent.disableProvider({ providerId: "whatever" })).resolves.toEqual({})
+  })
+
+  // ---- gateway config hints ----------------------------------------------------
+
+  function catalogFile(): string {
+    const file = path.join(
+      os.tmpdir(),
+      `codex-acp-catalog-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.json`
+    )
+    fs.writeFileSync(
+      file,
+      JSON.stringify({
+        models: [
+          {
+            slug: "deepseek-flash",
+            display_name: "DeepSeek-Flash",
+            description: "Flash",
+            default_reasoning_level: "high",
+            supported_reasoning_levels: [
+              { effort: "low", description: "Fast" },
+              { effort: "high", description: "Deep" },
+              { effort: "max", description: "Max" }
+            ],
+            input_modalities: ["text", "image"]
+          }
+        ]
+      })
+    )
+    return file
+  }
+
+  function deepseek(mode: "route" | "catalog", file = catalogFile()) {
+    return {
+      providerId: "openai",
+      apiType: "openai" as const,
+      baseUrl: "https://api.deepseek.com/",
+      _meta: {
+        codex: {
+          name: "DeepSeek",
+          mode,
+          bearerToken: "sk-test",
+          config: { model_catalog_json: file, web_search: "disabled" }
+        },
+        alwith: { models: [{ id: "deepseek-flash" }] }
+      }
     }
+  }
 
-    const gatewayEntry = (config: Record<string, unknown> | undefined) => (config?.["model_providers"] as Record<string, Record<string, unknown>> | undefined)?.["custom-gateway"];
+  const gatewayEntry = (config: Record<string, unknown> | undefined) =>
+    (config?.["model_providers"] as Record<string, Record<string, unknown>> | undefined)?.["custom-gateway"]
 
-    it("route mode carries config overrides and the bearer token into thread config; disable removes them", async () => {
-        const t = createTestAgent();
-        await t.initialize();
-        await t.openSession();
-        await t.agent.setProvider(deepseek("route"));
-        const resume = t.codex.lastParams<{config?: Record<string, unknown>}>("thread/resume");
-        expect(resume.config?.["web_search"]).toBe("disabled");
-        expect(typeof resume.config?.["model_catalog_json"]).toBe("string");
-        expect(gatewayEntry(resume.config)).toMatchObject({base_url: "https://api.deepseek.com/", wire_api: "responses", experimental_bearer_token: "sk-test"});
-        await t.agent.newSession({cwd: CWD});
-        const start = t.codex.lastParams<ThreadStartParams>("thread/start");
-        expect(start.modelProvider).toBe("custom-gateway");
-        expect(start.config?.["web_search"]).toBe("disabled");
-        expect(gatewayEntry(start.config as Record<string, unknown>)?.["experimental_bearer_token"]).toBe("sk-test");
-        await t.agent.disableProvider({providerId: "openai"});
-        const native = t.codex.lastParams<{config?: Record<string, unknown>; modelProvider: string}>("thread/resume");
-        expect(native.modelProvider).toBe("openai");
-        expect(native.config?.["web_search"]).toBeUndefined();
-        expect(native.config?.["model_catalog_json"]).toBeUndefined();
-        expect(native.config?.["model_providers"]).toBeUndefined();
-    });
+  it("route mode carries config overrides and the bearer token into thread config; disable removes them", async () => {
+    const t = createTestAgent()
+    await t.initialize()
+    await t.openSession()
+    await t.agent.setProvider(deepseek("route"))
+    const resume = t.codex.lastParams<{ config?: Record<string, unknown> }>("thread/resume")
+    expect(resume.config?.["web_search"]).toBe("disabled")
+    expect(typeof resume.config?.["model_catalog_json"]).toBe("string")
+    expect(gatewayEntry(resume.config)).toMatchObject({
+      base_url: "https://api.deepseek.com/",
+      wire_api: "responses",
+      experimental_bearer_token: "sk-test"
+    })
+    await t.agent.newSession({ cwd: CWD })
+    const start = t.codex.lastParams<ThreadStartParams>("thread/start")
+    expect(start.modelProvider).toBe("custom-gateway")
+    expect(start.config?.["web_search"]).toBe("disabled")
+    expect(gatewayEntry(start.config as Record<string, unknown>)?.["experimental_bearer_token"]).toBe("sk-test")
+    await t.agent.disableProvider({ providerId: "openai" })
+    const native = t.codex.lastParams<{ config?: Record<string, unknown>; modelProvider: string }>("thread/resume")
+    expect(native.modelProvider).toBe("openai")
+    expect(native.config?.["web_search"]).toBeUndefined()
+    expect(native.config?.["model_catalog_json"]).toBeUndefined()
+    expect(native.config?.["model_providers"]).toBeUndefined()
+  })
 
-    it("validates the config hint", async () => {
-        const t = createTestAgent();
-        await t.initialize();
-        await expectRejects(t.agent.setProvider({...gateway, _meta: {codex: {config: "nope"}}}), -32602, "_meta.codex.config");
-        await expectRejects(t.agent.setProvider({...gateway, _meta: {codex: {config: {model_providers: {}}}}}), -32602, "model_providers");
-        await expectRejects(t.agent.setProvider({...gateway, _meta: {codex: {config: {model_catalog_json: "/nonexistent/models.json"}}}}), -32602, "model_catalog_json");
-        await expectRejects(t.agent.setProvider({...gateway, _meta: {codex: {mode: "catalog"}}}), -32602, "alwith.models");
-    });
+  it("validates the config hint", async () => {
+    const t = createTestAgent()
+    await t.initialize()
+    await expectRejects(
+      t.agent.setProvider({ ...gateway, _meta: { codex: { config: "nope" } } }),
+      -32602,
+      "_meta.codex.config"
+    )
+    await expectRejects(
+      t.agent.setProvider({ ...gateway, _meta: { codex: { config: { model_providers: {} } } } }),
+      -32602,
+      "model_providers"
+    )
+    await expectRejects(
+      t.agent.setProvider({
+        ...gateway,
+        _meta: { codex: { config: { model_catalog_json: "/nonexistent/models.json" } } }
+      }),
+      -32602,
+      "model_catalog_json"
+    )
+    await expectRejects(
+      t.agent.setProvider({ ...gateway, _meta: { codex: { mode: "catalog" } } }),
+      -32602,
+      "alwith.models"
+    )
+  })
 
-    // ---- catalog mode -------------------------------------------------------------
+  // ---- catalog mode -------------------------------------------------------------
 
-    it("catalog mode offers the gateway's models beside Codex's without rerouting", async () => {
-        const t = createTestAgent();
-        await t.initialize();
-        await t.agent.setProvider(deepseek("catalog"));
-        expect(t.agent.listProviders({}).providers[0]?.current?.baseUrl).toBe("https://api.openai.com/v1");
-        const response = await t.agent.newSession({cwd: CWD});
-        const start = t.codex.lastParams<ThreadStartParams>("thread/start");
-        expect(start.modelProvider).toBe("openai");
-        expect(start.config?.["model_providers"]).toBeUndefined();
-        const modelOption = response.configOptions?.find(option => option.configId === "model") as {currentValue: string; options: Array<{groupId: string; name: string; options: Array<{value: string}>}>};
-        expect(modelOption.currentValue).toBe("gpt-5");
-        expect(modelOption.options.map(group => [group.groupId, group.name, group.options.map(option => option.value)])).toEqual([
-            ["chatgpt", "ChatGPT", ["gpt-5"]],
-            ["custom-gateway", "DeepSeek", ["gateway:custom-gateway:deepseek-flash"]],
-        ]);
-    });
+  it("catalog mode offers the gateway's models beside Codex's without rerouting", async () => {
+    const t = createTestAgent()
+    await t.initialize()
+    await t.agent.setProvider(deepseek("catalog"))
+    expect(t.agent.listProviders({}).providers[0]?.current?.baseUrl).toBe("https://api.openai.com/v1")
+    const response = await t.agent.newSession({ cwd: CWD })
+    const start = t.codex.lastParams<ThreadStartParams>("thread/start")
+    expect(start.modelProvider).toBe("openai")
+    expect(start.config?.["model_providers"]).toBeUndefined()
+    const modelOption = response.configOptions?.find((option) => option.configId === "model") as {
+      currentValue: string
+      options: Array<{ groupId: string; name: string; options: Array<{ value: string }> }>
+    }
+    expect(modelOption.currentValue).toBe("gpt-5")
+    expect(
+      modelOption.options.map((group) => [group.groupId, group.name, group.options.map((option) => option.value)])
+    ).toEqual([
+      ["chatgpt", "ChatGPT", ["gpt-5"]],
+      ["custom-gateway", "DeepSeek", ["gateway:custom-gateway:deepseek-flash"]]
+    ])
+  })
 
-    it("selecting a gateway model moves only that session, and a native model moves it back", async () => {
-        const t = createTestAgent();
-        await t.initialize();
-        await t.agent.setProvider(deepseek("catalog"));
-        await t.openSession();
-        const other = await t.agent.newSession({cwd: CWD}).catch(() => null);
-        void other;
-        const before = t.codex.calls("thread/resume").length;
-        const moved = await t.agent.setSessionConfigOption({sessionId: THREAD_ID, configId: "model", type: "id", value: "gateway:custom-gateway:deepseek-flash"});
-        const resume = t.codex.lastParams<{threadId: string; modelProvider: string; model: string; config?: Record<string, unknown>}>("thread/resume");
-        expect(t.codex.calls("thread/resume")).toHaveLength(before + 1);
-        expect(resume).toMatchObject({threadId: THREAD_ID, modelProvider: "custom-gateway", model: "deepseek-flash"});
-        expect(resume.config?.["web_search"]).toBe("disabled");
-        expect(gatewayEntry(resume.config)?.["experimental_bearer_token"]).toBe("sk-test");
-        const byId = Object.fromEntries((moved.configOptions ?? []).map(option => [option.configId, option]));
-        expect(byId["model"]).toMatchObject({currentValue: "gateway:custom-gateway:deepseek-flash"});
-        expect((byId["effort"] as {currentValue: string; options: Array<{value: string}>}).options.map(option => option.value)).toEqual(["low", "high", "max"]);
-        expect((byId["effort"] as {currentValue: string}).currentValue).toBe("high");
-        await t.agent.prompt({sessionId: THREAD_ID, prompt: [{type: "text", text: "hi"}]});
-        await t.settle();
-        expect(t.codex.lastParams<TurnStartParams>("turn/start")).toMatchObject({model: "deepseek-flash", effort: "high"});
-        turnCompleted(t.codex);
-        await t.settle();
-        const back = await t.agent.setSessionConfigOption({sessionId: THREAD_ID, configId: "model", type: "id", value: "gpt-5"});
-        const native = t.codex.lastParams<{modelProvider: string; model: string; config?: Record<string, unknown>}>("thread/resume");
-        expect(native).toMatchObject({modelProvider: "openai", model: "gpt-5"});
-        expect(native.config?.["model_providers"]).toBeUndefined();
-        expect(native.config?.["web_search"]).toBeUndefined();
-        const effort = back.configOptions?.find(option => option.configId === "effort") as {options: Array<{value: string}>};
-        expect(effort.options.map(option => option.value)).toEqual(["low", "medium", "high"]);
-    });
+  it("selecting a gateway model moves only that session, and a native model moves it back", async () => {
+    const t = createTestAgent()
+    await t.initialize()
+    await t.agent.setProvider(deepseek("catalog"))
+    await t.openSession()
+    const other = await t.agent.newSession({ cwd: CWD }).catch(() => null)
+    void other
+    const before = t.codex.calls("thread/resume").length
+    const moved = await t.agent.setSessionConfigOption({
+      sessionId: THREAD_ID,
+      configId: "model",
+      type: "id",
+      value: "gateway:custom-gateway:deepseek-flash"
+    })
+    const resume = t.codex.lastParams<{
+      threadId: string
+      modelProvider: string
+      model: string
+      config?: Record<string, unknown>
+    }>("thread/resume")
+    expect(t.codex.calls("thread/resume")).toHaveLength(before + 1)
+    expect(resume).toMatchObject({ threadId: THREAD_ID, modelProvider: "custom-gateway", model: "deepseek-flash" })
+    expect(resume.config?.["web_search"]).toBe("disabled")
+    expect(gatewayEntry(resume.config)?.["experimental_bearer_token"]).toBe("sk-test")
+    const byId = Object.fromEntries((moved.configOptions ?? []).map((option) => [option.configId, option]))
+    expect(byId["model"]).toMatchObject({ currentValue: "gateway:custom-gateway:deepseek-flash" })
+    expect(
+      (byId["effort"] as { currentValue: string; options: Array<{ value: string }> }).options.map(
+        (option) => option.value
+      )
+    ).toEqual(["low", "high", "max"])
+    expect((byId["effort"] as { currentValue: string }).currentValue).toBe("high")
+    await t.agent.prompt({ sessionId: THREAD_ID, prompt: [{ type: "text", text: "hi" }] })
+    await t.settle()
+    expect(t.codex.lastParams<TurnStartParams>("turn/start")).toMatchObject({ model: "deepseek-flash", effort: "high" })
+    turnCompleted(t.codex)
+    await t.settle()
+    const back = await t.agent.setSessionConfigOption({
+      sessionId: THREAD_ID,
+      configId: "model",
+      type: "id",
+      value: "gpt-5"
+    })
+    const native = t.codex.lastParams<{ modelProvider: string; model: string; config?: Record<string, unknown> }>(
+      "thread/resume"
+    )
+    expect(native).toMatchObject({ modelProvider: "openai", model: "gpt-5" })
+    expect(native.config?.["model_providers"]).toBeUndefined()
+    expect(native.config?.["web_search"]).toBeUndefined()
+    const effort = back.configOptions?.find((option) => option.configId === "effort") as {
+      options: Array<{ value: string }>
+    }
+    expect(effort.options.map((option) => option.value)).toEqual(["low", "medium", "high"])
+  })
 
-    it("materializes an empty thread before moving it to the gateway", async () => {
-        const t = createTestAgent();
-        await t.initialize();
-        await t.agent.setProvider(deepseek("catalog"));
-        await t.openSession();
-        let listed = 0;
-        t.codex.respond("thread/turns/list", () => {
-            listed += 1;
-            if (listed === 1) throw new Error("thread is not materialized yet; thread/turns/list is unavailable before first user message");
-            return {data: [], nextCursor: null, backwardsCursor: null};
-        });
-        await t.agent.setSessionConfigOption({sessionId: THREAD_ID, configId: "model", type: "id", value: "gateway:custom-gateway:deepseek-flash"});
-        const injected = t.codex.lastParams<{threadId: string; items: Array<{role: string}>}>("thread/inject_items");
-        expect(injected.threadId).toBe(THREAD_ID);
-        expect(injected.items[0]?.role).toBe("developer");
-        expect(t.codex.lastParams<{modelProvider: string}>("thread/resume").modelProvider).toBe("custom-gateway");
-    });
+  it("materializes an empty thread before moving it to the gateway", async () => {
+    const t = createTestAgent()
+    await t.initialize()
+    await t.agent.setProvider(deepseek("catalog"))
+    await t.openSession()
+    let listed = 0
+    t.codex.respond("thread/turns/list", () => {
+      listed += 1
+      if (listed === 1)
+        throw new Error("thread is not materialized yet; thread/turns/list is unavailable before first user message")
+      return { data: [], nextCursor: null, backwardsCursor: null }
+    })
+    await t.agent.setSessionConfigOption({
+      sessionId: THREAD_ID,
+      configId: "model",
+      type: "id",
+      value: "gateway:custom-gateway:deepseek-flash"
+    })
+    const injected = t.codex.lastParams<{ threadId: string; items: Array<{ role: string }> }>("thread/inject_items")
+    expect(injected.threadId).toBe(THREAD_ID)
+    expect(injected.items[0]?.role).toBe("developer")
+    expect(t.codex.lastParams<{ modelProvider: string }>("thread/resume").modelProvider).toBe("custom-gateway")
+  })
 
-    it("session/new with a gateway model in _meta.alwith.model starts on the gateway without a login", async () => {
-        const t = createTestAgent();
-        t.codex.respond("account/read", () => ({account: null, requiresOpenaiAuth: true}));
-        await t.initialize();
-        await t.agent.setProvider(deepseek("catalog"));
-        await expectRejects(t.agent.newSession({cwd: CWD}), -32000);
-        const response = await t.agent.newSession({cwd: CWD, _meta: {alwith: {model: "gateway:custom-gateway:deepseek-flash"}}});
-        const start = t.codex.lastParams<ThreadStartParams>("thread/start");
-        expect(start).toMatchObject({modelProvider: "custom-gateway", model: "deepseek-flash"});
-        expect(gatewayEntry(start.config as Record<string, unknown>)?.["experimental_bearer_token"]).toBe("sk-test");
-        const modelOption = response.configOptions?.find(option => option.configId === "model") as {currentValue: string};
-        expect(modelOption.currentValue).toBe("gateway:custom-gateway:deepseek-flash");
-    });
+  it("session/new with a gateway model in _meta.alwith.model starts on the gateway without a login", async () => {
+    const t = createTestAgent()
+    t.codex.respond("account/read", () => ({ account: null, requiresOpenaiAuth: true }))
+    await t.initialize()
+    await t.agent.setProvider(deepseek("catalog"))
+    await expectRejects(t.agent.newSession({ cwd: CWD }), -32000)
+    const response = await t.agent.newSession({
+      cwd: CWD,
+      _meta: { alwith: { model: "gateway:custom-gateway:deepseek-flash" } }
+    })
+    const start = t.codex.lastParams<ThreadStartParams>("thread/start")
+    expect(start).toMatchObject({ modelProvider: "custom-gateway", model: "deepseek-flash" })
+    expect(gatewayEntry(start.config as Record<string, unknown>)?.["experimental_bearer_token"]).toBe("sk-test")
+    const modelOption = response.configOptions?.find((option) => option.configId === "model") as {
+      currentValue: string
+    }
+    expect(modelOption.currentValue).toBe("gateway:custom-gateway:deepseek-flash")
+  })
 
-    it("session/resume follows the provider Codex recorded for the thread", async () => {
-        const t = createTestAgent();
-        await t.initialize();
-        await t.agent.setProvider(deepseek("catalog"));
-        t.codex.respond("thread/read", (params) => ({thread: thread({id: params.threadId, modelProvider: "custom-gateway", model: "deepseek-flash"})}));
-        t.codex.respond("thread/resume", (params) => ({...threadResponse({id: params.threadId, model: "deepseek-flash"}), modelProvider: "custom-gateway"}));
-        await t.agent.resumeSession({sessionId: THREAD_ID, cwd: CWD});
-        const resume = t.codex.lastParams<{modelProvider: string; config?: Record<string, unknown>}>("thread/resume");
-        expect(resume.modelProvider).toBe("custom-gateway");
-        expect(gatewayEntry(resume.config)).toBeDefined();
-        const beforeDisable = t.codex.calls("thread/resume").length;
-        await t.agent.disableProvider({providerId: "openai"});
-        expect(t.codex.calls("thread/resume")).toHaveLength(beforeDisable);
-        await expectRejects(t.agent.prompt({sessionId: THREAD_ID, prompt: [{type: "text", text: "go"}]}), -32602, "unavailable");
-        await t.agent.setSessionConfigOption({sessionId: THREAD_ID, configId: "model", type: "id", value: "gpt-5"});
-        const native = t.codex.lastParams<{modelProvider: string; config?: Record<string, unknown>}>("thread/resume");
-        expect(native.modelProvider).toBe("openai");
-        expect(native.config?.["model_providers"]).toBeUndefined();
-        const options = t.client.updatesOf("config_option_update").at(-1) as {configOptions: acp.SessionConfigOption[]};
-        const modelOption = options.configOptions.find(option => option.configId === "model") as {options: Array<{value?: string; groupId?: string}>};
-        expect(modelOption.options.every(option => option.groupId === undefined)).toBe(true);
-    });
+  it("session/resume follows the provider Codex recorded for the thread", async () => {
+    const t = createTestAgent()
+    await t.initialize()
+    await t.agent.setProvider(deepseek("catalog"))
+    t.codex.respond("thread/read", (params) => ({
+      thread: thread({ id: params.threadId, modelProvider: "custom-gateway", model: "deepseek-flash" })
+    }))
+    t.codex.respond("thread/resume", (params) => ({
+      ...threadResponse({ id: params.threadId, model: "deepseek-flash" }),
+      modelProvider: "custom-gateway"
+    }))
+    await t.agent.resumeSession({ sessionId: THREAD_ID, cwd: CWD })
+    const resume = t.codex.lastParams<{ modelProvider: string; config?: Record<string, unknown> }>("thread/resume")
+    expect(resume.modelProvider).toBe("custom-gateway")
+    expect(gatewayEntry(resume.config)).toBeDefined()
+    const beforeDisable = t.codex.calls("thread/resume").length
+    await t.agent.disableProvider({ providerId: "openai" })
+    expect(t.codex.calls("thread/resume")).toHaveLength(beforeDisable)
+    await expectRejects(
+      t.agent.prompt({ sessionId: THREAD_ID, prompt: [{ type: "text", text: "go" }] }),
+      -32602,
+      "unavailable"
+    )
+    await t.agent.setSessionConfigOption({ sessionId: THREAD_ID, configId: "model", type: "id", value: "gpt-5" })
+    const native = t.codex.lastParams<{ modelProvider: string; config?: Record<string, unknown> }>("thread/resume")
+    expect(native.modelProvider).toBe("openai")
+    expect(native.config?.["model_providers"]).toBeUndefined()
+    const options = t.client.updatesOf("config_option_update").at(-1) as { configOptions: acp.SessionConfigOption[] }
+    const modelOption = options.configOptions.find((option) => option.configId === "model") as {
+      options: Array<{ value?: string; groupId?: string }>
+    }
+    expect(modelOption.options.every((option) => option.groupId === undefined)).toBe(true)
+  })
 
-    it("refuses to move a session while its turn is running", async () => {
-        const t = createTestAgent();
-        await t.initialize();
-        await t.agent.setProvider(deepseek("catalog"));
-        await t.openSession();
-        await t.agent.prompt({sessionId: THREAD_ID, prompt: [{type: "text", text: "go"}]});
-        await t.settle();
-        await expectRejects(t.agent.setSessionConfigOption({sessionId: THREAD_ID, configId: "model", type: "id", value: "gateway:custom-gateway:deepseek-flash"}), -32600, "turn is running");
-        expect(t.codex.calls("thread/resume")).toHaveLength(0);
-    });
+  it("refuses to move a session while its turn is running", async () => {
+    const t = createTestAgent()
+    await t.initialize()
+    await t.agent.setProvider(deepseek("catalog"))
+    await t.openSession()
+    await t.agent.prompt({ sessionId: THREAD_ID, prompt: [{ type: "text", text: "go" }] })
+    await t.settle()
+    await expectRejects(
+      t.agent.setSessionConfigOption({
+        sessionId: THREAD_ID,
+        configId: "model",
+        type: "id",
+        value: "gateway:custom-gateway:deepseek-flash"
+      }),
+      -32600,
+      "turn is running"
+    )
+    expect(t.codex.calls("thread/resume")).toHaveLength(0)
+  })
 
-    it("opens a thread another Codex client is writing as a read-only session", async () => {
-        const t = createTestAgent();
-        await t.initialize();
-        let attempts = 0;
-        t.codex.respond("thread/resume", (params) => {
-            attempts += 1;
-            if (attempts === 1) throw new Error(`Internal error: thread ${params.threadId} already has an active writer`);
-            return threadResponse({id: params.threadId});
-        });
-        t.codex.respond("thread/read", (params) => ({thread: thread({id: params.threadId, name: "Elsewhere", model: "gpt-5", reasoningEffort: "high"})}));
-        t.codex.respond("thread/turns/list", () => ({data: [turn({items: [{type: "userMessage", id: "m1", clientId: null, content: [{type: "text", text: "earlier", text_elements: []}]}]})], nextCursor: null, backwardsCursor: null}));
-        const response = await t.agent.resumeSession({sessionId: THREAD_ID, cwd: CWD, replayFrom: {type: "start"}});
-        await t.settle();
-        expect(response._meta).toMatchObject({codex: {readOnly: true, reason: "active_writer"}});
-        expect((response.configOptions?.find(option => option.configId === "model") as {currentValue: string}).currentValue).toBe("gpt-5");
-        expect(t.codex.calls("thread/read")).toHaveLength(1);
-        expect(t.codex.calls("thread/turns/list").length).toBeGreaterThan(0);
-        expect(t.client.updatesOf("user_message")).toHaveLength(1);
-        expect(t.codex.calls("thread/unsubscribe")).toHaveLength(0);
-        const refused = await expectRejects(t.agent.prompt({sessionId: THREAD_ID, prompt: [{type: "text", text: "hi"}]}), -32600, "open in another Codex client");
-        expect(refused.data).toEqual({codex: {readOnly: true}});
-        await expectRejects(t.agent.setSessionConfigOption({sessionId: THREAD_ID, configId: "model", type: "id", value: "gpt-5"}), -32600, "open in another Codex client");
-        expect(t.codex.calls("turn/start")).toHaveLength(0);
-        // The other client let go: a second resume takes the writer and replaces the viewing session.
-        const again = await t.agent.resumeSession({sessionId: THREAD_ID, cwd: CWD});
-        expect(again._meta).toEqual({alwith: {configRevision: 0}, codex: {nativeSessionId: THREAD_ID, forkedFromId: null}});
-        expect(attempts).toBe(2);
-        expect(t.codex.calls("thread/unsubscribe")).toHaveLength(0);
-        await t.agent.prompt({sessionId: THREAD_ID, prompt: [{type: "text", text: "hi"}]});
-        await t.settle();
-        expect(t.codex.calls("turn/start")).toHaveLength(1);
-    });
-});
+  it("opens a thread another Codex client is writing as a read-only session", async () => {
+    const t = createTestAgent()
+    await t.initialize()
+    let attempts = 0
+    t.codex.respond("thread/resume", (params) => {
+      attempts += 1
+      if (attempts === 1) throw new Error(`Internal error: thread ${params.threadId} already has an active writer`)
+      return threadResponse({ id: params.threadId })
+    })
+    t.codex.respond("thread/read", (params) => ({
+      thread: thread({ id: params.threadId, name: "Elsewhere", model: "gpt-5", reasoningEffort: "high" })
+    }))
+    t.codex.respond("thread/turns/list", () => ({
+      data: [
+        turn({
+          items: [
+            {
+              type: "userMessage",
+              id: "m1",
+              clientId: null,
+              content: [{ type: "text", text: "earlier", text_elements: [] }]
+            }
+          ]
+        })
+      ],
+      nextCursor: null,
+      backwardsCursor: null
+    }))
+    const response = await t.agent.resumeSession({ sessionId: THREAD_ID, cwd: CWD, replayFrom: { type: "start" } })
+    await t.settle()
+    expect(response._meta).toMatchObject({ codex: { readOnly: true, reason: "active_writer" } })
+    expect(
+      (response.configOptions?.find((option) => option.configId === "model") as { currentValue: string }).currentValue
+    ).toBe("gpt-5")
+    expect(t.codex.calls("thread/read")).toHaveLength(1)
+    expect(t.codex.calls("thread/turns/list").length).toBeGreaterThan(0)
+    expect(t.client.updatesOf("user_message")).toHaveLength(1)
+    expect(t.codex.calls("thread/unsubscribe")).toHaveLength(0)
+    const refused = await expectRejects(
+      t.agent.prompt({ sessionId: THREAD_ID, prompt: [{ type: "text", text: "hi" }] }),
+      -32600,
+      "open in another Codex client"
+    )
+    expect(refused.data).toEqual({ codex: { readOnly: true } })
+    await expectRejects(
+      t.agent.setSessionConfigOption({ sessionId: THREAD_ID, configId: "model", type: "id", value: "gpt-5" }),
+      -32600,
+      "open in another Codex client"
+    )
+    expect(t.codex.calls("turn/start")).toHaveLength(0)
+    // The other client let go: a second resume takes the writer and replaces the viewing session.
+    const again = await t.agent.resumeSession({ sessionId: THREAD_ID, cwd: CWD })
+    expect(again._meta).toEqual({
+      alwith: { configRevision: 0 },
+      codex: { nativeSessionId: THREAD_ID, forkedFromId: null }
+    })
+    expect(attempts).toBe(2)
+    expect(t.codex.calls("thread/unsubscribe")).toHaveLength(0)
+    await t.agent.prompt({ sessionId: THREAD_ID, prompt: [{ type: "text", text: "hi" }] })
+    await t.settle()
+    expect(t.codex.calls("turn/start")).toHaveLength(1)
+  })
+})
 
 it("exports the v2 SDK protocol version the agent speaks", () => {
-    expect(acp.PROTOCOL_VERSION).toBe(2);
-});
+  expect(acp.PROTOCOL_VERSION).toBe(2)
+})
 
 describe("remaining commands", () => {
-    it("runs /review inline and ends the turn from the review completion", async () => {
-        const t = createTestAgent();
-        await t.initialize();
-        await t.openSession();
-        await t.agent.prompt({sessionId: THREAD_ID, prompt: [{type: "text", text: "/review focus on tests"}]});
-        await t.settle();
-        expect(t.codex.lastParams<{target: unknown; delivery: string}>("review/start")).toMatchObject({threadId: THREAD_ID, target: {type: "custom", instructions: "focus on tests"}, delivery: "inline"});
-        expect(t.codex.calls("turn/start")).toHaveLength(0);
-        itemStarted(t.codex, {type: "userMessage", id: "native-review", clientId: null, content: [{type: "text", text: "focus on tests", text_elements: []}]}, "review-turn");
-        t.codex.emit({method: "turn/completed", params: {threadId: THREAD_ID, turn: turn({id: "review-turn"})}});
-        await t.settle();
-        expect(t.client.states()).toEqual(["running", "idle"]);
-        expect(t.client.updatesOf("state_update").at(-1)).toMatchObject({stopReason: "end_turn"});
-    });
+  it("runs /review inline and ends the turn from the review completion", async () => {
+    const t = createTestAgent()
+    await t.initialize()
+    await t.openSession()
+    await t.agent.prompt({ sessionId: THREAD_ID, prompt: [{ type: "text", text: "/review focus on tests" }] })
+    await t.settle()
+    expect(t.codex.lastParams<{ target: unknown; delivery: string }>("review/start")).toMatchObject({
+      threadId: THREAD_ID,
+      target: { type: "custom", instructions: "focus on tests" },
+      delivery: "inline"
+    })
+    expect(t.codex.calls("turn/start")).toHaveLength(0)
+    itemStarted(
+      t.codex,
+      {
+        type: "userMessage",
+        id: "native-review",
+        clientId: null,
+        content: [{ type: "text", text: "focus on tests", text_elements: [] }]
+      },
+      "review-turn"
+    )
+    t.codex.emit({ method: "turn/completed", params: { threadId: THREAD_ID, turn: turn({ id: "review-turn" }) } })
+    await t.settle()
+    expect(t.client.states()).toEqual(["running", "idle"])
+    expect(t.client.updatesOf("state_update").at(-1)).toMatchObject({ stopReason: "end_turn" })
+  })
 
-    it("answers /mcp and /skills from Codex and /logout through the account", async () => {
-        const t = createTestAgent();
-        t.codex.respond("mcpServerStatus/list", () => ({data: [{name: "srv", runtimeStatus: null, pluginId: null, serverInfo: null, tools: {a: {}, b: {}}, resources: [], resourceTemplates: [], authStatus: "unsupported"}], nextCursor: null}));
-        t.codex.respond("skills/list", () => ({data: [{cwd: CWD, skills: [{name: "deploy", description: "Ship it", path: "/s", scope: "user", enabled: true, pluginId: null}], errors: []}]}));
-        t.codex.respond("account/logout", () => {
-            setTimeout(() => t.codex.emit({method: "account/updated", params: {authMode: null, planType: null}}), 0);
-            return {};
-        });
-        await t.initialize();
-        await t.agent.newSession({cwd: CWD, mcpServers: [{type: "stdio", name: "local tool", command: "/bin/tool"}]});
-        await t.settle();
-        for (const command of ["/mcp", "/skills", "/logout"]) {
-            t.client.clear();
-            await t.agent.prompt({sessionId: THREAD_ID, prompt: [{type: "text", text: command}]});
-            await t.settle();
-            expect(t.client.states()).toEqual(["running", "idle"]);
+  it("answers /mcp and /skills from Codex and /logout through the account", async () => {
+    const t = createTestAgent()
+    t.codex.respond("mcpServerStatus/list", () => ({
+      data: [
+        {
+          name: "srv",
+          runtimeStatus: null,
+          pluginId: null,
+          serverInfo: null,
+          tools: { a: {}, b: {} },
+          resources: [],
+          resourceTemplates: [],
+          authStatus: "unsupported"
         }
-        const texts = () => t.client.updatesOf("agent_message_chunk").map(chunk => (chunk.content as {text: string}).text);
-        expect(texts().at(-1)).toBe("Logged out of the Codex account.");
-        expect(t.codex.calls("account/logout")).toHaveLength(1);
-        t.client.clear();
-        await t.agent.prompt({sessionId: THREAD_ID, prompt: [{type: "text", text: "/mcp"}]});
-        await t.settle();
-        expect(texts()[0]).toContain("- srv: 2 tools, 0 resources, auth=unsupported");
-        expect(texts()[0]).toContain("- local_tool");
-        t.client.clear();
-        await t.agent.prompt({sessionId: THREAD_ID, prompt: [{type: "text", text: "/skills"}]});
-        await t.settle();
-        expect(texts()[0]).toBe("Available skills:\n- deploy: Ship it");
-    });
+      ],
+      nextCursor: null
+    }))
+    t.codex.respond("skills/list", () => ({
+      data: [
+        {
+          cwd: CWD,
+          skills: [
+            { name: "deploy", description: "Ship it", path: "/s", scope: "user", enabled: true, pluginId: null }
+          ],
+          errors: []
+        }
+      ]
+    }))
+    t.codex.respond("account/logout", () => {
+      setTimeout(() => t.codex.emit({ method: "account/updated", params: { authMode: null, planType: null } }), 0)
+      return {}
+    })
+    await t.initialize()
+    await t.agent.newSession({ cwd: CWD, mcpServers: [{ type: "stdio", name: "local tool", command: "/bin/tool" }] })
+    await t.settle()
+    for (const command of ["/mcp", "/skills", "/logout"]) {
+      t.client.clear()
+      await t.agent.prompt({ sessionId: THREAD_ID, prompt: [{ type: "text", text: command }] })
+      await t.settle()
+      expect(t.client.states()).toEqual(["running", "idle"])
+    }
+    const texts = () =>
+      t.client.updatesOf("agent_message_chunk").map((chunk) => (chunk.content as { text: string }).text)
+    expect(texts().at(-1)).toBe("Logged out of the Codex account.")
+    expect(t.codex.calls("account/logout")).toHaveLength(1)
+    t.client.clear()
+    await t.agent.prompt({ sessionId: THREAD_ID, prompt: [{ type: "text", text: "/mcp" }] })
+    await t.settle()
+    expect(texts()[0]).toContain("- srv: 2 tools, 0 resources, auth=unsupported")
+    expect(texts()[0]).toContain("- local_tool")
+    t.client.clear()
+    await t.agent.prompt({ sessionId: THREAD_ID, prompt: [{ type: "text", text: "/skills" }] })
+    await t.settle()
+    expect(texts()[0]).toBe("Available skills:\n- deploy: Ship it")
+  })
 
-    it("shows rate limits in /status once Codex reports them", async () => {
-        const t = createTestAgent();
-        await t.initialize();
-        await t.openSession();
-        t.codex.emit({method: "account/rateLimits/updated", params: {rateLimits: {limitId: "weekly", limitName: "Weekly", normalModelSlug: null, primary: {usedPercent: 40, windowDurationMins: 10080, resetsAt: null}, secondary: null, credits: {hasCredits: true, unlimited: true, balance: null}, individualLimit: null, spendControlReached: null, planType: null, rateLimitReachedType: null}}});
-        await t.settle();
-        await t.agent.prompt({sessionId: THREAD_ID, prompt: [{type: "text", text: "/status"}]});
-        await t.settle();
-        const text = (t.client.updatesOf("agent_message_chunk")[0]?.content as {text: string}).text;
-        expect(text).toContain("**Weekly Weekly limit:** 60% left");
-        expect(text).toContain("**Weekly Credits:** unlimited");
-    });
-});
+  it("shows rate limits in /status once Codex reports them", async () => {
+    const t = createTestAgent()
+    await t.initialize()
+    await t.openSession()
+    t.codex.emit({
+      method: "account/rateLimits/updated",
+      params: {
+        rateLimits: {
+          limitId: "weekly",
+          limitName: "Weekly",
+          normalModelSlug: null,
+          primary: { usedPercent: 40, windowDurationMins: 10080, resetsAt: null },
+          secondary: null,
+          credits: { hasCredits: true, unlimited: true, balance: null },
+          individualLimit: null,
+          spendControlReached: null,
+          planType: null,
+          rateLimitReachedType: null
+        }
+      }
+    })
+    await t.settle()
+    await t.agent.prompt({ sessionId: THREAD_ID, prompt: [{ type: "text", text: "/status" }] })
+    await t.settle()
+    const text = (t.client.updatesOf("agent_message_chunk")[0]?.content as { text: string }).text
+    expect(text).toContain("**Weekly Weekly limit:** 60% left")
+    expect(text).toContain("**Weekly Credits:** unlimited")
+  })
+})
 
 describe("edge paths", () => {
-    it("fails steering with a clear error when Codex rejects it", async () => {
-        const t = createTestAgent();
-        t.codex.respond("turn/steer", () => {
-            throw new Error("turn not steerable");
-        });
-        await t.initialize();
-        await t.openSession();
-        await t.agent.prompt({sessionId: THREAD_ID, prompt: [{type: "text", text: "first"}]});
-        await t.settle();
-        await expectRejects(t.agent.prompt({sessionId: THREAD_ID, prompt: [{type: "text", text: "second"}]}), -32600, "Could not steer");
-    });
+  it("fails steering with a clear error when Codex rejects it", async () => {
+    const t = createTestAgent()
+    t.codex.respond("turn/steer", () => {
+      throw new Error("turn not steerable")
+    })
+    await t.initialize()
+    await t.openSession()
+    await t.agent.prompt({ sessionId: THREAD_ID, prompt: [{ type: "text", text: "first" }] })
+    await t.settle()
+    await expectRejects(
+      t.agent.prompt({ sessionId: THREAD_ID, prompt: [{ type: "text", text: "second" }] }),
+      -32600,
+      "Could not steer"
+    )
+  })
 
-    it("close synthesizes the turn end when Codex never answers the interrupt", async () => {
-        const t = createTestAgent({closeGraceMs: 50});
-        await t.initialize();
-        await t.openSession();
-        await t.agent.prompt({sessionId: THREAD_ID, prompt: [{type: "text", text: "stuck"}]});
-        await t.settle();
-        await t.agent.closeSession({sessionId: THREAD_ID});
-        expect(t.codex.calls("turn/interrupt")).toHaveLength(1);
-        expect(t.client.updatesOf("state_update").at(-1)).toMatchObject({state: "idle", stopReason: "cancelled"});
-        expect(t.codex.calls("thread/unsubscribe")).toHaveLength(1);
-    });
+  it("close synthesizes the turn end when Codex never answers the interrupt", async () => {
+    const t = createTestAgent({ closeGraceMs: 50 })
+    await t.initialize()
+    await t.openSession()
+    await t.agent.prompt({ sessionId: THREAD_ID, prompt: [{ type: "text", text: "stuck" }] })
+    await t.settle()
+    await t.agent.closeSession({ sessionId: THREAD_ID })
+    expect(t.codex.calls("turn/interrupt")).toHaveLength(1)
+    expect(t.client.updatesOf("state_update").at(-1)).toMatchObject({ state: "idle", stopReason: "cancelled" })
+    expect(t.codex.calls("thread/unsubscribe")).toHaveLength(1)
+  })
 
-    it("pages session/list with the client's cursor", async () => {
-        const t = createTestAgent();
-        t.codex.respond("thread/list", (params) => ({data: params.cursor === "p2" ? [thread({id: "t2"})] : [thread()], nextCursor: params.cursor === "p2" ? null : "p2", backwardsCursor: null}));
-        await t.initialize();
-        const first = await t.agent.listSessions({});
-        expect(first.nextCursor).toBe("p2");
-        const second = await t.agent.listSessions({cursor: "p2"});
-        expect(second.sessions.map(session => session.sessionId)).toEqual(["t2"]);
-        expect(second.nextCursor).toBeNull();
-        expect(t.codex.lastParams<{cwd?: string}>("thread/list").cwd).toBeUndefined();
-    });
+  it("pages session/list with the client's cursor", async () => {
+    const t = createTestAgent()
+    t.codex.respond("thread/list", (params) => ({
+      data: params.cursor === "p2" ? [thread({ id: "t2" })] : [thread()],
+      nextCursor: params.cursor === "p2" ? null : "p2",
+      backwardsCursor: null
+    }))
+    await t.initialize()
+    const first = await t.agent.listSessions({})
+    expect(first.nextCursor).toBe("p2")
+    const second = await t.agent.listSessions({ cursor: "p2" })
+    expect(second.sessions.map((session) => session.sessionId)).toEqual(["t2"])
+    expect(second.nextCursor).toBeNull()
+    expect(t.codex.lastParams<{ cwd?: string }>("thread/list").cwd).toBeUndefined()
+  })
 
-    it("logs in with a device code through a URL elicitation", async () => {
-        const t = createTestAgent();
-        t.codex.respond("account/read", () => ({account: null, requiresOpenaiAuth: true}));
-        t.codex.respond("account/login/start", () => {
-            setTimeout(() => t.codex.emit({method: "account/login/completed", params: {loginId: "login-1", success: true, error: null, onboardingEntrypoint: null}}), 20);
-            return {type: "chatgptDeviceCode", loginId: "login-1", verificationUrl: "https://auth.example/device", userCode: "ABCD-1234"};
-        });
-        t.client.elicitationResponder = () => ({action: "accept"});
-        await t.initialize({elicitation: {url: {}}});
-        await expect(t.agent.login({methodId: "chat-gpt-device-code"}, 7)).resolves.toEqual({});
-        const elicitation = t.client.requests.find(entry => entry.method === acp.methods.client.elicitation.create)?.params as {mode: string; requestId: unknown; url: string; message: string; elicitationId: string};
-        expect(elicitation).toMatchObject({mode: "url", requestId: 7, url: "https://auth.example/device", elicitationId: "login-1"});
-        expect(elicitation.message).toContain("ABCD-1234");
-        expect(t.client.notifications.find(entry => entry.method === acp.methods.client.elicitation.complete)?.params).toEqual({elicitationId: "login-1"});
-    });
+  it("logs in with a device code through a URL elicitation", async () => {
+    const t = createTestAgent()
+    t.codex.respond("account/read", () => ({ account: null, requiresOpenaiAuth: true }))
+    t.codex.respond("account/login/start", () => {
+      setTimeout(
+        () =>
+          t.codex.emit({
+            method: "account/login/completed",
+            params: { loginId: "login-1", success: true, error: null, onboardingEntrypoint: null }
+          }),
+        20
+      )
+      return {
+        type: "chatgptDeviceCode",
+        loginId: "login-1",
+        verificationUrl: "https://auth.example/device",
+        userCode: "ABCD-1234"
+      }
+    })
+    t.client.elicitationResponder = () => ({ action: "accept" })
+    await t.initialize({ elicitation: { url: {} } })
+    await expect(t.agent.login({ methodId: "chat-gpt-device-code" }, 7)).resolves.toEqual({})
+    const elicitation = t.client.requests.find((entry) => entry.method === acp.methods.client.elicitation.create)
+      ?.params as { mode: string; requestId: unknown; url: string; message: string; elicitationId: string }
+    expect(elicitation).toMatchObject({
+      mode: "url",
+      requestId: 7,
+      url: "https://auth.example/device",
+      elicitationId: "login-1"
+    })
+    expect(elicitation.message).toContain("ABCD-1234")
+    expect(
+      t.client.notifications.find((entry) => entry.method === acp.methods.client.elicitation.complete)?.params
+    ).toEqual({ elicitationId: "login-1" })
+  })
 
-    it("cancels the device code login when the user declines the URL", async () => {
-        const t = createTestAgent();
-        t.codex.respond("account/read", () => ({account: null, requiresOpenaiAuth: true}));
-        t.codex.respond("account/login/start", () => ({type: "chatgptDeviceCode", loginId: "login-2", verificationUrl: "https://auth.example/device", userCode: "X"}));
-        t.client.elicitationResponder = () => ({action: "decline"});
-        await t.initialize({elicitation: {url: {}}});
-        await expectRejects(t.agent.login({methodId: "chat-gpt-device-code"}), -32000, "cancelled");
-        expect(t.codex.lastParams<{loginId: string}>("account/login/cancel")).toEqual({loginId: "login-2"});
-    });
+  it("cancels the device code login when the user declines the URL", async () => {
+    const t = createTestAgent()
+    t.codex.respond("account/read", () => ({ account: null, requiresOpenaiAuth: true }))
+    t.codex.respond("account/login/start", () => ({
+      type: "chatgptDeviceCode",
+      loginId: "login-2",
+      verificationUrl: "https://auth.example/device",
+      userCode: "X"
+    }))
+    t.client.elicitationResponder = () => ({ action: "decline" })
+    await t.initialize({ elicitation: { url: {} } })
+    await expectRejects(t.agent.login({ methodId: "chat-gpt-device-code" }), -32000, "cancelled")
+    expect(t.codex.lastParams<{ loginId: string }>("account/login/cancel")).toEqual({ loginId: "login-2" })
+  })
 
-    it("skips the browser flow when Codex already has a ChatGPT account", async () => {
-        const t = createTestAgent();
-        await t.initialize();
-        await expect(t.agent.login({methodId: "chat-gpt"})).resolves.toEqual({});
-        expect(t.codex.calls("account/login/start")).toHaveLength(0);
-    });
-});
+  it("skips the browser flow when Codex already has a ChatGPT account", async () => {
+    const t = createTestAgent()
+    await t.initialize()
+    await expect(t.agent.login({ methodId: "chat-gpt" })).resolves.toEqual({})
+    expect(t.codex.calls("account/login/start")).toHaveLength(0)
+  })
+})
 
 describe("history inputs", () => {
-    it("renders images, mentions, and in-progress commands from history", async () => {
-        const t = createTestAgent();
-        t.codex.respond("thread/turns/list", () => ({nextCursor: null, backwardsCursor: null, data: [turn({items: [
-            {type: "userMessage", id: "u1", clientId: null, content: [
-                {type: "text", text: "look at", text_elements: []},
-                {type: "localImage", path: "/p/shot.png"},
-                {type: "mention", name: "README", path: "/p/README.md"},
-                {type: "skill", name: "deploy", path: "/s/deploy"},
-            ]},
-            {type: "commandExecution", id: "c1", pluginId: null, scriptPath: null, command: "sleep 9", cwd: CWD, processId: null, source: "agent", status: "inProgress", commandActions: [], aggregatedOutput: null, exitCode: null, durationMs: null},
-            {type: "webSearch", id: "w1", query: "acp", action: null, results: null},
-        ]})]}));
-        await t.initialize();
-        await t.agent.resumeSession({sessionId: THREAD_ID, cwd: CWD, replayFrom: {type: "start"}});
-        const user = t.client.updatesOf("user_message")[0];
-        expect(user?.content).toEqual([
-            {type: "text", text: "look at"},
-            {type: "resource_link", name: "Image unavailable", uri: "codex-image:unavailable", _meta: {codex: {imageUnavailable: true}}},
-            {type: "resource_link", name: "README", uri: pathToFileURL("/p/README.md").href},
-            {type: "text", text: "skill:deploy (/s/deploy)"},
-        ]);
-        const kinds = t.client.updates().filter(update => update.sessionUpdate !== "available_commands_update").map(update => update.sessionUpdate);
-        expect(kinds).toEqual(["session_info_update", "user_message", "terminal_update", "tool_call_update", "tool_call_update"]);
-        expect(t.client.updatesOf("terminal_update")[0]).not.toHaveProperty("exitStatus");
-        expect(t.client.updatesOf("tool_call_update").at(-1)).toMatchObject({name: "web_search", title: "Web search: acp", status: "completed"});
-    });
-});
+  it("renders images, mentions, and in-progress commands from history", async () => {
+    const t = createTestAgent()
+    t.codex.respond("thread/turns/list", () => ({
+      nextCursor: null,
+      backwardsCursor: null,
+      data: [
+        turn({
+          items: [
+            {
+              type: "userMessage",
+              id: "u1",
+              clientId: null,
+              content: [
+                { type: "text", text: "look at", text_elements: [] },
+                { type: "localImage", path: "/p/shot.png" },
+                { type: "mention", name: "README", path: "/p/README.md" },
+                { type: "skill", name: "deploy", path: "/s/deploy" }
+              ]
+            },
+            {
+              type: "commandExecution",
+              id: "c1",
+              pluginId: null,
+              scriptPath: null,
+              command: "sleep 9",
+              cwd: CWD,
+              processId: null,
+              source: "agent",
+              status: "inProgress",
+              commandActions: [],
+              aggregatedOutput: null,
+              exitCode: null,
+              durationMs: null
+            },
+            { type: "webSearch", id: "w1", query: "acp", action: null, results: null }
+          ]
+        })
+      ]
+    }))
+    await t.initialize()
+    await t.agent.resumeSession({ sessionId: THREAD_ID, cwd: CWD, replayFrom: { type: "start" } })
+    const user = t.client.updatesOf("user_message")[0]
+    expect(user?.content).toEqual([
+      { type: "text", text: "look at" },
+      {
+        type: "resource_link",
+        name: "Image unavailable",
+        uri: "codex-image:unavailable",
+        _meta: { codex: { imageUnavailable: true } }
+      },
+      { type: "resource_link", name: "README", uri: pathToFileURL("/p/README.md").href },
+      { type: "text", text: "skill:deploy (/s/deploy)" }
+    ])
+    const kinds = t.client
+      .updates()
+      .filter((update) => update.sessionUpdate !== "available_commands_update")
+      .map((update) => update.sessionUpdate)
+    expect(kinds).toEqual([
+      "session_info_update",
+      "user_message",
+      "terminal_update",
+      "tool_call_update",
+      "tool_call_update"
+    ])
+    expect(t.client.updatesOf("terminal_update")[0]).not.toHaveProperty("exitStatus")
+    expect(t.client.updatesOf("tool_call_update").at(-1)).toMatchObject({
+      name: "web_search",
+      title: "Web search: acp",
+      status: "completed"
+    })
+  })
+})
 
 describe("gateways", () => {
-    function catalogFile(slug: string, efforts: string[]): string {
-        const file = path.join(os.tmpdir(), `codex-acp-catalog-${slug.replace(/[^a-z0-9]/gi, "_")}-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.json`);
-        fs.writeFileSync(file, JSON.stringify({models: [{
-            slug, display_name: slug, description: slug, default_reasoning_level: efforts[0],
-            supported_reasoning_levels: efforts.map(effort => ({effort, description: effort})),
-            input_modalities: ["text"],
-        }]}));
-        return file;
+  function catalogFile(slug: string, efforts: string[]): string {
+    const file = path.join(
+      os.tmpdir(),
+      `codex-acp-catalog-${slug.replace(/[^a-z0-9]/gi, "_")}-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.json`
+    )
+    fs.writeFileSync(
+      file,
+      JSON.stringify({
+        models: [
+          {
+            slug,
+            display_name: slug,
+            description: slug,
+            default_reasoning_level: efforts[0],
+            supported_reasoning_levels: efforts.map((effort) => ({ effort, description: effort })),
+            input_modalities: ["text"]
+          }
+        ]
+      })
+    )
+    return file
+  }
+
+  function gateway(id: string, name: string, baseUrl: string, modelId: string, efforts: string[]) {
+    return {
+      providerId: "openai",
+      apiType: "openai" as const,
+      baseUrl,
+      _meta: {
+        codex: {
+          id,
+          name,
+          mode: "catalog",
+          bearerToken: `sk-${id}`,
+          config: { model_catalog_json: catalogFile(modelId, efforts) }
+        },
+        alwith: { models: [{ id: modelId }] }
+      }
     }
+  }
 
-    function gateway(id: string, name: string, baseUrl: string, modelId: string, efforts: string[]) {
-        return {
-            providerId: "openai", apiType: "openai" as const, baseUrl,
-            _meta: {
-                codex: {id, name, mode: "catalog", bearerToken: `sk-${id}`, config: {model_catalog_json: catalogFile(modelId, efforts)}},
-                alwith: {models: [{id: modelId}]},
-            },
-        };
+  const deepseek = () =>
+    gateway("deepseek", "DeepSeek", "https://api.deepseek.com/", "deepseek-flash", ["low", "high", "max"])
+  const openrouter = () =>
+    gateway("openrouter", "OpenRouter", "https://openrouter.ai/api/v1", "qwen/qwen3.8-max", ["low", "medium"])
+  type Resume = { threadId: string; modelProvider: string; model: string; config?: Record<string, unknown> }
+  const providers = (config: Record<string, unknown> | undefined) =>
+    config?.["model_providers"] as Record<string, Record<string, unknown>> | undefined
+  const groupsOf = (options: acp.SessionConfigOption[] | undefined) => {
+    const option = options?.find((entry) => entry.configId === "model") as {
+      options: Array<{ groupId: string; name: string; options: Array<{ value: string }> }>
     }
+    return option.options.map((group) => [group.groupId, group.name, group.options.map((entry) => entry.value)])
+  }
 
-    const deepseek = () => gateway("deepseek", "DeepSeek", "https://api.deepseek.com/", "deepseek-flash", ["low", "high", "max"]);
-    const openrouter = () => gateway("openrouter", "OpenRouter", "https://openrouter.ai/api/v1", "qwen/qwen3.8-max", ["low", "medium"]);
-    type Resume = {threadId: string; modelProvider: string; model: string; config?: Record<string, unknown>};
-    const providers = (config: Record<string, unknown> | undefined) => config?.["model_providers"] as Record<string, Record<string, unknown>> | undefined;
-    const groupsOf = (options: acp.SessionConfigOption[] | undefined) => {
-        const option = options?.find(entry => entry.configId === "model") as {options: Array<{groupId: string; name: string; options: Array<{value: string}>}>};
-        return option.options.map(group => [group.groupId, group.name, group.options.map(entry => entry.value)]);
-    };
-
-    it("registers several gateways, each as its own select group, and lists them", async () => {
-        const t = createTestAgent();
-        await t.initialize();
-        await t.agent.setProvider(deepseek());
-        await t.agent.setProvider(openrouter());
-        const response = await t.agent.newSession({cwd: CWD});
-        expect(groupsOf(response.configOptions)).toEqual([
-            ["chatgpt", "ChatGPT", ["gpt-5"]],
-            ["deepseek", "DeepSeek", ["gateway:deepseek:deepseek-flash"]],
-            ["openrouter", "OpenRouter", ["gateway:openrouter:qwen%2Fqwen3.8-max"]],
-        ]);
-        const listed = t.agent.listProviders({}).providers[0] as unknown as {current?: {baseUrl: string}; _meta?: {codex: {gateway: {id: string}; gateways: Array<{id: string; name: string; baseUrl: string; models: string[]}>}}};
-        expect(listed.current?.baseUrl).toBe("https://api.openai.com/v1");
-        expect(listed._meta?.codex.gateway.id).toBe("deepseek");
-        expect(listed._meta?.codex.gateways).toEqual([
-            {id: "deepseek", name: "DeepSeek", baseUrl: "https://api.deepseek.com/", models: ["deepseek-flash"]},
-            {id: "openrouter", name: "OpenRouter", baseUrl: "https://openrouter.ai/api/v1", models: ["qwen/qwen3.8-max"]},
-        ]);
-    });
-
-    it("moves a session to gateway B, then A, then back to native, writing each gateway's own entry", async () => {
-        const t = createTestAgent();
-        await t.initialize();
-        await t.agent.setProvider(deepseek());
-        await t.agent.setProvider(openrouter());
-        await t.openSession();
-        const toB = await t.agent.setSessionConfigOption({sessionId: THREAD_ID, configId: "model", type: "id", value: "gateway:openrouter:qwen%2Fqwen3.8-max"});
-        const resumeB = t.codex.lastParams<Resume>("thread/resume");
-        expect(resumeB).toMatchObject({threadId: THREAD_ID, modelProvider: "openrouter", model: "qwen/qwen3.8-max"});
-        expect(Object.keys(providers(resumeB.config) ?? {})).toEqual(["openrouter"]);
-        expect(providers(resumeB.config)?.["openrouter"]).toMatchObject({base_url: "https://openrouter.ai/api/v1", experimental_bearer_token: "sk-openrouter"});
-        const effortB = toB.configOptions?.find(option => option.configId === "effort") as {options: Array<{value: string}>};
-        expect(effortB.options.map(option => option.value)).toEqual(["low", "medium"]);
-        await t.agent.setSessionConfigOption({sessionId: THREAD_ID, configId: "model", type: "id", value: "gateway:deepseek:deepseek-flash"});
-        const resumeA = t.codex.lastParams<Resume>("thread/resume");
-        expect(resumeA).toMatchObject({modelProvider: "deepseek", model: "deepseek-flash"});
-        expect(Object.keys(providers(resumeA.config) ?? {})).toEqual(["deepseek"]);
-        await t.agent.setSessionConfigOption({sessionId: THREAD_ID, configId: "model", type: "id", value: "gpt-5"});
-        const native = t.codex.lastParams<Resume>("thread/resume");
-        expect(native).toMatchObject({modelProvider: "openai", model: "gpt-5"});
-        expect(native.config?.["model_providers"]).toBeUndefined();
-    });
-
-    it("disabling a gateway blocks its sessions until explicit selection and keeps the other group", async () => {
-        const t = createTestAgent();
-        await t.initialize();
-        await t.agent.setProvider(deepseek());
-        await t.agent.setProvider(openrouter());
-        let starts = 0;
-        t.codex.respond("thread/start", () => threadResponse({id: starts++ === 0 ? THREAD_ID : "thread-2"}));
-        await t.openSession();
-        await t.agent.newSession({cwd: CWD});
-        await t.agent.setSessionConfigOption({sessionId: THREAD_ID, configId: "model", type: "id", value: "gateway:openrouter:qwen%2Fqwen3.8-max"});
-        await t.agent.setSessionConfigOption({sessionId: "thread-2", configId: "model", type: "id", value: "gateway:deepseek:deepseek-flash"});
-        const before = t.codex.calls("thread/resume").length;
-        await t.agent.disableProvider({providerId: "openai", _meta: {codex: {id: "openrouter"}}} as acp.DisableProviderRequest);
-        const resumes = t.codex.calls("thread/resume").slice(before).map(call => call.params as Resume);
-        expect(resumes).toEqual([]);
-        await expectRejects(t.agent.prompt({sessionId: THREAD_ID, prompt: [{type: "text", text: "go"}]}), -32602, "unavailable");
-        const options = t.client.updatesOf("config_option_update").at(-1) as {configOptions: acp.SessionConfigOption[]};
-        expect(groupsOf(options.configOptions)).toEqual([
-            ["chatgpt", "ChatGPT", ["gpt-5"]],
-            ["deepseek", "DeepSeek", ["gateway:deepseek:deepseek-flash"]],
-        ]);
-        const listed = t.agent.listProviders({}).providers[0] as unknown as {_meta?: {codex: {gateways: Array<{id: string}>}}};
-        expect(listed._meta?.codex.gateways.map(gateway => gateway.id)).toEqual(["deepseek"]);
-        await t.agent.disableProvider({providerId: "openai"});
-        expect((t.agent.listProviders({}).providers[0] as unknown as {_meta?: unknown})._meta).toBeUndefined();
-        expect(t.codex.calls("thread/resume")).toHaveLength(before);
-        await expectRejects(t.agent.prompt({sessionId: "thread-2", prompt: [{type: "text", text: "go"}]}), -32602, "unavailable");
-        await t.agent.setSessionConfigOption({sessionId: "thread-2", configId: "model", type: "id", value: "gpt-5"});
-        expect(t.codex.lastParams<Resume>("thread/resume")).toMatchObject({threadId: "thread-2", modelProvider: "openai"});
-    });
-
-    it("routes identical upstream models through the explicitly selected account", async () => {
-        const t = createTestAgent();
-        await t.initialize();
-        await t.agent.setProvider(gateway("account-a", "A", "https://a.example/v1", "same/model", ["low"]));
-        await t.agent.setProvider(gateway("account-b", "B", "https://b.example/v1", "same/model", ["low"]));
-        await t.openSession();
-        for (const id of ["account-a", "account-b"]) {
-            await t.agent.setSessionConfigOption({sessionId: THREAD_ID, configId: "model", type: "id", value: `gateway:${id}:same%2Fmodel`});
-            const resumed = t.codex.lastParams<Resume>("thread/resume");
-            expect(resumed).toMatchObject({modelProvider: id, model: "same/model"});
-            expect(Object.keys(providers(resumed.config) ?? {})).toEqual([id]);
-            expect(providers(resumed.config)?.[id]).toMatchObject({experimental_bearer_token: `sk-${id}`});
+  it("registers several gateways, each as its own select group, and lists them", async () => {
+    const t = createTestAgent()
+    await t.initialize()
+    await t.agent.setProvider(deepseek())
+    await t.agent.setProvider(openrouter())
+    const response = await t.agent.newSession({ cwd: CWD })
+    expect(groupsOf(response.configOptions)).toEqual([
+      ["chatgpt", "ChatGPT", ["gpt-5"]],
+      ["deepseek", "DeepSeek", ["gateway:deepseek:deepseek-flash"]],
+      ["openrouter", "OpenRouter", ["gateway:openrouter:qwen%2Fqwen3.8-max"]]
+    ])
+    const listed = t.agent.listProviders({}).providers[0] as unknown as {
+      current?: { baseUrl: string }
+      _meta?: {
+        codex: {
+          gateway: { id: string }
+          gateways: Array<{ id: string; name: string; baseUrl: string; models: string[] }>
         }
-        await t.agent.prompt({sessionId: THREAD_ID, prompt: [{type: "text", text: "go"}]});
-        await t.settle();
-        expect(t.codex.lastParams<{model: string}>("turn/start").model).toBe("same/model");
-        turnCompleted(t.codex);
-        await t.settle();
-    });
+      }
+    }
+    expect(listed.current?.baseUrl).toBe("https://api.openai.com/v1")
+    expect(listed._meta?.codex.gateway.id).toBe("deepseek")
+    expect(listed._meta?.codex.gateways).toEqual([
+      { id: "deepseek", name: "DeepSeek", baseUrl: "https://api.deepseek.com/", models: ["deepseek-flash"] },
+      { id: "openrouter", name: "OpenRouter", baseUrl: "https://openrouter.ai/api/v1", models: ["qwen/qwen3.8-max"] }
+    ])
+  })
 
-    it("allows the same model on distinct connections and rejects invalid connection ids", async () => {
-        const t = createTestAgent();
-        await t.initialize();
-        await t.agent.setProvider(deepseek());
-        const clash = gateway("other", "Other", "https://other.example.com/v1", "deepseek-flash", ["low"]);
-        await t.agent.setProvider(clash);
-        const bad = deepseek();
-        bad._meta.codex.id = "Not Valid";
-        await expectRejects(t.agent.setProvider(bad), -32602, "_meta.codex.id");
-        const reserved = deepseek();
-        reserved._meta.codex.id = "openai";
-        await expectRejects(t.agent.setProvider(reserved), -32602, "Codex's own provider");
-        // Re-registering the same id (a rotated key) is not a clash.
-        await t.agent.setProvider(deepseek());
-        expect(groupsOf((await t.agent.newSession({cwd: CWD})).configOptions)).toHaveLength(3);
-    });
+  it("moves a session to gateway B, then A, then back to native, writing each gateway's own entry", async () => {
+    const t = createTestAgent()
+    await t.initialize()
+    await t.agent.setProvider(deepseek())
+    await t.agent.setProvider(openrouter())
+    await t.openSession()
+    const toB = await t.agent.setSessionConfigOption({
+      sessionId: THREAD_ID,
+      configId: "model",
+      type: "id",
+      value: "gateway:openrouter:qwen%2Fqwen3.8-max"
+    })
+    const resumeB = t.codex.lastParams<Resume>("thread/resume")
+    expect(resumeB).toMatchObject({ threadId: THREAD_ID, modelProvider: "openrouter", model: "qwen/qwen3.8-max" })
+    expect(Object.keys(providers(resumeB.config) ?? {})).toEqual(["openrouter"])
+    expect(providers(resumeB.config)?.["openrouter"]).toMatchObject({
+      base_url: "https://openrouter.ai/api/v1",
+      experimental_bearer_token: "sk-openrouter"
+    })
+    const effortB = toB.configOptions?.find((option) => option.configId === "effort") as {
+      options: Array<{ value: string }>
+    }
+    expect(effortB.options.map((option) => option.value)).toEqual(["low", "medium"])
+    await t.agent.setSessionConfigOption({
+      sessionId: THREAD_ID,
+      configId: "model",
+      type: "id",
+      value: "gateway:deepseek:deepseek-flash"
+    })
+    const resumeA = t.codex.lastParams<Resume>("thread/resume")
+    expect(resumeA).toMatchObject({ modelProvider: "deepseek", model: "deepseek-flash" })
+    expect(Object.keys(providers(resumeA.config) ?? {})).toEqual(["deepseek"])
+    await t.agent.setSessionConfigOption({ sessionId: THREAD_ID, configId: "model", type: "id", value: "gpt-5" })
+    const native = t.codex.lastParams<Resume>("thread/resume")
+    expect(native).toMatchObject({ modelProvider: "openai", model: "gpt-5" })
+    expect(native.config?.["model_providers"]).toBeUndefined()
+  })
 
-    it("session/new with _meta.alwith.model starts on the gateway that serves the model", async () => {
-        const t = createTestAgent();
-        await t.initialize();
-        await t.agent.setProvider(deepseek());
-        await t.agent.setProvider(openrouter());
-        await t.agent.newSession({cwd: CWD, _meta: {alwith: {model: "gateway:openrouter:qwen%2Fqwen3.8-max"}}});
-        const start = t.codex.lastParams<ThreadStartParams>("thread/start");
-        expect(start).toMatchObject({modelProvider: "openrouter", model: "qwen/qwen3.8-max"});
-        expect(Object.keys(providers(start.config as Record<string, unknown>) ?? {})).toEqual(["openrouter"]);
-    });
-});
+  it("disabling a gateway blocks its sessions until explicit selection and keeps the other group", async () => {
+    const t = createTestAgent()
+    await t.initialize()
+    await t.agent.setProvider(deepseek())
+    await t.agent.setProvider(openrouter())
+    let starts = 0
+    t.codex.respond("thread/start", () => threadResponse({ id: starts++ === 0 ? THREAD_ID : "thread-2" }))
+    await t.openSession()
+    await t.agent.newSession({ cwd: CWD })
+    await t.agent.setSessionConfigOption({
+      sessionId: THREAD_ID,
+      configId: "model",
+      type: "id",
+      value: "gateway:openrouter:qwen%2Fqwen3.8-max"
+    })
+    await t.agent.setSessionConfigOption({
+      sessionId: "thread-2",
+      configId: "model",
+      type: "id",
+      value: "gateway:deepseek:deepseek-flash"
+    })
+    const before = t.codex.calls("thread/resume").length
+    await t.agent.disableProvider({
+      providerId: "openai",
+      _meta: { codex: { id: "openrouter" } }
+    } as acp.DisableProviderRequest)
+    const resumes = t.codex
+      .calls("thread/resume")
+      .slice(before)
+      .map((call) => call.params as Resume)
+    expect(resumes).toEqual([])
+    await expectRejects(
+      t.agent.prompt({ sessionId: THREAD_ID, prompt: [{ type: "text", text: "go" }] }),
+      -32602,
+      "unavailable"
+    )
+    const options = t.client.updatesOf("config_option_update").at(-1) as { configOptions: acp.SessionConfigOption[] }
+    expect(groupsOf(options.configOptions)).toEqual([
+      ["chatgpt", "ChatGPT", ["gpt-5"]],
+      ["deepseek", "DeepSeek", ["gateway:deepseek:deepseek-flash"]]
+    ])
+    const listed = t.agent.listProviders({}).providers[0] as unknown as {
+      _meta?: { codex: { gateways: Array<{ id: string }> } }
+    }
+    expect(listed._meta?.codex.gateways.map((gateway) => gateway.id)).toEqual(["deepseek"])
+    await t.agent.disableProvider({ providerId: "openai" })
+    expect((t.agent.listProviders({}).providers[0] as unknown as { _meta?: unknown })._meta).toBeUndefined()
+    expect(t.codex.calls("thread/resume")).toHaveLength(before)
+    await expectRejects(
+      t.agent.prompt({ sessionId: "thread-2", prompt: [{ type: "text", text: "go" }] }),
+      -32602,
+      "unavailable"
+    )
+    await t.agent.setSessionConfigOption({ sessionId: "thread-2", configId: "model", type: "id", value: "gpt-5" })
+    expect(t.codex.lastParams<Resume>("thread/resume")).toMatchObject({ threadId: "thread-2", modelProvider: "openai" })
+  })
+
+  it("routes identical upstream models through the explicitly selected account", async () => {
+    const t = createTestAgent()
+    await t.initialize()
+    await t.agent.setProvider(gateway("account-a", "A", "https://a.example/v1", "same/model", ["low"]))
+    await t.agent.setProvider(gateway("account-b", "B", "https://b.example/v1", "same/model", ["low"]))
+    await t.openSession()
+    for (const id of ["account-a", "account-b"]) {
+      await t.agent.setSessionConfigOption({
+        sessionId: THREAD_ID,
+        configId: "model",
+        type: "id",
+        value: `gateway:${id}:same%2Fmodel`
+      })
+      const resumed = t.codex.lastParams<Resume>("thread/resume")
+      expect(resumed).toMatchObject({ modelProvider: id, model: "same/model" })
+      expect(Object.keys(providers(resumed.config) ?? {})).toEqual([id])
+      expect(providers(resumed.config)?.[id]).toMatchObject({ experimental_bearer_token: `sk-${id}` })
+    }
+    await t.agent.prompt({ sessionId: THREAD_ID, prompt: [{ type: "text", text: "go" }] })
+    await t.settle()
+    expect(t.codex.lastParams<{ model: string }>("turn/start").model).toBe("same/model")
+    turnCompleted(t.codex)
+    await t.settle()
+  })
+
+  it("allows the same model on distinct connections and rejects invalid connection ids", async () => {
+    const t = createTestAgent()
+    await t.initialize()
+    await t.agent.setProvider(deepseek())
+    const clash = gateway("other", "Other", "https://other.example.com/v1", "deepseek-flash", ["low"])
+    await t.agent.setProvider(clash)
+    const bad = deepseek()
+    bad._meta.codex.id = "Not Valid"
+    await expectRejects(t.agent.setProvider(bad), -32602, "_meta.codex.id")
+    const reserved = deepseek()
+    reserved._meta.codex.id = "openai"
+    await expectRejects(t.agent.setProvider(reserved), -32602, "Codex's own provider")
+    // Re-registering the same id (a rotated key) is not a clash.
+    await t.agent.setProvider(deepseek())
+    expect(groupsOf((await t.agent.newSession({ cwd: CWD })).configOptions)).toHaveLength(3)
+  })
+
+  it("session/new with _meta.alwith.model starts on the gateway that serves the model", async () => {
+    const t = createTestAgent()
+    await t.initialize()
+    await t.agent.setProvider(deepseek())
+    await t.agent.setProvider(openrouter())
+    await t.agent.newSession({ cwd: CWD, _meta: { alwith: { model: "gateway:openrouter:qwen%2Fqwen3.8-max" } } })
+    const start = t.codex.lastParams<ThreadStartParams>("thread/start")
+    expect(start).toMatchObject({ modelProvider: "openrouter", model: "qwen/qwen3.8-max" })
+    expect(Object.keys(providers(start.config as Record<string, unknown>) ?? {})).toEqual(["openrouter"])
+  })
+})
 
 describe("thread name, account and file search pass-throughs", () => {
-    it("advertises the extensions and passes each request through", async () => {
-        const t = createTestAgent();
-        const init = await t.initialize();
-        const meta = init.capabilities?._meta as {codex?: {rename?: boolean; account?: boolean; fuzzyFileSearch?: boolean}};
-        expect(meta.codex).toMatchObject({rename: true, account: true, fuzzyFileSearch: true});
-        t.codex.respond("thread/name/set", () => ({}));
-        t.codex.respond("account/rateLimits/read", () => ({rateLimits: {limitId: "codex"}, rateLimitsByLimitId: null, rateLimitResetCredits: null, accountId: null}));
-        t.codex.respond("fuzzyFileSearch", () => ({files: [{root: CWD, path: "src/a.ts", match_type: "fuzzy", file_name: "a.ts", score: 1, indices: null}]}));
-        expect(await t.agent.sessionRename({sessionId: THREAD_ID, name: "Renamed"})).toEqual({});
-        expect(t.codex.lastParams("thread/name/set")).toEqual({threadId: THREAD_ID, name: "Renamed"});
-        expect(await t.agent.accountRead()).toMatchObject({requiresOpenaiAuth: true});
-        expect(t.codex.lastParams("account/read")).toEqual({refreshToken: false});
-        expect(await t.agent.rateLimits()).toMatchObject({rateLimits: {limitId: "codex"}});
-        expect(t.codex.calls("account/rateLimits/read")).toHaveLength(1);
-        expect(await t.agent.fuzzyFileSearch({query: "a", roots: [CWD], cancellationToken: null})).toMatchObject({files: [{path: "src/a.ts"}]});
-        expect(t.codex.lastParams("fuzzyFileSearch")).toEqual({query: "a", roots: [CWD], cancellationToken: null});
-    });
+  it("advertises the extensions and passes each request through", async () => {
+    const t = createTestAgent()
+    const init = await t.initialize()
+    const meta = init.capabilities?._meta as {
+      codex?: { rename?: boolean; account?: boolean; fuzzyFileSearch?: boolean }
+    }
+    expect(meta.codex).toMatchObject({ rename: true, account: true, fuzzyFileSearch: true })
+    t.codex.respond("thread/name/set", () => ({}))
+    t.codex.respond("account/rateLimits/read", () => ({
+      rateLimits: { limitId: "codex" },
+      rateLimitsByLimitId: null,
+      rateLimitResetCredits: null,
+      accountId: null
+    }))
+    t.codex.respond("fuzzyFileSearch", () => ({
+      files: [{ root: CWD, path: "src/a.ts", match_type: "fuzzy", file_name: "a.ts", score: 1, indices: null }]
+    }))
+    expect(await t.agent.sessionRename({ sessionId: THREAD_ID, name: "Renamed" })).toEqual({})
+    expect(t.codex.lastParams("thread/name/set")).toEqual({ threadId: THREAD_ID, name: "Renamed" })
+    expect(await t.agent.accountRead()).toMatchObject({ requiresOpenaiAuth: true })
+    expect(t.codex.lastParams("account/read")).toEqual({ refreshToken: false })
+    expect(await t.agent.rateLimits()).toMatchObject({ rateLimits: { limitId: "codex" } })
+    expect(t.codex.calls("account/rateLimits/read")).toHaveLength(1)
+    expect(await t.agent.fuzzyFileSearch({ query: "a", roots: [CWD], cancellationToken: null })).toMatchObject({
+      files: [{ path: "src/a.ts" }]
+    })
+    expect(t.codex.lastParams("fuzzyFileSearch")).toEqual({ query: "a", roots: [CWD], cancellationToken: null })
+  })
 
-    it("forwards rate-limit and file-search notifications verbatim", async () => {
-        const t = createTestAgent();
-        await t.initialize();
-        const limits = {rateLimits: {limitId: "codex", limitName: "Codex", primary: {usedPercent: 12, windowDurationMins: 300, resetsAt: null}, secondary: null, credits: null, planType: null}};
-        t.codex.emit({method: "account/rateLimits/updated", params: limits} as never);
-        t.codex.emit({method: "fuzzyFileSearch/sessionUpdated", params: {sessionId: "s1", query: "a", files: []}} as never);
-        t.codex.emit({method: "fuzzyFileSearch/sessionCompleted", params: {sessionId: "s1"}} as never);
-        await t.settle();
-        const forwarded = t.client.notifications.filter(entry => entry.method.startsWith("_codex/"));
-        expect(forwarded).toEqual([
-            {method: "_codex/rate_limits_updated", params: limits},
-            {method: "_codex/fuzzy_file_search_updated", params: {sessionId: "s1", query: "a", files: []}},
-            {method: "_codex/fuzzy_file_search_completed", params: {sessionId: "s1"}},
-        ]);
-    });
+  it("forwards rate-limit and file-search notifications verbatim", async () => {
+    const t = createTestAgent()
+    await t.initialize()
+    const limits = {
+      rateLimits: {
+        limitId: "codex",
+        limitName: "Codex",
+        primary: { usedPercent: 12, windowDurationMins: 300, resetsAt: null },
+        secondary: null,
+        credits: null,
+        planType: null
+      }
+    }
+    t.codex.emit({ method: "account/rateLimits/updated", params: limits } as never)
+    t.codex.emit({
+      method: "fuzzyFileSearch/sessionUpdated",
+      params: { sessionId: "s1", query: "a", files: [] }
+    } as never)
+    t.codex.emit({ method: "fuzzyFileSearch/sessionCompleted", params: { sessionId: "s1" } } as never)
+    await t.settle()
+    const forwarded = t.client.notifications.filter((entry) => entry.method.startsWith("_codex/"))
+    expect(forwarded).toEqual([
+      { method: "_codex/rate_limits_updated", params: limits },
+      { method: "_codex/fuzzy_file_search_updated", params: { sessionId: "s1", query: "a", files: [] } },
+      { method: "_codex/fuzzy_file_search_completed", params: { sessionId: "s1" } }
+    ])
+  })
 
-    it("validates params and refuses the requests before initialize", async () => {
-        const t = createTestAgent();
-        await expectRejects(t.agent.accountRead(), -32600);
-        await t.initialize();
-        const {parseSessionRenameParams, parseFuzzyFileSearchParams} = await import("../agent/CodexAgent");
-        expect(() => parseSessionRenameParams({sessionId: "", name: "x"})).toThrow("sessionId");
-        expect(() => parseSessionRenameParams({sessionId: THREAD_ID})).toThrow("name");
-        expect(() => parseFuzzyFileSearchParams({query: "a", roots: "nope"})).toThrow("roots");
-        expect(parseFuzzyFileSearchParams({query: "a", roots: [CWD]})).toEqual({query: "a", roots: [CWD], cancellationToken: null});
-    });
-});
+  it("validates params and refuses the requests before initialize", async () => {
+    const t = createTestAgent()
+    await expectRejects(t.agent.accountRead(), -32600)
+    await t.initialize()
+    const { parseSessionRenameParams, parseFuzzyFileSearchParams } = await import("../agent/CodexAgent")
+    expect(() => parseSessionRenameParams({ sessionId: "", name: "x" })).toThrow("sessionId")
+    expect(() => parseSessionRenameParams({ sessionId: THREAD_ID })).toThrow("name")
+    expect(() => parseFuzzyFileSearchParams({ query: "a", roots: "nope" })).toThrow("roots")
+    expect(parseFuzzyFileSearchParams({ query: "a", roots: [CWD] })).toEqual({
+      query: "a",
+      roots: [CWD],
+      cancellationToken: null
+    })
+  })
+})
 
 it("retains a cancelled turn on its prompt before a subsequent turn starts", async () => {
-    const t = createTestAgent();
-    await t.initialize();
-    await t.openSession();
-    const receipt = await t.agent.prompt({sessionId: THREAD_ID, prompt: [{type: "text", text: "interrupt me"}]});
-    await t.settle();
-    t.codex.emit({method: "turn/started", params: {threadId: THREAD_ID, turn: turn({startedAt: 1_800_000_000})}});
-    itemStarted(t.codex, {type: "userMessage", id: "native-interrupted", clientId: receipt.messageId, content: [{type: "text", text: "interrupt me", text_elements: []}]});
-    turnCompleted(t.codex, {status: "interrupted"});
-    await t.settle();
-    expect(t.client.updates()).toContainEqual(expect.objectContaining({sessionUpdate: "user_message", messageId: receipt.messageId, _meta: expect.objectContaining({codex: expect.objectContaining({turnId: TURN_ID, turnInterrupted: true, turnStartedAt: 1_800_000_000_000})})}));
-    await t.agent.prompt({sessionId: THREAD_ID, prompt: [{type: "text", text: "continue"}]});
-    await t.settle();
-    const interrupted = t.client.updates().filter(update => update.sessionUpdate === "user_message" && (update._meta as {codex?: {turnInterrupted?: boolean}} | undefined)?.codex?.turnInterrupted === true);
-    expect(interrupted).toHaveLength(1);
-    turnCompleted(t.codex);
-    await t.settle();
-});
+  const t = createTestAgent()
+  await t.initialize()
+  await t.openSession()
+  const receipt = await t.agent.prompt({ sessionId: THREAD_ID, prompt: [{ type: "text", text: "interrupt me" }] })
+  await t.settle()
+  t.codex.emit({ method: "turn/started", params: { threadId: THREAD_ID, turn: turn({ startedAt: 1_800_000_000 }) } })
+  itemStarted(t.codex, {
+    type: "userMessage",
+    id: "native-interrupted",
+    clientId: receipt.messageId,
+    content: [{ type: "text", text: "interrupt me", text_elements: [] }]
+  })
+  turnCompleted(t.codex, { status: "interrupted" })
+  await t.settle()
+  expect(t.client.updates()).toContainEqual(
+    expect.objectContaining({
+      sessionUpdate: "user_message",
+      messageId: receipt.messageId,
+      _meta: expect.objectContaining({
+        codex: expect.objectContaining({ turnId: TURN_ID, turnInterrupted: true, turnStartedAt: 1_800_000_000_000 })
+      })
+    })
+  )
+  await t.agent.prompt({ sessionId: THREAD_ID, prompt: [{ type: "text", text: "continue" }] })
+  await t.settle()
+  const interrupted = t.client
+    .updates()
+    .filter(
+      (update) =>
+        update.sessionUpdate === "user_message" &&
+        (update._meta as { codex?: { turnInterrupted?: boolean } } | undefined)?.codex?.turnInterrupted === true
+    )
+  expect(interrupted).toHaveLength(1)
+  turnCompleted(t.codex)
+  await t.settle()
+})
 
 describe("plugin enablement", () => {
-    it("upserts a literal local plugin ID and invalidates skills", async () => {
-        const t = createTestAgent();
-        await t.initialize();
-        t.codex.respond("config/value/write", () => ({status: "ok"}));
-        expect(await t.agent.pluginSetEnabled({pluginId: "a.b@market", enabled: false})).toEqual({enabled: false});
-        expect(t.codex.lastParams("config/value/write")).toEqual({keyPath: 'plugins."a.b@market".enabled', value: false, mergeStrategy: "upsert"});
-        await t.settle();
-        expect(t.client.notifications.filter(entry => entry.method === "_codex/skills_changed")).toHaveLength(1);
-    });
-    it("reports overridden writes and propagates failures", async () => {
-        const t = createTestAgent();
-        await t.initialize();
-        t.codex.respond("config/value/write", () => ({status: "okOverridden"}));
-        await expect(t.agent.pluginSetEnabled({pluginId: "a@market", enabled: true})).rejects.toThrow("overridden");
-        t.codex.respond("config/value/write", () => { throw new Error("read-only"); });
-        await expect(t.agent.pluginSetEnabled({pluginId: "a@market", enabled: true})).rejects.toThrow("read-only");
-    });
-});
+  it("upserts a literal local plugin ID and invalidates skills", async () => {
+    const t = createTestAgent()
+    await t.initialize()
+    t.codex.respond("config/value/write", () => ({ status: "ok" }))
+    expect(await t.agent.pluginSetEnabled({ pluginId: "a.b@market", enabled: false })).toEqual({ enabled: false })
+    expect(t.codex.lastParams("config/value/write")).toEqual({
+      keyPath: 'plugins."a.b@market".enabled',
+      value: false,
+      mergeStrategy: "upsert"
+    })
+    await t.settle()
+    expect(t.client.notifications.filter((entry) => entry.method === "_codex/skills_changed")).toHaveLength(1)
+  })
+  it("reports overridden writes and propagates failures", async () => {
+    const t = createTestAgent()
+    await t.initialize()
+    t.codex.respond("config/value/write", () => ({ status: "okOverridden" }))
+    await expect(t.agent.pluginSetEnabled({ pluginId: "a@market", enabled: true })).rejects.toThrow("overridden")
+    t.codex.respond("config/value/write", () => {
+      throw new Error("read-only")
+    })
+    await expect(t.agent.pluginSetEnabled({ pluginId: "a@market", enabled: true })).rejects.toThrow("read-only")
+  })
+})
 
 it("validates plugin enablement at the extension boundary", async () => {
-    const {parsePluginSetEnabledParams} = await import("../agent/CodexAgent");
-    for (const value of [null, {}, {pluginId: "", enabled: true}, {pluginId: "a@market", enabled: "false"}, {pluginId: "a@market", enabled: false, remotePluginId: ""}]) {
-        expect(() => parsePluginSetEnabledParams(value)).toThrow();
-    }
-    expect(parsePluginSetEnabledParams({pluginId: "a@market", enabled: false, keyPath: "model"})).toEqual({pluginId: "a@market", enabled: false});
-});
+  const { parsePluginSetEnabledParams } = await import("../agent/CodexAgent")
+  for (const value of [
+    null,
+    {},
+    { pluginId: "", enabled: true },
+    { pluginId: "a@market", enabled: "false" },
+    { pluginId: "a@market", enabled: false, remotePluginId: "" }
+  ]) {
+    expect(() => parsePluginSetEnabledParams(value)).toThrow()
+  }
+  expect(parsePluginSetEnabledParams({ pluginId: "a@market", enabled: false, keyPath: "model" })).toEqual({
+    pluginId: "a@market",
+    enabled: false
+  })
+})

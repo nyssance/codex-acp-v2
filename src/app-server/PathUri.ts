@@ -29,4 +29,4 @@
  *
  * [VS Code resources]: https://github.com/microsoft/vscode/blob/main/src/vs/base/common/resources.ts
  */
-export type PathUri = string;
+export type PathUri = string

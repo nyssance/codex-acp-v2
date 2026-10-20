@@ -1,24 +1,26 @@
-import {existsSync, mkdtempSync, readFileSync, writeFileSync} from "node:fs";
-import os from "node:os";
-import path from "node:path";
-import {spawn, spawnSync, type ChildProcessWithoutNullStreams} from "node:child_process";
-import {createRequire} from "node:module";
-import packageJson from "../../package.json";
-import type {MessageConnection} from "vscode-jsonrpc/node";
-import {createCodexConnection} from "./transport";
-import {logger} from "../util/logger";
+import { type ChildProcessWithoutNullStreams, spawn, spawnSync } from "node:child_process"
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs"
+import { createRequire } from "node:module"
+import os from "node:os"
+import path from "node:path"
+
+import type { MessageConnection } from "vscode-jsonrpc/node"
+
+import packageJson from "../../package.json"
+import { logger } from "../util/logger"
+import { createCodexConnection } from "./transport"
 
 export interface CodexProcess {
-    readonly connection: MessageConnection;
-    readonly process: ChildProcessWithoutNullStreams;
-    /** Resolves after process exit, pipe closure, and dispatch of buffered stdout. */
-    readonly exited: Promise<number | null>;
-    /** Last few KB of stderr, for diagnostics when the process dies. */
-    recentStderr(): string;
-    exitCode(): number | null;
+  readonly connection: MessageConnection
+  readonly process: ChildProcessWithoutNullStreams
+  /** Resolves after process exit, pipe closure, and dispatch of buffered stdout. */
+  readonly exited: Promise<number | null>
+  /** Last few KB of stderr, for diagnostics when the process dies. */
+  recentStderr(): string
+  exitCode(): number | null
 }
 
-const STDERR_RETAIN_BYTES = 8 * 1024;
+const STDERR_RETAIN_BYTES = 8 * 1024
 
 /**
  * The oldest Codex this agent is written against: the app-server types under
@@ -26,32 +28,33 @@ const STDERR_RETAIN_BYTES = 8 * 1024;
  * optional dependency names (`bun run generate-types`), so that range is the
  * single source of the floor. Older servers speak a schema no test here covers.
  */
-export const MINIMUM_CODEX_VERSION = packageJson.optionalDependencies["@openai/codex"].replace(/^[\^~]/, "");
+export const MINIMUM_CODEX_VERSION = packageJson.optionalDependencies["@openai/codex"].replace(/^[\^~]/, "")
 
 /** The `codex --version` line is `codex-cli <semver>`; anything else is not a Codex CLI. */
 export function parseCodexVersion(output: string): [number, number, number] {
-    const match = /(\d+)\.(\d+)\.(\d+)/.exec(output);
-    if (match === null) throw new Error(`Could not read a Codex version from: ${output.trim() || "(empty output)"}`);
-    const [, major, minor, patch] = match;
-    return [Number(major), Number(minor), Number(patch)];
+  const match = /(\d+)\.(\d+)\.(\d+)/.exec(output)
+  if (match === null) throw new Error(`Could not read a Codex version from: ${output.trim() || "(empty output)"}`)
+  const [, major, minor, patch] = match
+  return [Number(major), Number(minor), Number(patch)]
 }
 
 export function assertCodexVersion(output: string, minimum: string = MINIMUM_CODEX_VERSION): void {
-    const actual = parseCodexVersion(output);
-    const floor = parseCodexVersion(minimum);
-    const [actualMajor, actualMinor, actualPatch] = actual;
-    const [floorMajor, floorMinor, floorPatch] = floor;
-    const olderThanFloor = actualMajor !== floorMajor
-        ? actualMajor < floorMajor
-        : actualMinor !== floorMinor
-            ? actualMinor < floorMinor
-            : actualPatch < floorPatch;
-    if (olderThanFloor) {
-        throw new Error(
-            `Codex ${actual.join(".")} is older than the ${minimum} this agent is generated against; `
-            + "upgrade the Codex CLI (npm install -g @openai/codex or brew upgrade codex)",
-        );
-    }
+  const actual = parseCodexVersion(output)
+  const floor = parseCodexVersion(minimum)
+  const [actualMajor, actualMinor, actualPatch] = actual
+  const [floorMajor, floorMinor, floorPatch] = floor
+  const olderThanFloor =
+    actualMajor !== floorMajor
+      ? actualMajor < floorMajor
+      : actualMinor !== floorMinor
+        ? actualMinor < floorMinor
+        : actualPatch < floorPatch
+  if (olderThanFloor) {
+    throw new Error(
+      `Codex ${actual.join(".")} is older than the ${minimum} this agent is generated against; ` +
+        "upgrade the Codex CLI (npm install -g @openai/codex or brew upgrade codex)"
+    )
+  }
 }
 
 /**
@@ -59,36 +62,45 @@ export function assertCodexVersion(output: string, minimum: string = MINIMUM_COD
  * optional dependency when it is installed. Neither = fail loud; there is no
  * silent download and no other place to look.
  */
-export function resolveCodexLauncher(codexPath: string | undefined): {command: string; prefixArgs: string[]; shell: boolean} {
-    if (codexPath !== undefined) {
-        return process.platform === "win32"
-            ? {command: `"${codexPath}"`, prefixArgs: [], shell: true}
-            : {command: codexPath, prefixArgs: [], shell: false};
+export function resolveCodexLauncher(codexPath: string | undefined): {
+  command: string
+  prefixArgs: string[]
+  shell: boolean
+} {
+  if (codexPath !== undefined) {
+    return process.platform === "win32"
+      ? { command: `"${codexPath}"`, prefixArgs: [], shell: true }
+      : { command: codexPath, prefixArgs: [], shell: false }
+  }
+  try {
+    const require = createRequire(import.meta.url)
+    const launcher = require.resolve("@openai/codex/bin/codex.js")
+    const platformRequire = createRequire(launcher)
+    const targets: Record<string, string> = {
+      "linux-x64": "x86_64-unknown-linux-musl",
+      "linux-arm64": "aarch64-unknown-linux-musl",
+      "darwin-x64": "x86_64-apple-darwin",
+      "darwin-arm64": "aarch64-apple-darwin",
+      "win32-x64": "x86_64-pc-windows-msvc",
+      "win32-arm64": "aarch64-pc-windows-msvc"
     }
+    const platform = `${process.platform}-${process.arch}`
+    const target = targets[platform]
+    if (!target) throw new Error(`Unsupported Codex platform: ${platform}`)
+    let vendor = path.resolve(path.dirname(launcher), "..", "vendor")
     try {
-        const require = createRequire(import.meta.url);
-        const launcher = require.resolve("@openai/codex/bin/codex.js");
-        const platformRequire = createRequire(launcher);
-        const targets: Record<string, string> = {
-            "linux-x64": "x86_64-unknown-linux-musl", "linux-arm64": "aarch64-unknown-linux-musl",
-            "darwin-x64": "x86_64-apple-darwin", "darwin-arm64": "aarch64-apple-darwin",
-            "win32-x64": "x86_64-pc-windows-msvc", "win32-arm64": "aarch64-pc-windows-msvc",
-        };
-        const platform = `${process.platform}-${process.arch}`;
-        const target = targets[platform];
-        if (!target) throw new Error(`Unsupported Codex platform: ${platform}`);
-        let vendor = path.resolve(path.dirname(launcher), "..", "vendor");
-        try { vendor = path.join(path.dirname(platformRequire.resolve(`@openai/codex-${platform}/package.json`)), "vendor"); } catch {}
-        const command = path.join(vendor, target, "bin", process.platform === "win32" ? "codex.exe" : "codex");
-        if (!existsSync(command)) throw new Error(`Missing Codex platform binary: ${command}`);
-        // A compiled adapter's execPath is itself, not a JS runtime. Spawn the native binary directly.
-        return {command, prefixArgs: [], shell: false};
-    } catch (error) {
-        throw new Error(
-            "No Codex CLI: set CODEX_PATH to an installed Codex executable, or install the optional "
-            + `@openai/codex dependency (${String(error)})`,
-        );
-    }
+      vendor = path.join(path.dirname(platformRequire.resolve(`@openai/codex-${platform}/package.json`)), "vendor")
+    } catch {}
+    const command = path.join(vendor, target, "bin", process.platform === "win32" ? "codex.exe" : "codex")
+    if (!existsSync(command)) throw new Error(`Missing Codex platform binary: ${command}`)
+    // A compiled adapter's execPath is itself, not a JS runtime. Spawn the native binary directly.
+    return { command, prefixArgs: [], shell: false }
+  } catch (error) {
+    throw new Error(
+      "No Codex CLI: set CODEX_PATH to an installed Codex executable, or install the optional " +
+        `@openai/codex dependency (${String(error)})`
+    )
+  }
 }
 
 /**
@@ -97,42 +109,53 @@ export function resolveCodexLauncher(codexPath: string | undefined): {command: s
  * checked first: a server older than the generated schema fails here, not mid-turn.
  */
 export function startCodexProcess(codexPath?: string, env: NodeJS.ProcessEnv = process.env): CodexProcess {
-    const launcher = resolveCodexLauncher(codexPath);
-    const probe = spawnSync(launcher.command, [...launcher.prefixArgs, "--version"], {shell: launcher.shell, env, encoding: "utf8"});
-    if (probe.error !== undefined) throw new Error(`Could not run Codex (${launcher.command}): ${probe.error.message}`);
-    assertCodexVersion(probe.stdout.length > 0 ? probe.stdout : probe.stderr);
-    const catalog = mergedModelCatalog(launcher, env);
-    // A TOML literal string ('...') takes the temp path verbatim, backslashes included.
-    const catalogOverride = catalog === null ? null : `model_catalog_json='${catalog}'`;
-    const child = launcher.shell
-        ? spawn(`${launcher.command}${catalogOverride === null ? "" : ` -c "${catalogOverride}"`} app-server`, {shell: true, env})
-        : spawn(launcher.command, [...launcher.prefixArgs, ...(catalogOverride === null ? [] : ["-c", catalogOverride]), "app-server"], {env});
+  const launcher = resolveCodexLauncher(codexPath)
+  const probe = spawnSync(launcher.command, [...launcher.prefixArgs, "--version"], {
+    shell: launcher.shell,
+    env,
+    encoding: "utf8"
+  })
+  if (probe.error !== undefined) throw new Error(`Could not run Codex (${launcher.command}): ${probe.error.message}`)
+  assertCodexVersion(probe.stdout.length > 0 ? probe.stdout : probe.stderr)
+  const catalog = mergedModelCatalog(launcher, env)
+  // A TOML literal string ('...') takes the temp path verbatim, backslashes included.
+  const catalogOverride = catalog === null ? null : `model_catalog_json='${catalog}'`
+  const child = launcher.shell
+    ? spawn(`${launcher.command}${catalogOverride === null ? "" : ` -c "${catalogOverride}"`} app-server`, {
+        shell: true,
+        env
+      })
+    : spawn(
+        launcher.command,
+        [...launcher.prefixArgs, ...(catalogOverride === null ? [] : ["-c", catalogOverride]), "app-server"],
+        { env }
+      )
 
-    let stderr = "";
-    child.stderr.on("data", (data: Buffer) => {
-        stderr = (stderr + data.toString()).slice(-STDERR_RETAIN_BYTES);
-        logger.log("[codex stderr]", {data: data.toString()});
-    });
+  let stderr = ""
+  child.stderr.on("data", (data: Buffer) => {
+    stderr = (stderr + data.toString()).slice(-STDERR_RETAIN_BYTES)
+    logger.log("[codex stderr]", { data: data.toString() })
+  })
 
-    const {connection, drained} = createCodexConnection(child.stdout, child.stdin);
-    connection.listen();
-    void drained.then(() => connection.dispose());
-    const exited = new Promise<number | null>((resolve) => {
-        child.on("close", async (code, signal) => {
-            logger.log("codex exited", {code, signal});
-            await drained;
-            connection.dispose();
-            resolve(code);
-        });
-    });
+  const { connection, drained } = createCodexConnection(child.stdout, child.stdin)
+  connection.listen()
+  void drained.then(() => connection.dispose())
+  const exited = new Promise<number | null>((resolve) => {
+    child.on("close", async (code, signal) => {
+      logger.log("codex exited", { code, signal })
+      await drained
+      connection.dispose()
+      resolve(code)
+    })
+  })
 
-    return {
-        connection,
-        process: child,
-        exited,
-        recentStderr: () => stderr.trim(),
-        exitCode: () => child.exitCode,
-    };
+  return {
+    connection,
+    process: child,
+    exited,
+    recentStderr: () => stderr.trim(),
+    exitCode: () => child.exitCode
+  }
 }
 
 /**
@@ -142,7 +165,7 @@ export function startCodexProcess(codexPath?: string, env: NodeJS.ProcessEnv = p
  * gateway model it does not know runs on fallback metadata and every turn opens with Codex's
  * "Model metadata ... not found" warning.
  */
-export const EXTRA_MODEL_CATALOGS_ENV = "CODEX_ACP_MODEL_CATALOGS";
+export const EXTRA_MODEL_CATALOGS_ENV = "CODEX_ACP_MODEL_CATALOGS"
 
 /**
  * With extra catalogs set: Codex's own current catalog (`codex debug models`, the same table it would
@@ -151,34 +174,38 @@ export const EXTRA_MODEL_CATALOGS_ENV = "CODEX_ACP_MODEL_CATALOGS";
  * table wholesale, which is why Codex's own entries are copied in first. Any failure throws.
  */
 export function mergedModelCatalog(
-    launcher: {command: string; prefixArgs: string[]; shell: boolean},
-    env: NodeJS.ProcessEnv,
+  launcher: { command: string; prefixArgs: string[]; shell: boolean },
+  env: NodeJS.ProcessEnv
 ): string | null {
-    const raw = env[EXTRA_MODEL_CATALOGS_ENV];
-    if (raw === undefined || raw.trim() === "") return null;
-    const files = raw.split(path.delimiter).filter(file => file.length > 0);
-    const dump = spawnSync(launcher.command, [...launcher.prefixArgs, "debug", "models"], {
-        shell: launcher.shell, env, encoding: "utf8", maxBuffer: 64 * 1024 * 1024,
-    });
-    if (dump.error !== undefined || dump.status !== 0) {
-        throw new Error(`codex debug models failed: ${dump.error?.message ?? dump.stderr.trim()}`);
+  const raw = env[EXTRA_MODEL_CATALOGS_ENV]
+  if (raw === undefined || raw.trim() === "") return null
+  const files = raw.split(path.delimiter).filter((file) => file.length > 0)
+  const dump = spawnSync(launcher.command, [...launcher.prefixArgs, "debug", "models"], {
+    shell: launcher.shell,
+    env,
+    encoding: "utf8",
+    maxBuffer: 64 * 1024 * 1024
+  })
+  if (dump.error !== undefined || dump.status !== 0) {
+    throw new Error(`codex debug models failed: ${dump.error?.message ?? dump.stderr.trim()}`)
+  }
+  const base = JSON.parse(dump.stdout) as { models?: unknown }
+  if (!Array.isArray(base.models)) throw new Error("codex debug models did not return {models: [...]}")
+  const models = base.models as Array<Record<string, unknown>>
+  const slugs = new Set(models.map((model) => model["slug"]))
+  for (const file of files) {
+    const extra = JSON.parse(readFileSync(file, "utf8")) as { models?: unknown }
+    if (!Array.isArray(extra.models)) throw new Error(`${EXTRA_MODEL_CATALOGS_ENV}: ${file} is not {models: [...]}`)
+    for (const entry of extra.models as Array<Record<string, unknown>>) {
+      if (typeof entry["slug"] !== "string")
+        throw new Error(`${EXTRA_MODEL_CATALOGS_ENV}: ${file} has an entry without a slug`)
+      if (slugs.has(entry["slug"])) continue
+      slugs.add(entry["slug"])
+      models.push({ ...entry, visibility: "hide" })
     }
-    const base = JSON.parse(dump.stdout) as {models?: unknown};
-    if (!Array.isArray(base.models)) throw new Error("codex debug models did not return {models: [...]}");
-    const models = base.models as Array<Record<string, unknown>>;
-    const slugs = new Set(models.map(model => model["slug"]));
-    for (const file of files) {
-        const extra = JSON.parse(readFileSync(file, "utf8")) as {models?: unknown};
-        if (!Array.isArray(extra.models)) throw new Error(`${EXTRA_MODEL_CATALOGS_ENV}: ${file} is not {models: [...]}`);
-        for (const entry of extra.models as Array<Record<string, unknown>>) {
-            if (typeof entry["slug"] !== "string") throw new Error(`${EXTRA_MODEL_CATALOGS_ENV}: ${file} has an entry without a slug`);
-            if (slugs.has(entry["slug"])) continue;
-            slugs.add(entry["slug"]);
-            models.push({...entry, visibility: "hide"});
-        }
-    }
-    const directory = mkdtempSync(path.join(os.tmpdir(), "codex-acp-v2-catalog-"));
-    const target = path.join(directory, "models.json");
-    writeFileSync(target, JSON.stringify({...base, models}));
-    return target;
+  }
+  const directory = mkdtempSync(path.join(os.tmpdir(), "codex-acp-v2-catalog-"))
+  const target = path.join(directory, "models.json")
+  writeFileSync(target, JSON.stringify({ ...base, models }))
+  return target
 }

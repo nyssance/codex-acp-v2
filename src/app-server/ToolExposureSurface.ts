@@ -5,4 +5,4 @@
 /**
  * A model-facing surface on which a tool can be exposed.
  */
-export type ToolExposureSurface = "code_mode" | "deferred" | "direct";
+export type ToolExposureSurface = "code_mode" | "deferred" | "direct"
