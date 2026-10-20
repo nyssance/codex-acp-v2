@@ -39,11 +39,11 @@
     "package:win-arm64": "cd dist/bin && zip codex-acp-v2-arm64-windows.zip codex-acp-v2-arm64-windows.exe",
     "start": "bun src/index.ts",
     "generate-types": "rm -rf src/app-server && codex app-server generate-ts --experimental --out src/app-server",
-    "test": "vitest run --exclude src/__tests__/e2e.test.ts",
-    "test:watch": "vitest",
+    "test": "bun test",
+    "test:watch": "bun test --watch",
     "typecheck": "tsc --noEmit",
-    "test:e2e": "RUN_E2E_TESTS=true vitest run src/__tests__/e2e.test.ts",
-    "test:benchmark": "RUN_BENCHMARKS=true vitest run src/__tests__/benchmark.test.ts",
+    "test:e2e": "RUN_E2E_TESTS=true bun test --timeout 240000 src/__tests__/e2e.test.ts",
+    "test:benchmark": "RUN_BENCHMARKS=true bun test src/__tests__/benchmark.test.ts",
     "test:soak": "bun --expose-gc src/benchmarks/bridge-soak.ts"
   },
   "homepage": "https://github.com/nyssance/codex-acp-v2#readme",
@@ -64,11 +64,11 @@
   "license": "Apache-2.0",
   "type": "module",
   "devDependencies": {
+    "@types/bun": "^1.4.3",
     "@types/node": "^26.4.1",
     "@types/ws": "^8.18.2",
     "mcp-hello-world": "^1.1.2",
-    "typescript": "^7.0.2",
-    "vitest": "^4.1.11"
+    "typescript": "^7.0.2"
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "^2.0.0",
