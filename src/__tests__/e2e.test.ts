@@ -74,6 +74,7 @@ interface Responses {
   "_codex/session_history": SessionHistoryResponse
   "_codex/session_history_items": SessionHistoryItemsResponse
   "_codex/session_archive": unknown
+  "_codex/session_retry": unknown
 }
 /** The oracle validates the raw wire frame against the ACP schema; the suite only reads it loosely. */
 const asSessionUpdate = (update: Update): acp.SessionUpdate => update as unknown as acp.SessionUpdate
@@ -252,8 +253,8 @@ describe.skipIf(!RUN)("live codex", () => {
         sessionId = (await client.call("session/new", { cwd, mcpServers: [] })).sessionId
         const mark = client.mark()
         await client.call("session/prompt", { sessionId, prompt: [{ type: "text", text: "CAPACITY_PROMPT" }] })
-        expect((await client.idle(sessionId!, TURN_TIMEOUT_MS, mark)).stopReason).toBe("error")
-        const page = await client.call<SessionHistoryResponse>("_codex/session_history", {
+        expect((await client.idle(sessionId, TURN_TIMEOUT_MS, mark)).stopReason).toBe("error")
+        const page = await client.call("_codex/session_history", {
           sessionId,
           itemsView: "full",
           sortDirection: "desc",
@@ -269,12 +270,12 @@ describe.skipIf(!RUN)("live codex", () => {
         overloaded = false
         const retryMark = client.mark()
         await client.call("_codex/session_retry", { sessionId, turnId: failed.turnId, trigger })
-        expect((await client.idle(sessionId!, TURN_TIMEOUT_MS, retryMark)).stopReason).toBe("end_turn")
-        expect(client.text(retryMark, sessionId!)).toContain("CAPACITY_RECOVERED")
+        expect((await client.idle(sessionId, TURN_TIMEOUT_MS, retryMark)).stopReason).toBe("end_turn")
+        expect(client.text(retryMark, sessionId)).toContain("CAPACITY_RECOVERED")
         expect(client.since(retryMark, sessionId).filter((update) => update.sessionUpdate === "user_message")).toEqual(
           []
         )
-        const restored = await client.call<SessionHistoryResponse>("_codex/session_history", {
+        const restored = await client.call("_codex/session_history", {
           sessionId,
           itemsView: "full"
         })
