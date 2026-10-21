@@ -113,6 +113,6 @@ export function threadResponse(overrides: Partial<Thread> = {}) {
 }
 
 /** For history projections whose turns name no collaborating agents. */
-export const noAgents = new AgentDirectory(async (threadId) => {
-  throw new Error(`Unexpected thread read for ${threadId}`)
+export const noAgents = new AgentDirectory((threadId) => {
+  return Promise.reject(new Error(`Unexpected thread read for ${threadId}`))
 })

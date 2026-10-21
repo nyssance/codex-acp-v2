@@ -1,6 +1,6 @@
 import { describe, expect, it, mock } from "bun:test"
 
-import * as acp from "@agentclientprotocol/sdk/experimental/v2/unstable"
+import type * as acp from "@agentclientprotocol/sdk/experimental/v2/unstable"
 
 import {
   createTestAgent,
@@ -91,12 +91,10 @@ describe("initialization and validation boundaries", () => {
     expect(t.codex.calls("thread/unsubscribe")).toHaveLength(0)
     turnCompleted(t.codex)
     await t.settle()
-    expect(
-      t.client
-        .updatesOf("state_update")
-        .filter((frame) => frame.sessionId === THREAD_ID)
-        .at(-1)
-    ).toMatchObject({ state: "idle", stopReason: "end_turn" })
+    expect(t.client.updatesOf("state_update").findLast((frame) => frame.sessionId === THREAD_ID)).toMatchObject({
+      state: "idle",
+      stopReason: "end_turn"
+    })
   })
 
   it("checks image capability when steering as well as starting a turn", async () => {
@@ -167,11 +165,11 @@ describe("close deadlines", () => {
         next = t.agent.prompt({ sessionId: THREAD_ID, prompt: [{ type: "text", text: "next" }] })
         await next
       }
-    }) as typeof original
+    })
     await t.agent.prompt({ sessionId: THREAD_ID, prompt: [{ type: "text", text: "/status" }] })
     await t.settle()
     expect(next).toBeDefined()
-    await expect(next).resolves.toEqual({ messageId: expect.any(String) })
+    await expect(next).resolves.toEqual({ messageId: expect.any(String) as string })
     expect(t.codex.calls("turn/steer")).toHaveLength(0)
     expect(t.client.states()).toEqual(["running", "idle", "running"])
     turnCompleted(t.codex)
@@ -344,10 +342,7 @@ describe("blocking requests across turns", () => {
         .updatesOf("agent_message_chunk")
         .filter((frame) => frame.sessionId === session.sessionId)
       expect(messages.map((frame) => frame.content)).toEqual([{ type: "text", text: session.sessionId }])
-      const state = t.client
-        .updatesOf("state_update")
-        .filter((frame) => frame.sessionId === session.sessionId)
-        .at(-1)
+      const state = t.client.updatesOf("state_update").findLast((frame) => frame.sessionId === session.sessionId)
       expect(state).toMatchObject({ state: "idle", stopReason: session === a ? "cancelled" : "end_turn" })
     }
   })

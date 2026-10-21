@@ -309,7 +309,7 @@ export class AppServerClient {
       signal ? AbortSignal.any([signal, this.disconnected.signal]) : this.disconnected.signal
     ).finally(() => {
       const index = this.notificationWaiters.indexOf(waiter)
-      if (index >= 0) this.notificationWaiters.splice(index, 1)
+      if (index !== -1) this.notificationWaiters.splice(index, 1)
     }) as Promise<NotificationParams<M>>
     // Waiters are installed before sending the triggering request; that request can fail first.
     void result.catch(() => {})
@@ -550,7 +550,7 @@ export class AppServerClient {
       signal ? AbortSignal.any([signal, this.disconnected.signal]) : this.disconnected.signal
     ).finally(() => {
       const index = this.mcpStartupWaiters.indexOf(waiter)
-      if (index >= 0) this.mcpStartupWaiters.splice(index, 1)
+      if (index !== -1) this.mcpStartupWaiters.splice(index, 1)
     })
   }
 

@@ -135,7 +135,7 @@ describe("command receipt persistence failures", () => {
     await t.settle()
     expect(t.client.updatesOf("state_update").at(-1)).toMatchObject({ state: "idle", stopReason: "error" })
     expect(t.client.updatesOf("agent_message_chunk").at(-1)?.content).toMatchObject({
-      text: expect.stringContaining("receipt disk full")
+      text: expect.stringContaining("receipt disk full") as string
     })
   })
 
@@ -157,7 +157,7 @@ describe("command receipt persistence failures", () => {
     await waitFor(() => expect(t.client.states().at(-1)).toBe("idle"), { timeout: 1_000 })
     expect(t.client.updatesOf("state_update").at(-1)).toMatchObject({ stopReason: "error" })
     expect(t.client.updatesOf("agent_message_chunk").at(-1)?.content).toMatchObject({
-      text: expect.stringContaining("command history")
+      text: expect.stringContaining("command history") as string
     })
   })
 })

@@ -219,7 +219,7 @@ describe("session/prompt", () => {
       prompt: [{ type: "text", text: "hello" }],
       _meta: { alwith: { providerId: "codex" } }
     })
-    expect(response).toEqual({ messageId: expect.any(String) })
+    expect(response).toEqual({ messageId: expect.any(String) as string })
     await t.settle()
     expect(t.client.states()).toEqual(["running"])
     const start = t.codex.lastParams<TurnStartParams>("turn/start")
@@ -407,7 +407,7 @@ describe("session/prompt", () => {
     // the session is usable again
     t.codex.respond("turn/start", () => ({ turn: turn({ status: "inProgress" }) }))
     await expect(t.agent.prompt({ sessionId: THREAD_ID, prompt: [{ type: "text", text: "again" }] })).resolves.toEqual({
-      messageId: expect.any(String)
+      messageId: expect.any(String) as string
     })
   })
 
@@ -418,7 +418,7 @@ describe("session/prompt", () => {
     await t.agent.prompt({ sessionId: THREAD_ID, prompt: [{ type: "text", text: "first" }] })
     await t.settle()
     const response = await t.agent.prompt({ sessionId: THREAD_ID, prompt: [{ type: "text", text: "also this" }] })
-    expect(response).toEqual({ messageId: expect.any(String), _meta: { codex: { steered: TURN_ID } } })
+    expect(response).toEqual({ messageId: expect.any(String) as string, _meta: { codex: { steered: TURN_ID } } })
     expect(
       t.codex.lastParams<{ expectedTurnId: string; clientUserMessageId: string; input: unknown[] }>("turn/steer")
     ).toMatchObject({
@@ -2016,7 +2016,7 @@ describe("gateways", () => {
   function catalogFile(slug: string, efforts: string[]): string {
     const file = path.join(
       os.tmpdir(),
-      `codex-acp-catalog-${slug.replace(/[^a-z0-9]/gi, "_")}-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.json`
+      `codex-acp-catalog-${slug.replaceAll(/[^a-z0-9]/gi, "_")}-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.json`
     )
     fs.writeFileSync(
       file,
@@ -2159,7 +2159,7 @@ describe("gateways", () => {
     await t.agent.disableProvider({
       providerId: "openai",
       _meta: { codex: { id: "openrouter" } }
-    } as acp.DisableProviderRequest)
+    })
     const resumes = t.codex
       .calls("thread/resume")
       .slice(before)
@@ -2334,13 +2334,17 @@ it("retains a cancelled turn on its prompt before a subsequent turn starts", asy
   })
   turnCompleted(t.codex, { status: "interrupted" })
   await t.settle()
-  expect(t.client.updates()).toContainEqual(
+  expect(t.client.updates() as unknown[]).toContainEqual(
     expect.objectContaining({
       sessionUpdate: "user_message",
       messageId: receipt.messageId,
       _meta: expect.objectContaining({
-        codex: expect.objectContaining({ turnId: TURN_ID, turnInterrupted: true, turnStartedAt: 1_800_000_000_000 })
-      })
+        codex: expect.objectContaining({
+          turnId: TURN_ID,
+          turnInterrupted: true,
+          turnStartedAt: 1_800_000_000_000
+        }) as unknown
+      }) as unknown
     })
   )
   await t.agent.prompt({ sessionId: THREAD_ID, prompt: [{ type: "text", text: "continue" }] })

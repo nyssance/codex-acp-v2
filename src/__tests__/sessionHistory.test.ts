@@ -214,7 +214,7 @@ describe("history validation and content", () => {
     const page = await t.agent.sessionHistory({ mode: "export", itemsView: "full", sessionId: THREAD_ID })
     expect(page.turns[0]?.status).toBe("interrupted")
     expect(page.turns[0]?.omissions).toEqual([{ itemId: "review", field: "*", reason: "no_acp_representation" }])
-    expect(page.turns[0]?.updates).toEqual(
+    expect(page.turns[0]?.updates as unknown).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           sessionUpdate: "terminal_update",
@@ -263,7 +263,7 @@ describe("history validation and content", () => {
     expect(t.codex.calls("thread/unsubscribe")).toHaveLength(0)
     await expect(
       t.agent.prompt({ sessionId: THREAD_ID, prompt: [{ type: "text", text: "continue" }] })
-    ).resolves.toMatchObject({ messageId: expect.any(String) })
+    ).resolves.toMatchObject({ messageId: expect.any(String) as string })
   })
 
   it("rejects an accepted local prompt before Codex exposes the running turn", async () => {

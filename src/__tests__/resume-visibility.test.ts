@@ -79,14 +79,14 @@ describe("resume history visibility", () => {
               ["user_message", "agent_message", "tool_call_update", "terminal_update"].includes(frame.sessionUpdate)
             )
           if (replayFrom?.type === "start") {
-            expect(history(beforeResponse)).toEqual(
+            expect(history(beforeResponse) as unknown).toEqual(
               expect.arrayContaining([
                 expect.objectContaining({ sessionUpdate: "user_message", messageId: "old-receipt" }),
                 expect.objectContaining({ sessionUpdate: "agent_message", messageId: "old-answer" })
               ])
             )
           } else {
-            expect(history(beforeResponse)).toEqual([])
+            expect(history(beforeResponse) as unknown).toEqual([])
             expect(history(updates)).toEqual([])
           }
           // Restored tools still need a complete first upsert before new live output.

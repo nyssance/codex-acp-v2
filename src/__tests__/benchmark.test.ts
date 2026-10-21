@@ -81,7 +81,7 @@ it.skipIf(process.env["RUN_BENCHMARKS"] !== "true")(
         "In-process adapter plus client validation; excludes model/network/stdio latency. Heap samples are observational, without forced GC."
     }
     const output = process.env["BENCHMARK_OUTPUT"]
-    if (output) await writeFile(output, JSON.stringify(result, null, 2) + "\n")
+    if (output) await writeFile(output, `${JSON.stringify(result, null, 2)}\n`)
     console.info(JSON.stringify(result))
   },
   60_000
@@ -93,7 +93,7 @@ it.skipIf(process.env["RUN_BENCHMARKS"] !== "true")(
     const source = new PassThrough()
     const reader = createReader(source)
     const text = "a".repeat(50 * 1024 * 1024)
-    const bytes = Buffer.from(JSON.stringify({ method: "notice", params: { text } }) + "\n")
+    const bytes = Buffer.from(`${JSON.stringify({ method: "notice", params: { text } })}\n`)
     let received: unknown
     reader.listen((message) => {
       received = message
@@ -115,7 +115,7 @@ it.skipIf(process.env["RUN_BENCHMARKS"] !== "true")(
     }
     const output = process.env["BENCHMARK_OUTPUT"]
     if (output)
-      await writeFile(output.replace(/\.json$/, "") + "-large-frame.json", JSON.stringify(result, null, 2) + "\n")
+      await writeFile(`${output.replace(/\.json$/, "")}-large-frame.json`, `${JSON.stringify(result, null, 2)}\n`)
     console.info(JSON.stringify(result))
   },
   10_000

@@ -34,7 +34,7 @@ describe("chat branches", () => {
       sessionId: fork.sessionId,
       prompt: [{ type: "text", text: "Continue the branch" }]
     })
-    expect(receipt).toEqual({ messageId: expect.any(String) })
+    expect(receipt).toEqual({ messageId: expect.any(String) as string })
     await t.settle()
     expect(t.codex.lastParams("turn/start")).toMatchObject({
       threadId: fork.sessionId,
@@ -113,7 +113,7 @@ describe("chat branches", () => {
       await mkdir(archive)
       await writeFile(
         path.join(active, filename),
-        JSON.stringify({
+        `${JSON.stringify({
           type: "session_meta",
           payload: {
             id,
@@ -121,9 +121,7 @@ describe("chat branches", () => {
             cwd: CWD,
             source: "vscode"
           }
-        }) +
-          "\n" +
-          "transcript body is deliberately not parsed"
+        })}\n` + `transcript body is deliberately not parsed`
       )
       const t = createTestAgent()
       t.codex.respond("initialize", () => ({
@@ -141,7 +139,7 @@ describe("chat branches", () => {
         })
       }))
       await t.initialize()
-      expect((await t.agent.listSessions({})).sessions).toEqual([
+      expect((await t.agent.listSessions({})).sessions as unknown[]).toEqual([
         expect.objectContaining({
           sessionId: id,
           _meta: { codex: { archived: false, nativeSessionId: id, forkedFromId: parent } }
@@ -210,7 +208,7 @@ describe("chat branches", () => {
       alwith: { configRevision: 0 },
       codex: { nativeSessionId: THREAD_ID, forkedFromId: THREAD_ID, forkedAtTurnId: null }
     })
-    expect(t.client.updatesOf("agent_message")).toEqual([
+    expect(t.client.updatesOf("agent_message") as unknown[]).toEqual([
       expect.objectContaining({
         sessionId: "thread-fork",
         messageId: "answer",

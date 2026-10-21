@@ -51,7 +51,7 @@ export const BUILTIN_COMMANDS: acp.AvailableCommand[] = [
 
 export function parseCommand(prompt: readonly acp.ContentBlock[]): ParsedCommand | null {
   const first = prompt.find(acp.ContentBlock.isText)
-  if (!first || first.type !== "text") return null
+  if (first?.type !== "text") return null
   const text = (first as { text: string }).text.trim()
   if (!text.startsWith("/")) return null
   const body = text.slice(1).trim()

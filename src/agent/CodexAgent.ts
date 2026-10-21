@@ -1422,7 +1422,7 @@ export class CodexAgent {
         const plugin = installed.marketplaces
           .flatMap((market) => market.plugins)
           .find((plugin) => plugin.remotePluginId === params.remotePluginId)
-        if (!plugin || plugin.enabled !== params.enabled)
+        if (plugin?.enabled !== params.enabled)
           throw new Error("Remote plugin state could not be synchronized; refresh the plugin catalog")
       })
       this.notifySkillsChanged()
@@ -1758,8 +1758,7 @@ export class CodexAgent {
       )
     }
     const { session } = runtime
-    if (params._meta && typeof params._meta === "object")
-      runtime.bridge.rememberPromptMeta(messageId, params._meta as Record<string, unknown>)
+    if (params._meta && typeof params._meta === "object") runtime.bridge.rememberPromptMeta(messageId, params._meta)
     this.providers.upstreamModel(session.model.model)
     const model = findModel(session.catalog, session.model.model)
     if (!modelSupportsImages(model) && params.prompt.some((block) => block.type === "image")) {
@@ -2693,7 +2692,7 @@ export function parseSessionListParams(raw: unknown): acp.ListSessionsRequest {
   if (meta !== undefined && meta !== null && (typeof meta !== "object" || Array.isArray(meta))) {
     throw acp.RequestError.invalidParams({ _meta: meta }, "_meta must be an object when given")
   }
-  return params as acp.ListSessionsRequest
+  return params
 }
 
 export function parseSessionRenameParams(raw: unknown): SessionRenameParams {
@@ -2719,7 +2718,7 @@ export function parseFuzzyFileSearchParams(raw: unknown): FuzzyFileSearchRequest
   }
   return {
     query: params.query,
-    roots: params.roots as string[],
+    roots: params.roots,
     cancellationToken: typeof token === "string" ? token : null
   }
 }
@@ -2870,7 +2869,7 @@ function seedHistoryOf(meta: acp.NewSessionRequest["_meta"]): SeedMessage[] {
   if (raw === undefined || raw === null) return []
   if (!Array.isArray(raw))
     throw acp.RequestError.invalidParams({ seedHistory: raw }, "seedHistory must be an array of {role, text}")
-  return raw.map((entry, index) => {
+  return (raw as unknown[]).map((entry, index) => {
     const role = (entry as { role?: unknown })?.role
     const text = (entry as { text?: unknown })?.text
     if ((role !== "user" && role !== "assistant") || typeof text !== "string") {

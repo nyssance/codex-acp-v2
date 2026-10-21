@@ -99,16 +99,15 @@ export class ResponsesProxy {
     const url = new URL(upstream)
     if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash)
       throw new Error("Invalid Responses upstream base URL")
-    if (!this.starting)
-      this.starting = new Promise<void>((resolve, reject) => {
-        this.server.once("error", reject)
-        this.server.listen(0, "127.0.0.1", () => {
-          this.server.removeListener("error", reject)
-          this.server.unref()
-          if (this.closed) this.server.close()
-          resolve()
-        })
+    this.starting ??= new Promise<void>((resolve, reject) => {
+      this.server.once("error", reject)
+      this.server.listen(0, "127.0.0.1", () => {
+        this.server.removeListener("error", reject)
+        this.server.unref()
+        if (this.closed) this.server.close()
+        resolve()
       })
+    })
     await this.starting
     if (this.closed) throw new Error("Responses compatibility proxy is closed")
     const canonical = url.href.replace(/\/$/, "")

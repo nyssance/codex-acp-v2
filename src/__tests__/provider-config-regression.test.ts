@@ -1,6 +1,6 @@
 import { expect, it } from "bun:test"
 
-import type { ModelListParams, TurnStartParams } from "../app-server/v2"
+import type { TurnStartParams } from "../app-server/v2"
 import { createTestAgent, model, THREAD_ID, turnCompleted } from "./harness"
 
 const gateway = {
@@ -49,7 +49,7 @@ it("matches gateway capabilities by upstream model instead of the first native m
   })
   const t = createTestAgent()
   t.codex.respond("model/list", (params) => ({
-    data: (params as ModelListParams).includeHidden ? [model(), hidden] : [model()],
+    data: params.includeHidden ? [model(), hidden] : [model()],
     nextCursor: null
   }))
   await t.initialize()

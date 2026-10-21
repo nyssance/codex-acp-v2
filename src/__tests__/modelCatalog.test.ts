@@ -38,7 +38,8 @@ describe.skipIf(process.platform === "win32")("mergedModelCatalog", () => {
     ])
     const merged = mergedModelCatalog(launcher, { [EXTRA_MODEL_CATALOGS_ENV]: extra })
     expect(merged).not.toBeNull()
-    const models = JSON.parse(readFileSync(merged as string, "utf8")).models as Array<Record<string, unknown>>
+    const models = (JSON.parse(readFileSync(merged as string, "utf8")) as { models: Array<Record<string, unknown>> })
+      .models
     expect(models.map((model) => model["slug"])).toEqual(["gpt-6.1-sol", "gpt-5.5", "deepseek-flash"])
     expect(models[1]).toEqual({ slug: "gpt-5.5", visibility: "list" })
     expect(models[2]).toEqual({ slug: "deepseek-flash", visibility: "hide", context_window: 1 })

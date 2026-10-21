@@ -67,7 +67,7 @@ describe("Codex newline transport", () => {
     const callbacks: Array<(error?: Error | null) => void> = []
     const stream = new Writable({
       highWaterMark: 1,
-      write(chunk, _encoding, callback) {
+      write(chunk: Buffer, _encoding, callback) {
         frames.push(chunk.toString())
         callbacks.push(callback)
       }
@@ -229,8 +229,8 @@ describe("failed writes during EOF drain", () => {
     const incoming = new PassThrough()
     let requestId: number | undefined
     const outgoing = new Writable({
-      write(chunk, _encoding, done) {
-        requestId = JSON.parse(chunk.toString()).id
+      write(chunk: Buffer, _encoding, done) {
+        requestId = (JSON.parse(chunk.toString()) as { id: number }).id
         done()
       }
     })
@@ -241,7 +241,7 @@ describe("failed writes during EOF drain", () => {
       const first = codex.threadList({})
       await new Promise<void>((resolve) => outgoing.end(resolve))
       const failed = rejection(codex.threadList({}))
-      incoming.end(JSON.stringify({ id: requestId, result: { data: [], nextCursor: null } }) + "\n")
+      incoming.end(`${JSON.stringify({ id: requestId, result: { data: [], nextCursor: null } })}\n`)
       await expect(first).resolves.toMatchObject({ data: [] })
       expect(await failed).toMatchObject({ message: "Connection to Codex was lost" })
       await drained

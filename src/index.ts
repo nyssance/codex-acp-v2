@@ -88,7 +88,7 @@ function parseJsonObject(value: string | undefined, name: string): JsonObject | 
     if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
       throw new Error("expected a JSON object")
     }
-    return parsed as JsonObject
+    return parsed
   } catch (error) {
     console.error(`Invalid ${name}: ${error instanceof Error ? error.message : String(error)}`)
     process.exit(2)

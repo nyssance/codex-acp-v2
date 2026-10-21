@@ -395,7 +395,7 @@ export function subAgentActivity(
   status: acp.ToolCallStatus,
   create: boolean
 ): ToolCallFrame {
-  const name = item.agentPath.split("/").filter(Boolean).at(-1) ?? "subagent"
+  const name = item.agentPath.split("/").findLast(Boolean) ?? "subagent"
   const titles = {
     started: `Start subagent ${name}`,
     interacted: `Interact with subagent ${name}`,
@@ -502,7 +502,7 @@ export function guardianReview(event: GuardianReviewEvent, create: boolean): Too
     ...(create ? { name: ToolName.GuardianReview, title: "Guardian review", kind: "think" } : {}),
     status: guardianStatus(event.review.status),
     content: [textContent(guardianReviewText(event.review, event.action))],
-    rawOutput: event as unknown as Record<string, JsonValue>
+    rawOutput: event
   })
 }
 

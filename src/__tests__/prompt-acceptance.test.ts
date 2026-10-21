@@ -16,7 +16,7 @@ describe("prompt insertion", () => {
     const accepted = await t.agent.prompt({ sessionId: THREAD_ID, prompt })
     await t.settle()
     expect(t.client.updatesOf("state_update").at(-1)).toMatchObject({ state: "idle", stopReason: "error" })
-    expect(t.client.updatesOf("user_message")).toContainEqual(
+    expect(t.client.updatesOf("user_message") as unknown[]).toContainEqual(
       expect.objectContaining({ messageId: accepted.messageId, content: prompt })
     )
   })

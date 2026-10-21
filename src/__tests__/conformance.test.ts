@@ -502,7 +502,7 @@ describe("ACP v2 client conformance", () => {
       throw new Error("turn already ended")
     })
     await expect(t.agent.prompt({ sessionId: THREAD_ID, prompt: [{ type: "text", text: "next" }] })).resolves.toEqual({
-      messageId: expect.any(String)
+      messageId: expect.any(String) as string
     })
     await t.settle()
     expect(t.codex.calls("turn/start")).toHaveLength(2)

@@ -57,7 +57,7 @@ export class AgentDirectory {
 
 /** Receivers named by the call or reported in its agent states, in a stable order. */
 function receivers(item: CollabItem): string[] {
-  return [...new Set([...item.receiverThreadIds, ...Object.keys(item.agentsStates)])].sort()
+  return [...new Set([...item.receiverThreadIds, ...Object.keys(item.agentsStates)])].toSorted()
 }
 
 function identityOf(thread: Thread): AgentIdentity {
@@ -81,5 +81,5 @@ function identityOf(thread: Thread): AgentIdentity {
 
 function nonBlank(value: string | null | undefined): string | undefined {
   const trimmed = value?.trim()
-  return trimmed ? trimmed : undefined
+  return trimmed || undefined
 }

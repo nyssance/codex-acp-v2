@@ -13,17 +13,10 @@ export function questionReplyContent(text: string): acp.ContentBlock[] | null {
   }
   if (!Array.isArray(replies) || replies.length === 0) return null
   const content: acp.ContentBlock[] = []
-  for (const reply of replies) {
-    if (
-      reply === null ||
-      typeof reply !== "object" ||
-      Array.isArray(reply) ||
-      typeof reply.questionItemId !== "string" ||
-      typeof reply.question !== "string" ||
-      typeof reply.answer !== "string"
-    )
-      return null
-    const { questionItemId, question, answer } = reply
+  for (const reply of replies as unknown[]) {
+    if (reply === null || typeof reply !== "object" || Array.isArray(reply)) return null
+    const { questionItemId, question, answer } = reply as Record<string, unknown>
+    if (typeof questionItemId !== "string" || typeof question !== "string" || typeof answer !== "string") return null
     content.push({
       type: "text",
       text: `${question}\n${answer}`,

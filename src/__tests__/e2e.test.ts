@@ -6,6 +6,8 @@ import path from "node:path"
 import readline from "node:readline"
 import { pathToFileURL } from "node:url"
 
+import type * as acp from "@agentclientprotocol/sdk/experimental/v2/unstable"
+
 import type { SessionHistoryItemsResponse, SessionHistoryResponse } from "../agent/sessionHistory"
 import { type FakeGateway, startFakeGateway } from "./fakeGateway"
 import { ProtocolOracle } from "./protocolOracle"
@@ -20,9 +22,61 @@ const RUN = process.env["RUN_E2E_TESTS"] === "true"
 const ROOT = path.resolve(__dirname, "../..")
 const TURN_TIMEOUT_MS = 120_000
 
-type Message = { jsonrpc: "2.0"; id?: number; method?: string; params?: any; result?: any; error?: any }
-// Wire frames are asserted loosely on purpose; the unit suite covers exact shapes.
-type Update = any
+type Message = {
+  jsonrpc: "2.0"
+  id?: number
+  method?: string
+  params?: unknown
+  result?: unknown
+  error?: { code: number; message: string; data: { reason?: string } }
+}
+// Wire frames are read loosely on purpose (only the fields the assertions touch); the unit suite covers exact shapes.
+type Meta = {
+  codex?: {
+    turnId?: string
+    notice?: unknown
+    nativeSessionId?: string
+    forkedFromId?: string
+    forkedAtTurnId?: string
+  }
+}
+type Update = {
+  sessionId: string
+  sessionUpdate: string
+  state?: string
+  stopReason?: string
+  usage?: { totalTokens: number }
+  messageId?: string
+  title?: string
+  content?: Array<{ type: string; text?: string }>
+  _meta?: Meta
+}
+type PermissionRequest = { sessionId: string; title: string; options: Array<{ kind: string; optionId: string }> }
+type ConfigOption = { configId: string; currentValue: string }
+type SessionResponse = { sessionId: string; configOptions: ConfigOption[]; _meta: Meta }
+interface Responses {
+  initialize: {
+    protocolVersion: number
+    capabilities: { providers: unknown; _meta: { codex: { sessionHistory: unknown } } }
+  }
+  "auth/login": unknown
+  "session/new": SessionResponse
+  "session/resume": SessionResponse
+  "session/fork": SessionResponse
+  "session/prompt": { messageId: string }
+  "session/set_config_option": { configOptions: ConfigOption[] }
+  "session/list": { sessions: Array<{ sessionId: string; title?: string; _meta: Meta }> }
+  "session/close": unknown
+  "session/delete": unknown
+  "providers/set": unknown
+  "providers/disable": unknown
+  "providers/list": { providers: Array<{ current: { baseUrl: string } }> }
+  "_codex/session_history": SessionHistoryResponse
+  "_codex/session_history_items": SessionHistoryItemsResponse
+  "_codex/session_archive": unknown
+}
+/** The oracle validates the raw wire frame against the ACP schema; the suite only reads it loosely. */
+const asSessionUpdate = (update: Update): acp.SessionUpdate => update as unknown as acp.SessionUpdate
 
 class StdioClient {
   private readonly child: ChildProcess
@@ -30,12 +84,13 @@ class StdioClient {
   private nextId = 1
   readonly updates: Update[] = []
   readonly oracle = new ProtocolOracle()
-  readonly permissionRequests: any[] = []
+  readonly permissionRequests: PermissionRequest[] = []
   private readonly waiters = new Set<(update: Update) => void>()
-  permissionResponder: (request: any) => { outcome: "selected"; optionId: string } | { outcome: "cancelled" } = (
-    request
-  ) => {
-    const allow = request.options.find((option: any) => option.kind === "allow_once") ?? request.options[0]
+  permissionResponder: (
+    request: PermissionRequest
+  ) => { outcome: "selected"; optionId: string } | { outcome: "cancelled" } = (request) => {
+    const allow = request.options.find((option) => option.kind === "allow_once") ?? request.options[0]
+    if (allow === undefined) return { outcome: "cancelled" }
     return { outcome: "selected", optionId: allow.optionId }
   }
 
@@ -56,10 +111,10 @@ class StdioClient {
     return new Promise((resolve) => this.pending.set(id, resolve))
   }
 
-  async call<T = any>(method: string, params: unknown): Promise<T> {
+  async call<M extends keyof Responses>(method: M, params: unknown): Promise<Responses[M]> {
     const message = await this.request(method, params)
     if (message.error) throw new Error(`${method} failed: ${JSON.stringify(message.error)}`)
-    return message.result as T
+    return message.result as Responses[M]
   }
 
   notify(method: string, params: unknown): void {
@@ -103,7 +158,7 @@ class StdioClient {
   text(mark: number, sessionId: string): string {
     const reducer = new ProtocolOracle()
     for (const update of this.since(mark, sessionId)) {
-      if (!update._meta?.codex?.notice) reducer.accept(sessionId, update)
+      if (!update._meta?.codex?.notice) reducer.accept(sessionId, asSessionUpdate(update))
     }
     return [...reducer.messages.values()].join("")
   }
@@ -120,16 +175,18 @@ class StdioClient {
       return
     }
     if (message.method === "session/update") {
-      const update = { sessionId: message.params.sessionId, ...message.params.update } as Update
-      this.oracle.accept(update.sessionId, update)
+      const params = message.params as { sessionId: string; update: Omit<Update, "sessionId"> }
+      const update: Update = { sessionId: params.sessionId, ...params.update }
+      this.oracle.accept(update.sessionId, asSessionUpdate(update))
       this.updates.push(update)
       for (const waiter of [...this.waiters]) waiter(update)
       return
     }
     if (message.method === "session/request_permission" && message.id !== undefined) {
-      this.permissionRequests.push(message.params)
+      const request = message.params as PermissionRequest
+      this.permissionRequests.push(request)
       this.child.stdin!.write(
-        `${JSON.stringify({ jsonrpc: "2.0", id: message.id, result: { outcome: this.permissionResponder(message.params) } })}\n`
+        `${JSON.stringify({ jsonrpc: "2.0", id: message.id, result: { outcome: this.permissionResponder(request) } })}\n`
       )
       return
     }
@@ -177,18 +234,18 @@ describe.skipIf(!RUN)("live codex", () => {
   it("runs a prompt through running, chunks, usage, and idle", async () => {
     const created = await client.call("session/new", { cwd, mcpServers: [] })
     firstSessionId = created.sessionId
-    expect(created.configOptions.map((option: any) => option.configId)).toEqual(
-      expect.arrayContaining(["mode", "model", "effort"])
+    expect(created.configOptions.map((option) => option.configId)).toEqual(
+      expect.arrayContaining(["mode", "model", "effort"]) as string[]
     )
     const mark = client.mark()
     const receipt = await client.call("session/prompt", {
       sessionId: firstSessionId,
       prompt: [{ type: "text", text: "Reply with exactly the single word: pong" }]
     })
-    expect(receipt).toEqual({ messageId: expect.any(String) })
+    expect(receipt).toEqual({ messageId: expect.any(String) as string })
     const idle = await client.idle(firstSessionId, TURN_TIMEOUT_MS, mark)
     expect(idle.stopReason).toBe("end_turn")
-    expect(idle.usage.totalTokens).toBeGreaterThan(0)
+    expect(idle.usage?.totalTokens).toBeGreaterThan(0)
     const frames = client.since(mark, firstSessionId)
     expect(frames[0]).toMatchObject({ sessionUpdate: "state_update", state: "running" })
     const userMessages = frames.filter((update) => update.sessionUpdate === "user_message")
@@ -223,7 +280,7 @@ describe.skipIf(!RUN)("live codex", () => {
     try {
       await fresh.call("initialize", { protocolVersion: 2, info: { name: "file-replay", version: "0" } })
       const listed = await fresh.call("session/list", { cwd })
-      expect(listed.sessions.find((row: any) => row.sessionId === sessionId)?.title).toBe(text)
+      expect(listed.sessions.find((row) => row.sessionId === sessionId)?.title).toBe(text)
       const replayMark = fresh.mark()
       await fresh.call("session/resume", { sessionId, cwd, replayFrom: { type: "start" }, mcpServers: [] })
       const frames = fresh.since(replayMark, sessionId)
@@ -247,7 +304,7 @@ describe.skipIf(!RUN)("live codex", () => {
       type: "id",
       value: "low"
     })
-    expect(response.configOptions.find((option: any) => option.configId === "effort").currentValue).toBe("low")
+    expect(response.configOptions.find((option) => option.configId === "effort")?.currentValue).toBe("low")
     const mark = client.mark()
     await client.call("session/prompt", { sessionId: firstSessionId, prompt: [{ type: "text", text: "/status" }] })
     await client.idle(firstSessionId, 10_000, mark)
@@ -256,7 +313,7 @@ describe.skipIf(!RUN)("live codex", () => {
 
   it("does not replay a transformed /plan prompt over its original command receipt", async () => {
     const created = await client.call("session/new", { cwd, mcpServers: [] })
-    const sessionId = created.sessionId as string
+    const sessionId = created.sessionId
     const command = "/plan Give a short plan for saying hello. Do not edit files."
     const mark = client.mark()
     const receipt = await client.call("session/prompt", { sessionId, prompt: [{ type: "text", text: command }] })
@@ -264,7 +321,7 @@ describe.skipIf(!RUN)("live codex", () => {
     const liveMessages = client.since(mark, sessionId).filter((update) => update.sessionUpdate === "user_message")
     expect(liveMessages.length).toBeGreaterThan(0)
     expect(
-      liveMessages.every((update) => update.messageId === receipt.messageId && update.content[0]?.text === command)
+      liveMessages.every((update) => update.messageId === receipt.messageId && update.content?.[0]?.text === command)
     ).toBe(true)
 
     await client.call("session/close", { sessionId })
@@ -280,7 +337,7 @@ describe.skipIf(!RUN)("live codex", () => {
         sessionId,
         cwd,
         mcpServers: [],
-        _meta: { codex: { lastTurnId: replayed[0]._meta.codex.turnId } }
+        _meta: { codex: { lastTurnId: replayed[0]?._meta?.codex?.turnId } }
       })
       expect(
         fresh.since(forkMark, forked.sessionId).filter((update) => update.sessionUpdate === "user_message")
@@ -301,14 +358,14 @@ describe.skipIf(!RUN)("live codex", () => {
       "export function add(a: number, b: number): number { return a + b; }\n"
     )
     const created = await client.call("session/new", { cwd: reviewCwd, mcpServers: [] })
-    const sessionId = created.sessionId as string
+    const sessionId = created.sessionId
     const mark = client.mark()
     const receipt = await client.call("session/prompt", { sessionId, prompt: [{ type: "text", text: "/review" }] })
     await client.idle(sessionId, TURN_TIMEOUT_MS, mark)
     const liveMessages = client.since(mark, sessionId).filter((update) => update.sessionUpdate === "user_message")
     expect(liveMessages.length).toBeGreaterThan(0)
     expect(
-      liveMessages.every((update) => update.messageId === receipt.messageId && update.content[0]?.text === "/review")
+      liveMessages.every((update) => update.messageId === receipt.messageId && update.content?.[0]?.text === "/review")
     ).toBe(true)
 
     await client.call("session/close", { sessionId })
@@ -328,7 +385,7 @@ describe.skipIf(!RUN)("live codex", () => {
 
   it("cancels a running turn with stopReason cancelled", async () => {
     const created = await client.call("session/new", { cwd, mcpServers: [] })
-    const sessionId = created.sessionId as string
+    const sessionId = created.sessionId
     const mark = client.mark()
     await client.call("session/prompt", {
       sessionId,
@@ -351,7 +408,7 @@ describe.skipIf(!RUN)("live codex", () => {
 
   it("routes command approvals through session/request_permission with requires_action", async () => {
     const created = await client.call("session/new", { cwd, mcpServers: [] })
-    const sessionId = created.sessionId as string
+    const sessionId = created.sessionId
     await client.call("session/set_config_option", { sessionId, configId: "mode", type: "id", value: "read-only" })
     const mark = client.mark()
     const requestsBefore = client.permissionRequests.length
@@ -370,10 +427,10 @@ describe.skipIf(!RUN)("live codex", () => {
     expect(requests.length).toBeGreaterThan(0)
     expect(requests[0]).toMatchObject({
       sessionId,
-      title: expect.any(String),
-      subject: { type: "tool_call", toolCall: { toolCallId: expect.any(String) } }
+      title: expect.any(String) as unknown,
+      subject: { type: "tool_call", toolCall: { toolCallId: expect.any(String) as unknown } }
     })
-    expect(requests[0].options.some((option: any) => option.kind === "allow_once")).toBe(true)
+    expect(requests[0]?.options.some((option) => option.kind === "allow_once")).toBe(true)
     const states = client
       .since(mark, sessionId)
       .filter((update) => update.sessionUpdate === "state_update")
@@ -399,7 +456,7 @@ describe.skipIf(!RUN)("live codex", () => {
       replay.some(
         (update) =>
           update.sessionUpdate === "user_message" &&
-          update.content[0]?.text === "Reply with exactly the single word: pong"
+          update.content?.[0]?.text === "Reply with exactly the single word: pong"
       )
     ).toBe(true)
     expect(replay.some((update) => update.sessionUpdate === "agent_message")).toBe(true)
@@ -407,7 +464,7 @@ describe.skipIf(!RUN)("live codex", () => {
 
     const forkMark = client.mark()
     const boundary = replay.find((update) => update.sessionUpdate === "agent_message")?._meta?.codex?.turnId
-    expect(boundary).toEqual(expect.any(String))
+    expect(boundary).toEqual(expect.any(String) as string)
     const nextMark = client.mark()
     await client.call("session/prompt", {
       sessionId: firstSessionId,
@@ -425,7 +482,7 @@ describe.skipIf(!RUN)("live codex", () => {
     expect(forkHistory.some((update) => update.sessionUpdate === "agent_message")).toBe(true)
     expect(JSON.stringify(forkHistory)).not.toContain("AFTER_FORK_BOUNDARY")
     expect(forked._meta.codex).toMatchObject({
-      nativeSessionId: expect.any(String),
+      nativeSessionId: expect.any(String) as unknown,
       forkedFromId: firstSessionId,
       forkedAtTurnId: boundary
     })
@@ -437,7 +494,7 @@ describe.skipIf(!RUN)("live codex", () => {
       mcpServers: [],
       replayFrom: { type: "start" }
     })
-    expect(restoredFork._meta.codex.forkedAtTurnId).toBe(boundary)
+    expect(restoredFork._meta.codex?.forkedAtTurnId).toBe(boundary)
     const continueMark = client.mark()
     await client.call("session/prompt", {
       sessionId: forked.sessionId,
@@ -451,7 +508,7 @@ describe.skipIf(!RUN)("live codex", () => {
     try {
       await fresh.call("initialize", { protocolVersion: 2, info: { name: "fork-list-e2e", version: "0" } })
       const listed = await fresh.call("session/list", {})
-      expect(listed.sessions.find((entry: any) => entry.sessionId === forked.sessionId)?._meta.codex.forkedFromId).toBe(
+      expect(listed.sessions.find((entry) => entry.sessionId === forked.sessionId)?._meta.codex?.forkedFromId).toBe(
         firstSessionId
       )
     } finally {
@@ -479,7 +536,7 @@ describe.skipIf(!RUN)("live codex", () => {
       await expect(client.call("providers/set", providerRequest)).rejects.toThrow(
         "Cannot reload this session's history"
       )
-      expect((await client.call("providers/list", {})).providers[0].current.baseUrl).toBe("https://api.openai.com/v1")
+      expect((await client.call("providers/list", {})).providers[0]?.current.baseUrl).toBe("https://api.openai.com/v1")
       await client.call("session/close", { sessionId: empty.sessionId })
       const existing = await client.call("session/new", {
         cwd,
@@ -488,10 +545,10 @@ describe.skipIf(!RUN)("live codex", () => {
       })
       await client.call("providers/set", providerRequest)
       const listed = await client.call("providers/list", {})
-      expect(listed.providers[0].current.baseUrl).toBe(gateway.baseUrl)
+      expect(listed.providers[0]?.current.baseUrl).toBe(gateway.baseUrl)
       const created = await client.call("session/new", { cwd, mcpServers: [] })
-      const sessionId = created.sessionId as string
-      expect(created.configOptions.find((option: any) => option.configId === "model").currentValue).toBe("fake-model")
+      const sessionId = created.sessionId
+      expect(created.configOptions.find((option) => option.configId === "model")?.currentValue).toBe("fake-model")
       const mark = client.mark()
       await client.call("session/prompt", { sessionId, prompt: [{ type: "text", text: "ping" }] })
       const idle = await client.idle(sessionId, 60_000, mark)
@@ -519,7 +576,7 @@ describe.skipIf(!RUN)("live codex", () => {
       expect(nativeIdle.stopReason, client.text(nativeMark, existing.sessionId)).toBe("end_turn")
       expect(gateway.requests).toHaveLength(2)
       await client.call("session/close", { sessionId: existing.sessionId })
-      expect((await client.call("providers/list", {})).providers[0].current.baseUrl).toBe("https://api.openai.com/v1")
+      expect((await client.call("providers/list", {})).providers[0]?.current.baseUrl).toBe("https://api.openai.com/v1")
     } finally {
       await gateway.close()
     }
@@ -548,7 +605,7 @@ describe.skipIf(!RUN)("live read-only history", () => {
         headers: { authorization: "Bearer history-token" },
         _meta: { alwith: { model: "fake-model", models: [{ id: "fake-model", label: "Fake" }] } }
       })
-      sessionId = (await owner.call("session/new", { cwd })).sessionId as string
+      sessionId = (await owner.call("session/new", { cwd })).sessionId
       const prompt = async (text: string): Promise<void> => {
         const mark = owner.mark()
         await owner.call("session/prompt", { sessionId, prompt: [{ type: "text", text }] })
@@ -557,7 +614,7 @@ describe.skipIf(!RUN)("live read-only history", () => {
       await prompt("HISTORY_ONE")
       await prompt("HISTORY_TWO")
       const ownerMark = owner.mark()
-      const first = await reader.call<SessionHistoryResponse>("_codex/session_history", {
+      const first = await reader.call("_codex/session_history", {
         mode: "export",
         itemsView: "full",
         sessionId,
@@ -565,8 +622,8 @@ describe.skipIf(!RUN)("live read-only history", () => {
       })
       expect(first.turns).toHaveLength(1)
       expect(first.complete).toBe(false)
-      expect(first.nextCursor).toEqual(expect.any(String))
-      const second = await reader.call<SessionHistoryResponse>("_codex/session_history", {
+      expect(first.nextCursor).toEqual(expect.any(String) as string)
+      const second = await reader.call("_codex/session_history", {
         mode: "export",
         itemsView: "full",
         sessionId,
@@ -581,18 +638,20 @@ describe.skipIf(!RUN)("live read-only history", () => {
         expect.arrayContaining([
           expect.objectContaining({
             sessionUpdate: "agent_message",
-            _meta: expect.objectContaining({ codex: expect.objectContaining({ turnId: first.turns[0]?.turnId }) })
+            _meta: expect.objectContaining({
+              codex: expect.objectContaining({ turnId: first.turns[0]?.turnId }) as unknown
+            }) as unknown
           })
-        ])
+        ]) as acp.SessionUpdate[]
       )
-      const latest = await reader.call<SessionHistoryResponse>("_codex/session_history", {
+      const latest = await reader.call("_codex/session_history", {
         sessionId,
         sortDirection: "desc",
         limit: 1
       })
       expect(latest).toMatchObject({ consistency: "live", revision: null })
       expect(latest.turns[0]).toMatchObject({ turnId: second.turns[0]?.turnId, itemsView: "summary", updates: [] })
-      const items = await reader.call<SessionHistoryItemsResponse>("_codex/session_history_items", {
+      const items = await reader.call("_codex/session_history_items", {
         sessionId,
         turnId: first.turns[0]!.turnId,
         limit: 1,
@@ -601,11 +660,11 @@ describe.skipIf(!RUN)("live read-only history", () => {
       expect(items.items).toHaveLength(1)
       expect(items.items[0]).toMatchObject({
         turnId: first.turns[0]!.turnId,
-        itemId: expect.any(String),
+        itemId: expect.any(String) as unknown,
         _meta: { codex: { item: { type: "userMessage" } } }
       })
       expect(JSON.stringify(items.items)).toContain("HISTORY_ONE")
-      const anchored = await reader.call<SessionHistoryItemsResponse>("_codex/session_history_items", {
+      const anchored = await reader.call("_codex/session_history_items", {
         sessionId,
         turnId: first.turns[0]!.turnId,
         anchorItemId: items.items[0]!.itemId,
@@ -613,7 +672,7 @@ describe.skipIf(!RUN)("live read-only history", () => {
       })
       expect(anchored.items.some((entry) => entry.itemId === items.items[0]!.itemId)).toBe(false)
       expect(JSON.stringify(anchored.items)).toContain("HISTORY_ANSWER")
-      const nextItems = await reader.call<SessionHistoryItemsResponse>("_codex/session_history_items", {
+      const nextItems = await reader.call("_codex/session_history_items", {
         sessionId,
         turnId: first.turns[0]!.turnId,
         cursor: items.nextCursor,
@@ -632,11 +691,11 @@ describe.skipIf(!RUN)("live read-only history", () => {
           60_000,
           runningMark
         )
-        const browsing = await owner.call<SessionHistoryResponse>("_codex/session_history", { sessionId, limit: 1 })
+        const browsing = await owner.call("_codex/session_history", { sessionId, limit: 1 })
         expect(browsing).toMatchObject({ running: true, consistency: "live" })
         expect(browsing.turns[0]?.turnId).toBe(first.turns[0]?.turnId)
         const exporting = await owner.request("_codex/session_history", { sessionId, mode: "export" })
-        expect(exporting.error.data.reason).toBe("history_busy")
+        expect(exporting.error?.data.reason).toBe("history_busy")
       } finally {
         await third
       }
@@ -648,10 +707,10 @@ describe.skipIf(!RUN)("live read-only history", () => {
             sessionId,
             cursor: first.nextCursor
           })
-        ).error.data.reason
+        ).error?.data.reason
       ).toBe("history_changed")
       await owner.call("session/close", { sessionId })
-      const closed = await reader.call<SessionHistoryResponse>("_codex/session_history", {
+      const closed = await reader.call("_codex/session_history", {
         mode: "export",
         itemsView: "full",
         sessionId
@@ -659,7 +718,7 @@ describe.skipIf(!RUN)("live read-only history", () => {
       expect(closed.complete).toBe(true)
       expect(JSON.stringify(closed.turns)).toContain("HISTORY_THREE")
       await owner.call("_codex/session_archive", { sessionId })
-      const archived = await reader.call<SessionHistoryResponse>("_codex/session_history", {
+      const archived = await reader.call("_codex/session_history", {
         mode: "export",
         itemsView: "full",
         sessionId

@@ -194,7 +194,7 @@ function responsesStream(text: string, model: string, includeReasoning: boolean)
     ["response.completed", { type: "response.completed", sequence_number: 7, response }]
   ]
   if (includeReasoning) {
-    events.splice(events.length - 1, 0, [
+    events.splice(-1, 0, [
       "response.output_item.done",
       { type: "response.output_item.done", output_index: 1, item: reasoning }
     ])

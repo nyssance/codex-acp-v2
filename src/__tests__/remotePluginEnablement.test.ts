@@ -38,10 +38,13 @@ describe("remote plugin enablement", () => {
       t.codex.respond("plugin/installed", () => ({
         marketplaces: [{ plugins: [{ remotePluginId, installed: true, enabled }] }]
       }))
-      const request = mock().mockResolvedValue(Response.json({ id: remotePluginId, enabled }))
+      const request = mock<
+        (input: string | URL | Request, init?: RequestInit) => Promise<Response>
+      >().mockResolvedValue(Response.json({ id: remotePluginId, enabled }))
       stubFetch(request)
       expect(await t.agent.pluginSetEnabled({ ...params, enabled })).toEqual({ enabled })
-      expect(request.mock.calls[0]![0].toString()).toBe(
+      const input = request.mock.calls[0]![0]
+      expect(input instanceof Request ? input.url : input.toString()).toBe(
         `https://chatgpt.com/backend-api/ps/plugins/plugin_supabase/${enabled ? "enable" : "disable"}`
       )
       expect(request.mock.calls[0]![1]).toMatchObject({

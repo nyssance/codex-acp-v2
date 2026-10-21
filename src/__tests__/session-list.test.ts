@@ -116,8 +116,10 @@ describe("_codex/session_list", () => {
       await mkdir(directory, { recursive: true })
       await writeFile(
         path.join(directory, `rollout-test-${id}.jsonl`),
-        JSON.stringify({ type: "session_meta", payload: { id, forked_from_id: parent, cwd: CWD, source: "vscode" } }) +
-          "\n"
+        `${JSON.stringify({
+          type: "session_meta",
+          payload: { id, forked_from_id: parent, cwd: CWD, source: "vscode" }
+        })}\n`
       )
       const t = createTestAgent()
       t.codex.respond("initialize", () => ({
@@ -136,7 +138,7 @@ describe("_codex/session_list", () => {
       }))
       await t.initialize()
       const result = await t.agent.sessionList()
-      expect(result.sessions).toEqual([
+      expect(result.sessions as unknown[]).toEqual([
         expect.objectContaining({
           sessionId: id,
           title: "Fork",

@@ -1,6 +1,6 @@
 import { writeFile } from "node:fs/promises"
 
-import * as acp from "@agentclientprotocol/sdk/experimental/v2/unstable"
+import type * as acp from "@agentclientprotocol/sdk/experimental/v2/unstable"
 
 import { model } from "../__tests__/fixtures"
 import { ProtocolOracle } from "../__tests__/protocolOracle"
@@ -36,22 +36,23 @@ const session: Session = {
 let oracle = new ProtocolOracle()
 let frames = 0
 const link = {
-  async notify(method: string, params: unknown) {
+  notify(method: string, params: unknown) {
     if (method === "session/update") {
       const { sessionId, update } = params as acp.UpdateSessionNotification
       oracle.accept(sessionId, update)
       frames++
     }
+    return Promise.resolve()
   },
-  async request() {
-    throw new Error("Unexpected client request in bridge soak")
+  request(): Promise<never> {
+    return Promise.reject(new Error("Unexpected client request in bridge soak"))
   }
 } as ClientLink
 const client = new ClientSession(session.id, link, { formElicitation: false, urlElicitation: false })
 const bridge = new EventBridge(
   client,
   session,
-  new AgentDirectory(async () => {
+  new AgentDirectory(() => {
     throw new Error("Unexpected thread read in bridge soak")
   })
 )
@@ -138,7 +139,7 @@ const result = {
 }
 console.log(JSON.stringify(result, null, 2))
 const output = process.env["BENCHMARK_OUTPUT"]
-if (output) await writeFile(output, JSON.stringify(result, null, 2) + "\n")
+if (output) await writeFile(output, `${JSON.stringify(result, null, 2)}\n`)
 client.dispose()
 bridge.dispose()
 if (result.heapGrowthBytes > 20 * 1024 * 1024) throw new Error("Retained heap grew by more than 20 MiB after forced GC")

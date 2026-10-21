@@ -141,5 +141,5 @@ function rejected(): PermissionsRequestApprovalResponse {
 
 function nonBlank(value: string | null | undefined): string | null {
   const trimmed = value?.trim()
-  return trimmed ? trimmed : null
+  return trimmed || null
 }

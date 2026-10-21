@@ -417,10 +417,12 @@ describe("approval ordering", () => {
   it("delivers queued tool call frames before the permission request", async () => {
     const t = await openPrompting()
     const order: string[] = []
-    t.client.notify = (async (method: string, params: unknown) => {
+    t.client.notify = (method: string, params: unknown) => {
       t.client.notifications.push({ method, params })
       order.push(`notify:${(params as acp.UpdateSessionNotification).update.sessionUpdate}`)
-    }) as typeof t.client.notify
+
+      return Promise.resolve()
+    }
     t.client.permissionResponder = () => {
       order.push("permission")
       return { outcome: { outcome: "selected", optionId: "allow_once" } }

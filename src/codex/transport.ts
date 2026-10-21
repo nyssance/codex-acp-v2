@@ -16,7 +16,7 @@ import { logger } from "../util/logger"
 /** Redacts structured credentials, including client-supplied gateway headers. */
 export function wireLog(value: unknown): string {
   return JSON.stringify(value, (key, nested: unknown) => {
-    const normalized = key.replace(/[_-]/g, "").toLowerCase()
+    const normalized = key.replaceAll(/[_-]/g, "").toLowerCase()
     if (
       /^(apikey|accesskey|accesstoken|refreshtoken|idtoken|secretaccesskey|sessiontoken|authorization|proxyauthorization|password|secret|token|cookie|setcookie|headers|httpheaders|env|queryparams)$/.test(
         normalized
@@ -118,7 +118,7 @@ export function createReader(readable: Readable): MessageReader {
     let offset = 0
     for (;;) {
       const newline = text.indexOf("\n", offset)
-      if (newline < 0) break
+      if (newline === -1) break
       const part = text.slice(offset, newline)
       const line = fragments.length ? fragments.join("") + part : part
       fragments = []
@@ -138,7 +138,9 @@ export function createReader(readable: Readable): MessageReader {
     fragments = []
     onClose()
   }
-  const onError = (error: Error) => errors.fire(error)
+  const onError = (error: Error) => {
+    errors.fire(error)
+  }
   const stop = () => {
     readable.off("data", onData)
     readable.off("end", onEnd)

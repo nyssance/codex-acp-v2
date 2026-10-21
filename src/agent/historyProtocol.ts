@@ -157,8 +157,7 @@ export class HistoryRead {
     try {
       const v = JSON.parse(Buffer.from(raw, "base64url").toString("utf8")) as Partial<Cursor> | null
       if (
-        !v ||
-        v.version !== 2 ||
+        v?.version !== 2 ||
         v.binding !== this.binding ||
         typeof v.after !== "string" ||
         !v.after ||

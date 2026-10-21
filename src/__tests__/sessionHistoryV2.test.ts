@@ -14,7 +14,7 @@ const mixed: ThreadItem = {
   content: [
     { type: "text", text: "Listen", text_elements: [] },
     { type: "audio", url: "https://example.test/a.wav" },
-    { type: "localImage", path: process.platform === "win32" ? "C:\\tmp\\image.png" : "/tmp/image.png" }
+    { type: "localImage", path: process.platform === "win32" ? String.raw`C:\tmp\image.png` : "/tmp/image.png" }
   ]
 }
 
@@ -301,7 +301,7 @@ describe("general-purpose read-only history", () => {
       backwardsCursor: null
     }))
     const page = await t.agent.sessionHistoryItems({ sessionId: THREAD_ID, includeNative: true })
-    expect(page.items[0]?.omissions).toEqual(
+    expect(page.items[0]?.omissions as unknown).toEqual(
       expect.arrayContaining([expect.objectContaining({ itemId: "r", field: "content" })])
     )
     expect(page.items[0]?._meta?.codex.item).toEqual(item)

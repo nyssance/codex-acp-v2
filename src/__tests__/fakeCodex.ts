@@ -6,9 +6,13 @@ if (process.argv.includes("--version")) {
   console.log("codex-cli 0.163.0")
   process.exit(0)
 }
-const send = (message: unknown) => process.stdout.write(JSON.stringify(message) + "\n")
+const send = (message: unknown) => process.stdout.write(`${JSON.stringify(message)}\n`)
 readline.createInterface({ input: process.stdin }).on("line", (line) => {
-  const { id, method, params } = JSON.parse(line)
+  const { id, method, params } = JSON.parse(line) as {
+    id?: number
+    method: string
+    params: { cwd: string; threadId: string }
+  }
   if (id === undefined) return
   let result: unknown
   switch (method) {

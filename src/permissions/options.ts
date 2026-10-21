@@ -77,7 +77,7 @@ export function commandDecisionOptions(
       )
     }
   }
-  const ordered = [...options].sort((left, right) => order(left.option) - order(right.option))
+  const ordered = [...options].toSorted((left, right) => order(left.option) - order(right.option))
   const hasAllow = ordered.some(({ option }) => option.kind === "allow_once" || option.kind === "allow_always")
   const hasReject = ordered.some(({ option }) => option.kind === "reject_once" || option.kind === "reject_always")
   const ids = ordered.map(({ option }) => option.optionId)

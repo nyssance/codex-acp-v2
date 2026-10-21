@@ -74,5 +74,5 @@ function shlexQuote(value: string): string {
   if (value.length === 0) return "''"
   if (/^[0-9A-Za-z+\-./:@_]+$/.test(value)) return value
   if (!value.includes("'")) return `'${value}'`
-  return `"${value.replace(/["\\$`!]/g, "\\$&")}"`
+  return `"${value.replaceAll(/["\\$`!]/g, String.raw`\$&`)}"`
 }

@@ -240,7 +240,8 @@ export function fromUserMessage(
     const paths = new Set<string>()
     for (const entry of entries) {
       const match = /^## (.+): (.+)\r?\nImage attachment: true$/.exec(entry)
-      if (!match || path.basename(match[2]!) !== match[1] || paths.has(match[2]!)) return project(input)
+      if (match === null) return project(input)
+      if (path.basename(match[2]!) !== match[1] || paths.has(match[2]!)) return project(input)
       paths.add(match[2]!)
     }
     if (paths.size !== imageCount || [...images].some((image) => !paths.has(image))) return project(input)

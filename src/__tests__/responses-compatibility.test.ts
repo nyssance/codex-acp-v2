@@ -31,7 +31,7 @@ describe("native Responses history compatibility", () => {
       previous_response_id: "previous",
       input: [items[0], items[3], items[4], items[5], items[6]]
     })
-    expect(JSON.parse(raw).input).toHaveLength(7)
+    expect((JSON.parse(raw) as { input: unknown[] }).input).toHaveLength(7)
     expect(compatibleResponsesRequest(output)).toBe(output)
   })
   it("preserves requests without incompatible input byte for byte", () => {

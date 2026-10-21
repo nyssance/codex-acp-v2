@@ -5,24 +5,27 @@ import { AppServerClient } from "../codex/AppServerClient"
 import { createCodexConnection } from "../codex/transport"
 import { createTestAgent, CWD, THREAD_ID, threadResponse, turnCompleted } from "./harness"
 
+/** The ACP notification params these tests hold on. */
+type NotifyParams = { update?: { sessionUpdate?: string; state?: string } }
+
 describe("shutdown and routing regressions", () => {
   it.each([0, 2, 20])("delivers a response behind %i notifications immediately before EOF", async (notifications) => {
     const incoming = new PassThrough()
     const seen: number[] = []
     const outgoing = new Writable({
-      write(chunk, _encoding, done) {
-        const frame = JSON.parse(chunk.toString())
+      write(chunk: Buffer, _encoding, done) {
+        const frame = JSON.parse(chunk.toString()) as { id: number }
         const frames = Array.from({ length: notifications }, (_, index) =>
           JSON.stringify({ method: "notice", params: { index } })
         )
         frames.push(JSON.stringify({ id: frame.id, result: { data: [], nextCursor: null, backwardsCursor: null } }))
-        setImmediate(() => incoming.end(frames.join("\n") + "\n"))
+        setImmediate(() => incoming.end(`${frames.join("\n")}\n`))
         done()
       }
     })
     const { connection } = createCodexConnection(incoming, outgoing)
     const codex = new AppServerClient(connection)
-    connection.onNotification("notice", (params) => {
+    connection.onNotification("notice", (params: { index: number }) => {
       seen.push(params.index)
     })
     connection.listen()
@@ -51,7 +54,7 @@ describe("shutdown and routing regressions", () => {
     await t.openSession()
     const original = t.client.notify
     const hold = deferred<void>()
-    t.client.notify = (async (method: string, params?: any) => {
+    t.client.notify = (async (method: string, params?: NotifyParams) => {
       await original(method, params)
       if (params?.update?.sessionUpdate === "agent_message_chunk") await hold.promise
     }) as typeof original
@@ -133,10 +136,12 @@ describe("provider transactions", () => {
     })
     await expect(t.agent.setProvider(gateway)).rejects.toThrow("second failed")
     expect(t.agent.listProviders({})).toEqual(before)
-    const calls = t.codex.calls("thread/resume").map((call) => call.params as any)
+    const calls = t.codex
+      .calls("thread/resume")
+      .map((call) => call.params as { threadId: string; config: { mcp_servers: { client: { command: string } } } })
     expect(calls.map((call) => call.threadId)).toEqual([THREAD_ID, "thread-2", THREAD_ID, "thread-2"])
-    expect(calls[0].config.mcp_servers.client.command).toBe("test-mcp")
-    expect(calls[2].config.mcp_servers.client.command).toBe("test-mcp")
+    expect(calls[0]?.config.mcp_servers.client.command).toBe("test-mcp")
+    expect(calls[2]?.config.mcp_servers.client.command).toBe("test-mcp")
     await t.agent.prompt({ ...prompt, prompt: [...prompt.prompt] })
     await t.settle()
     turnCompleted(t.codex)
@@ -233,7 +238,7 @@ describe("bounded local close", () => {
     await t.openSession()
     const hold = deferred<void>()
     const original = t.client.notify
-    t.client.notify = (async (method: string, params?: any) => {
+    t.client.notify = (async (method: string, params?: NotifyParams) => {
       await original(method, params)
       if (params?.update?.state === "idle") await hold.promise
     }) as typeof original
@@ -284,7 +289,7 @@ describe("late writes across turn generations", () => {
     const idle = deferred<void>()
     const original = t.client.notify
     let firstIdle = true
-    t.client.notify = (async (method: string, params?: any) => {
+    t.client.notify = (async (method: string, params?: NotifyParams) => {
       await original(method, params)
       if (params?.update?.state === "idle" && firstIdle) {
         firstIdle = false
@@ -344,7 +349,7 @@ describe("approval teardown", () => {
     await t.settle()
     const original = t.client.notify
     const hold = deferred<void>()
-    t.client.notify = (async (method: string, params?: any) => {
+    t.client.notify = (async (method: string, params?: NotifyParams) => {
       await original(method, params)
       if (params?.update?.state === "requires_action") await hold.promise
     }) as typeof original

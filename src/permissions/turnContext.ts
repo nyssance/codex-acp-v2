@@ -69,7 +69,7 @@ export class TurnContext {
       const pending = this.pendingMcpCalls.get(item.server)
       if (!pending) return
       const index = pending.indexOf(item.id)
-      if (index >= 0) pending.splice(index, 1)
+      if (index !== -1) pending.splice(index, 1)
       if (pending.length === 0) this.pendingMcpCalls.delete(item.server)
     }
   }

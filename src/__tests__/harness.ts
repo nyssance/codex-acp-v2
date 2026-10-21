@@ -8,13 +8,16 @@ import type { Disposable, MessageConnection, RequestType } from "vscode-jsonrpc/
 import type { ClientLink } from "../agent/clientSession"
 import { CodexAgent } from "../agent/CodexAgent"
 import { CommandReceipts } from "../agent/commandReceipts"
-import type { ServerNotification } from "../app-server"
+import type { ClientRequest, ServerNotification } from "../app-server"
 import type { Model, ThreadItem, Turn } from "../app-server/v2"
 import { AppServerClient } from "../codex/AppServerClient"
 import type { CodexProcess } from "../codex/process"
 
 export type RecordedRequest = { method: string; params: unknown }
-export type ScriptedResponse = (params: any) => unknown | Promise<unknown>
+type CodexMethod = ClientRequest["method"]
+type CodexParams<M extends CodexMethod> = Extract<ClientRequest, { method: M }>["params"]
+/** A scripted app-server answer; its params are the generated request params of that method. */
+export type ScriptedResponse<M extends CodexMethod = CodexMethod> = (params: CodexParams<M>) => unknown
 
 /**
  * In-memory stand-in for the vscode-jsonrpc connection to `codex app-server`.
@@ -23,14 +26,14 @@ export type ScriptedResponse = (params: any) => unknown | Promise<unknown>
  */
 export class FakeCodexConnection {
   readonly requests: RecordedRequest[] = []
-  private readonly responses = new Map<string, ScriptedResponse>()
+  private readonly responses = new Map<string, (params: unknown) => unknown>()
   private readonly notificationHandlers = new Map<string, Set<(...args: unknown[]) => void>>()
   private readonly requestHandlers = new Map<string, (params: unknown) => unknown>()
   private readonly closeHandlers: Array<() => void> = []
   private unhandled: ((message: unknown) => void) | null = null
 
-  respond(method: string, handler: ScriptedResponse): void {
-    this.responses.set(method, handler)
+  respond<M extends CodexMethod>(method: M, handler: ScriptedResponse<M>): void {
+    this.responses.set(method, handler as (params: unknown) => unknown)
   }
 
   /** Delivers a server notification the way the transport would. */
@@ -105,7 +108,7 @@ export type RecordedUpdate = acp.SessionUpdate & { sessionId: string }
 
 /** Records everything the agent sends to the client and answers its requests. */
 export class FakeClient implements ClientLink {
-  toolResponder: (request: unknown) => unknown | Promise<unknown> = () => ({
+  toolResponder: (request: unknown) => unknown = () => ({
     success: true,
     contentItems: [{ type: "text", text: "ok" }]
   })
@@ -120,8 +123,9 @@ export class FakeClient implements ClientLink {
     request: acp.CreateElicitationRequest
   ) => acp.CreateElicitationResponse | Promise<acp.CreateElicitationResponse> = () => ({ action: "cancel" })
 
-  notify = mock(async (method: string, params?: unknown): Promise<void> => {
+  notify = mock((method: string, params?: unknown): Promise<void> => {
     this.notifications.push({ method, params })
+    return Promise.resolve()
   }) as unknown as ClientLink["notify"]
 
   request = mock(async (method: string, params?: unknown): Promise<unknown> => {
@@ -141,7 +145,7 @@ export class FakeClient implements ClientLink {
       .filter((entry) => entry.method === acp.methods.client.session.update)
       .map((entry) => {
         const params = entry.params as acp.UpdateSessionNotification
-        return { sessionId: params.sessionId, ...params.update } as RecordedUpdate
+        return { sessionId: params.sessionId, ...params.update }
       })
   }
 
@@ -186,9 +190,9 @@ export interface TestAgent {
   codex: FakeCodexConnection
   client: FakeClient
   /** Waits for queued notification handling and promise chains to settle. */
-  settle(): Promise<void>
-  initialize(capabilities?: acp.ClientCapabilities): Promise<acp.InitializeResponse>
-  openSession(request?: Partial<acp.NewSessionRequest>): Promise<acp.NewSessionResponse>
+  settle: () => Promise<void>
+  initialize: (capabilities?: acp.ClientCapabilities) => Promise<acp.InitializeResponse>
+  openSession: (request?: Partial<acp.NewSessionRequest>) => Promise<acp.NewSessionResponse>
 }
 
 export function createTestAgent(

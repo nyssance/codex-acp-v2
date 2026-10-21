@@ -90,7 +90,7 @@ export function parseClaudeTranscript(text: string): ClaudeTranscriptLine[] {
       parsed = JSON.parse(line) as ClaudeTranscriptLine
     } catch (error) {
       // Only the final line may be a partial write in progress.
-      if (index === raw.length - 1 || (index === raw.length - 2 && raw[raw.length - 1] === "")) continue
+      if (index === raw.length - 1 || (index === raw.length - 2 && raw.at(-1) === "")) continue
       throw new Error(`Claude transcript line ${index + 1} is not JSON: ${String(error)}`, { cause: error })
     }
     if (parsed.type === "acpDelivery" && parsed.status === "sent" && parsed.messageUuid) sent.add(parsed.messageUuid)
@@ -275,7 +275,7 @@ export function claudeTranscriptToRollout(text: string, options: RolloutOptions)
       }
     }
   }
-  closeTurn(lines.length > 0 ? stamp(lines[lines.length - 1]!) : createdAt.toISOString())
+  closeTurn(lines.length > 0 ? stamp(lines.at(-1)!) : createdAt.toISOString())
 
   return { text: `${out.join("\n")}\n`, createdAt, items, cwd, turns }
 }

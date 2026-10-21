@@ -230,7 +230,7 @@ export class ProviderRouting {
 
   /** Unknown gateway IDs must never fall through to native billing. */
   upstreamModel(selectionId: string | null): string | null {
-    if (selectionId === null || !selectionId.startsWith("gateway:")) return selectionId
+    if (!selectionId?.startsWith("gateway:")) return selectionId
     const gateway = this.gatewayFor(selectionId)
     const model = gateway?.models.find((model) => gatewayModelId(gateway.id, model.id) === selectionId)
     if (!model)
@@ -495,7 +495,7 @@ function readCatalogFile(catalogPath: string): Map<string, CatalogEntry> {
     for (const level of levels) {
       if (!isRecord(level) || typeof level["effort"] !== "string") continue
       efforts.push({
-        reasoningEffort: level["effort"] as ReasoningEffortOption["reasoningEffort"],
+        reasoningEffort: level["effort"],
         description: typeof level["description"] === "string" ? level["description"] : ""
       })
     }
@@ -521,9 +521,7 @@ function gatewayModel(
   entry: CatalogEntry | undefined
 ): Model {
   const efforts = entry ? entry.efforts : (template?.supportedReasoningEfforts ?? [])
-  const defaultEffort = (entry?.defaultEffort ??
-    template?.defaultReasoningEffort ??
-    "medium") as Model["defaultReasoningEffort"]
+  const defaultEffort = entry?.defaultEffort ?? template?.defaultReasoningEffort ?? "medium"
   return {
     id: model.id,
     model: model.id,

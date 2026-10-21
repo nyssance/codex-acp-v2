@@ -17,7 +17,7 @@ const message = { type: "message", role: "user", content: [{ type: "input_text",
 const body = JSON.stringify({ input: [foreign, message] })
 const cleanup: Array<() => void> = []
 afterEach(() => {
-  for (const close of cleanup.splice(0).reverse()) close()
+  for (const close of cleanup.splice(0).toReversed()) close()
 })
 async function listen(server: Server): Promise<string> {
   server.listen(0, "127.0.0.1")
@@ -36,8 +36,8 @@ function proxy(): ResponsesProxy {
   return value
 }
 async function receive(socket: WebSocket): Promise<string> {
-  const [data] = await once(socket, "message")
-  return String(data)
+  const [data] = (await once(socket, "message")) as [RawData]
+  return rawText(data)
 }
 
 /** A ws frame as text: Buffer, Buffer list or ArrayBuffer. */
@@ -51,10 +51,10 @@ describe("Responses compatibility transport", () => {
       (req, res) =>
         void (async () => {
           const chunks: Buffer[] = []
-          for await (const chunk of req) chunks.push(Buffer.from(chunk))
+          for await (const chunk of req as AsyncIterable<Buffer>) chunks.push(chunk)
           res.writeHead(200, { "content-type": "text/event-stream" })
           res.write(
-            `data: ${JSON.stringify({ path: req.url, auth: req.headers.authorization, account: req.headers["chatgpt-account-id"], encoding: req.headers["content-encoding"] ?? null, body: JSON.parse(Buffer.concat(chunks).toString()) })}\n\n`
+            `data: ${JSON.stringify({ path: req.url, auth: req.headers.authorization, account: req.headers["chatgpt-account-id"], encoding: req.headers["content-encoding"] ?? null, body: JSON.parse(Buffer.concat(chunks).toString()) as unknown })}\n\n`
           )
           res.end("data: [DONE]\n\n")
         })()
@@ -86,7 +86,9 @@ describe("Responses compatibility transport", () => {
     wss.on("connection", (socket, req) => {
       upstreamClosed = once(socket, "close")
       socket.on("message", (data) =>
-        socket.send(JSON.stringify({ body: JSON.parse(rawText(data)), auth: req.headers.authorization, path: req.url }))
+        socket.send(
+          JSON.stringify({ body: JSON.parse(rawText(data)) as unknown, auth: req.headers.authorization, path: req.url })
+        )
       )
     })
     const route = await proxy().route(await listen(server))
@@ -106,7 +108,7 @@ describe("Responses compatibility transport", () => {
     client.send(
       JSON.stringify({ type: "response.create", previous_response_id: "previous", input: [foreign, message] })
     )
-    expect(JSON.parse(await received).body).toEqual({
+    expect((JSON.parse(await received) as { body: unknown }).body).toEqual({
       type: "response.create",
       previous_response_id: "previous",
       input: [message]

@@ -149,7 +149,7 @@ function isMessageOnlyForm(params: McpServerElicitationRequestParams): boolean {
 function normalizeSchema(value: unknown): acp.ElicitationSchema {
   const normalized = normalizeSchemaValue(value)
   if (!isRecord(normalized)) return { type: "object", properties: {} }
-  return { ...normalized, type: "object" } as acp.ElicitationSchema
+  return { ...normalized, type: "object" }
 }
 
 function normalizeSchemaValue(value: unknown): unknown {
@@ -181,7 +181,7 @@ function convertMcpElicitationResponse(
   context: McpElicitationContext
 ): McpServerElicitationRequestResponse {
   if (acp.CreateElicitationResponse.isAccept(response)) {
-    const content: ContentRecord = isRecord(response.content) ? { ...(response.content as ContentRecord) } : {}
+    const content: ContentRecord = isRecord(response.content) ? { ...response.content } : {}
     const persist = context.isToolApproval ? content["persist"] : undefined
     if (context.isToolApproval && !persistAllowed(persist, context.persistOptions)) return cancelled()
     if (persist === "session" || persist === "always" || persist === "once") delete content["persist"]
@@ -277,7 +277,7 @@ function convertUserInputResponse(
   params: ToolRequestUserInputParams
 ): ToolRequestUserInputResponse {
   if (!acp.CreateElicitationResponse.isAccept(response)) return { answers: {} }
-  const content: ContentRecord = isRecord(response.content) ? (response.content as ContentRecord) : {}
+  const content: ContentRecord = isRecord(response.content) ? response.content : {}
   const ids = new Set(params.questions.map((question) => question.id))
   const answers: ToolRequestUserInputResponse["answers"] = {}
   for (const question of params.questions) {
