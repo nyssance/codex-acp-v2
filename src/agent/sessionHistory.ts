@@ -14,6 +14,7 @@ import {
   type SessionHistoryItemsParams,
   type SessionHistoryParams
 } from "./historyProtocol"
+import { turnErrorUpdate } from "./turnErrors"
 export {
   parseSessionHistoryParams,
   parseSessionHistoryItemsParams,
@@ -106,7 +107,10 @@ export async function readSessionHistory(
           completedAt: turn.completedAt,
           durationMs: turn.durationMs,
           itemsView: view === "summary" ? ("summary" as const) : turn.itemsView,
-          updates: projections.flatMap((p) => p.updates),
+          updates: [
+            ...projections.flatMap((p) => p.updates),
+            ...(turn.status === "failed" && turn.error !== null ? [turnErrorUpdate(turn.id, turn.error)] : [])
+          ],
           omissions: projections.flatMap((p) => p.omissions),
           ...(params.includeNative ? { _meta: { codex: { items: turn.items } } } : {})
         }

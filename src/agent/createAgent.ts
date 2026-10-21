@@ -22,7 +22,8 @@ import {
   parseSessionIdParams,
   parseSessionListParams,
   parseSessionReadStateUpdateParams,
-  parseSessionRenameParams
+  parseSessionRenameParams,
+  parseSessionRetryParams
 } from "./CodexAgent"
 import { parseSessionHistoryItemsParams, parseSessionHistoryParams } from "./sessionHistory"
 
@@ -63,6 +64,7 @@ export function createAgentApp(options: CodexAgentOptions): acp.AgentApp {
     .onRequest("_codex/session_prediction_request", { parse: parsePredictionParams }, (ctx) =>
       current().requestPrediction(ctx.params)
     )
+    .onRequest("_codex/session_retry", { parse: parseSessionRetryParams }, (ctx) => current().retrySession(ctx.params))
     .onRequest("_codex/session_archive", { parse: parseSessionIdParams }, (ctx) => current().archiveSession(ctx.params))
     .onRequest("_codex/session_unarchive", { parse: parseSessionIdParams }, (ctx) =>
       current().unarchiveSession(ctx.params)

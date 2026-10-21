@@ -93,7 +93,7 @@ import {
   type SessionHistoryParams,
   type SessionHistoryResponse
 } from "./sessionHistory"
-import { classifyTurnError, type StopReason } from "./turnErrors"
+import { classifyTurnError, type StopReason, turnErrorUpdate } from "./turnErrors"
 
 export interface CodexAgentOptions {
   codex: AppServerClient
@@ -294,6 +294,7 @@ export class CodexAgent {
             readState: true,
             sessionList: { version: 1 },
             sessionHistory: { version: 2, items: true, modes: ["browse", "export"] },
+            sessionRetry: { version: 1 },
             seedHistory: true,
             skills: true,
             plugins: true,
@@ -1713,6 +1714,53 @@ export class CodexAgent {
     return await this.promptInternal(params, false, requestedMessageId(params) ?? crypto.randomUUID())
   }
 
+  /** Continue the latest failed native turn without resubmitting its user input. */
+  async retrySession(params: SessionRetryParams): Promise<Record<string, never>> {
+    return await this.admission(async () => {
+      const runtime = this.runtime(params.sessionId, "_codex/session_retry")
+      assertWritable(runtime)
+      if (runtime.stale || runtime.session.activeTurn !== null)
+        throw acp.RequestError.invalidRequest(undefined, "Wait for the current turn or routing change before retrying")
+      const page = await this.withCodex(() =>
+        this.codex.threadTurnsList({
+          threadId: params.sessionId,
+          sortDirection: "desc",
+          limit: 1,
+          itemsView: "summary"
+        })
+      )
+      const latest = page.data[0]
+      if (latest?.id !== params.turnId || latest.status !== "failed" || latest.error === null)
+        throw acp.RequestError.invalidRequest(
+          undefined,
+          "The failed turn is no longer the latest turn; refresh the conversation"
+        )
+      if (
+        !classifyTurnError(latest.error.codexErrorInfo).retryable ||
+        (params.trigger === "automatic" && latest.error.codexErrorInfo !== "serverOverloaded")
+      )
+        throw acp.RequestError.invalidRequest(
+          undefined,
+          "This failure cannot be retried automatically or continued unchanged"
+        )
+      const native = await this.withCodex(() =>
+        this.codex.threadRead({ threadId: params.sessionId, includeTurns: false })
+      )
+      if (
+        (native.thread.status.type !== "idle" && native.thread.status.type !== "systemError") ||
+        runtime.session.activeTurn !== null
+      )
+        throw acp.RequestError.invalidRequest(undefined, "The conversation is busy; wait for it to become idle")
+      this.predictions.cancel(params.sessionId)
+      const turn = createActiveTurn(params.sessionId)
+      turn.retryTrigger = params.trigger === "automatic" ? "capacity_retry_automatic" : "capacity_retry_manual"
+      runtime.session.activeTurn = turn
+      runtime.client.reportRunning()
+      void this.runPrompt(runtime, turn, { sessionId: params.sessionId, prompt: [] })
+      return {}
+    }, params.sessionId)
+  }
+
   /**
    * `messageId` is minted here and handed to Codex as `clientUserMessageId`, so the receipt
    * names the user message before Codex materializes it and the later `user_message` echo
@@ -1841,7 +1889,7 @@ export class CodexAgent {
       })
     }
     try {
-      if (!observed) {
+      if (!observed && turn.retryTrigger === undefined) {
         if (turn.clientUserMessageId === null)
           throw acp.RequestError.internalError(undefined, "Prompt requires a message receipt")
         // Record the ACP insertion before promptInternal returns success, independently of Codex.
@@ -2076,6 +2124,7 @@ export class CodexAgent {
               {
                 threadId: session.id,
                 clientUserMessageId,
+                ...(turn.retryTrigger === undefined ? {} : { turnTrigger: turn.retryTrigger }),
                 input: toUserInput(prompt),
                 approvalPolicy: session.mode.approvalPolicy,
                 approvalsReviewer: session.mode.approvalsReviewer,
@@ -2244,20 +2293,11 @@ export class CodexAgent {
   private async reportTurnFailure(runtime: SessionRuntime, turn: ActiveTurn, error: TurnError): Promise<void> {
     const { stopReason, ...classification } = classifyTurnError(error.codexErrorInfo)
     const message = error.additionalDetails ? `${error.message}\n\n${error.additionalDetails}` : error.message
+    const diagnostic = turnErrorUpdate(turn.turnId ?? `unstarted:${runtime.session.id}:${crypto.randomUUID()}`, error)
     await runtime.client.update({
+      ...diagnostic,
       sessionUpdate: "agent_message_chunk",
-      messageId: `codex-error:${runtime.session.id}:${Date.now()}`,
-      content: { type: "text", text: message },
-      _meta: {
-        codex: {
-          error: {
-            ...classification,
-            message: error.message,
-            codexErrorInfo: error.codexErrorInfo,
-            additionalDetails: error.additionalDetails
-          }
-        }
-      }
+      content: { type: "text", text: message }
     })
     await this.reportIdle(runtime, turn, stopReason, {
       ...(stopReason === "error"
@@ -2920,6 +2960,23 @@ function forkTurnId(meta: acp.ForkSessionRequest["_meta"]): string | undefined {
 }
 
 export type PluginSetEnabledParams = { pluginId: string; enabled: boolean; remotePluginId?: string }
+
+export type SessionRetryParams = { sessionId: string; turnId: string; trigger: "manual" | "automatic" }
+
+export function parseSessionRetryParams(raw: unknown): SessionRetryParams {
+  if (!isJsonObject(raw))
+    throw acp.RequestError.invalidParams(undefined, "Expected sessionId, failed turnId and manual or automatic trigger")
+  const { sessionId, turnId, trigger } = raw
+  if (
+    typeof sessionId !== "string" ||
+    !sessionId ||
+    typeof turnId !== "string" ||
+    !turnId ||
+    (trigger !== "manual" && trigger !== "automatic")
+  )
+    throw acp.RequestError.invalidParams(undefined, "Expected sessionId, failed turnId and manual or automatic trigger")
+  return { sessionId, turnId, trigger: trigger === "manual" ? "manual" : "automatic" }
+}
 
 /** Validate the narrow plugin mutation before constructing a TOML key path. */
 export function parsePluginSetEnabledParams(value: unknown): PluginSetEnabledParams {

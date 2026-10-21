@@ -35,6 +35,7 @@ const PLAN_STREAM_INTERVAL_MS = 150
 export class EventBridge {
   readonly rateLimits = new Map<string, RateLimitSnapshot>()
   private lastError: TurnError | null = null
+  private retrying = false
   private completedPlan: CompletedPlan | null = null
   private noticeSequence = 0
   private commandEcho: {
@@ -128,6 +129,7 @@ export class EventBridge {
   }
 
   beginTurn(): void {
+    this.retrying = false
     this.commandEcho = null
     this.messageSentTimes.clear()
     this.workTiming = null
@@ -347,6 +349,10 @@ export class EventBridge {
 
   /** Reconcile missing item completions before ending the enclosing turn. */
   async finishOpenToolCalls(status: "cancelled" | "failed" | "completed"): Promise<void> {
+    if (this.retrying) {
+      this.retrying = false
+      await this.client.update({ sessionUpdate: "session_info_update", _meta: { codex: { retry: null } } })
+    }
     this.unannouncedItems.clear()
     const ids = [...this.openToolCalls]
     const terminals = [...this.terminalItems]
@@ -718,11 +724,20 @@ export class EventBridge {
 
   private error(params: ErrorNotification): acp.SessionUpdate[] {
     if (params.willRetry) {
+      this.retrying = true
       logger.log("codex retrying after error", { sessionId: this.session.id, message: params.error.message })
       return [
         {
           sessionUpdate: "session_info_update",
-          _meta: { codex: { retry: { message: params.error.message, turnId: params.turnId } } }
+          _meta: {
+            codex: {
+              retry: {
+                message: params.error.message,
+                turnId: params.turnId,
+                codexErrorInfo: params.error.codexErrorInfo
+              }
+            }
+          }
         }
       ]
     }
@@ -799,7 +814,8 @@ function turnPlan(params: TurnPlanUpdatedNotification): acp.SessionUpdate {
     sessionUpdate: "plan_update",
     plan: {
       type: "items",
-      planId: TURN_PLAN_ID,
+      // Native planning state belongs to one turn; only patches in that turn share an id.
+      planId: `${TURN_PLAN_ID}:${params.turnId}`,
       entries: params.plan.map((step) => ({
         content: step.step,
         priority: "medium",

@@ -1,6 +1,21 @@
 import type * as acp from "@agentclientprotocol/sdk/experimental/v2/unstable"
 
-import type { CodexErrorInfo } from "../app-server/v2"
+import type { CodexErrorInfo, TurnError } from "../app-server/v2"
+
+/** One stable transcript item per native failed turn, shared by live output and replay. */
+export function turnErrorUpdate(
+  turnId: string,
+  error: TurnError
+): Extract<acp.SessionUpdate, { sessionUpdate: "agent_message" }> {
+  const failure = classifyTurnError(error.codexErrorInfo)
+  const message = error.additionalDetails ? `${error.message}\n\n${error.additionalDetails}` : error.message
+  return {
+    sessionUpdate: "agent_message",
+    messageId: `codex-error:${turnId}`,
+    content: [{ type: "text", text: message }],
+    _meta: { codex: { turnId, error: { ...failure, ...error } } }
+  }
+}
 
 export type StopReason = Extract<
   acp.IdleStateUpdate,

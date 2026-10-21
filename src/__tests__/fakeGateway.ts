@@ -23,6 +23,7 @@ export function startFakeGateway(options: {
   reply: string
   reasoning?: boolean
   delayMs?: number
+  overloaded?: () => boolean
   toolForRequest?: (index: number) => { name: string; arguments: Record<string, unknown> } | undefined
 }): Promise<FakeGateway> {
   const requests: GatewayRequest[] = []
@@ -50,6 +51,20 @@ export function startFakeGateway(options: {
         return
       }
       response.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" })
+      if (options.overloaded?.()) {
+        const failure = {
+          type: "response.failed",
+          response: {
+            error: {
+              code: "server_is_overloaded",
+              message: "Selected model is at capacity. Please try a different model.",
+              headers: { "retry-after": "0" }
+            }
+          }
+        }
+        response.end(`event: response.failed\ndata: ${JSON.stringify(failure)}\n\n`)
+        return
+      }
       const tool = options.toolForRequest?.(requests.length - 1)
       const payload = tool
         ? toolStream(tool, requests.length)

@@ -17,6 +17,8 @@ export interface ActiveTurn {
    * `clientId`. Null for turns not started by `session/prompt` (recovery, review).
    */
   clientUserMessageId: string | null
+  /** Empty-input continuation; it must not insert another user message. */
+  retryTrigger?: "capacity_retry_manual" | "capacity_retry_automatic"
   readonly abort: AbortController
   /** Ends local waiting when a closing session exceeds its grace period. */
   readonly stop: AbortController

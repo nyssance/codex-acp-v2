@@ -109,6 +109,7 @@ clients), and every session's `model` option becomes one group per source: `chat
 | `session/delete` | Close plus `thread/delete` (permanent deletion). |
 | `_codex/session_history` | Read-only turn metadata or full ACP history without opening or subscribing to the session. See the contract below. Advertised as `capabilities._meta.codex.sessionHistory: {version: 2, items: true, modes: ["browse", "export"]}`. |
 | `_codex/session_history_items` | Independent item pagination across a thread or within one turn; supports item anchors and optional native data. Part of the version 2 history capability. |
+| `_codex/session_retry` | `{sessionId, turnId, trigger: "manual" | "automatic"}` → `{}`. Continues the latest failed turn with empty native input. Advertised as `capabilities._meta.codex.sessionRetry: {version: 1}`. |
 | `_codex/session_archive` | `{sessionId}` closes and archives the thread (reversible hiding). Advertised as `capabilities._meta.codex.archive: true`. |
 | `_codex/session_read_state_update` | `{sessionId, operation: "read" \| "unread", expectedRevision}` sets Codex's durable read receipt for the thread and returns `{readState}`. `expectedRevision` is the `revision` the client last saw; a stale one is rejected by Codex. Changes arrive as `session_info_update` with `_meta.codex.readState = {firstUnread, revision}`. Advertised as `capabilities._meta.codex.readState: true`. |
 | `_codex/session_unarchive` | `{sessionId}` restores an archived thread's visibility. |
@@ -207,6 +208,11 @@ not prove that another client is idle.
   `completedAtMs` (nullable Unix **milliseconds**), `updates`, `omissions`, and optional
   `_meta.codex.item`. Item timestamps are not misreported as turn timestamps.
 - `updates` contains standard ACP update payloads as response data, never notifications.
+  Failed turns append one `agent_message` diagnostic with the stable message id
+  `codex-error:<turnId>` and `_meta.codex.error`, including category, retryability,
+  native error information and additional details. Summaries also retain this diagnostic;
+  clients hydrating individual items must preserve it from the turn summary. This item
+  is a projection of Codex's stored turn error, not another persisted conversation.
   Apply tool upserts in order. Message IDs preserve the existing receipt-ID convention;
   retained `/plan <task>` and `/review` commands use their original ACP receipt and
   content, while internal plan implementation prompts have no ACP message update.
@@ -397,6 +403,22 @@ A failed turn emits an `agent_message_chunk` with the error text and
 `_meta.codex.error {message, codexErrorInfo, additionalDetails}`, then
 `idle` with `stopReason: "error"` and a standard JSON-RPC `error {code, message, data}`.
 `data.codex` retains category and retryability; `_meta.codex.error` retains Codex diagnostics.
+Its message id is `codex-error:<turnId>`, matching history snapshots. Render it as
+a diagnostic, once per native turn, rather than an assistant answer plus another
+card from the idle state. A failure before native turn admission has an `unstarted:` id
+and cannot be continued by `_codex/session_retry`.
+
+`_codex/session_retry` requires an attached writable session, no active turn or
+concurrent lifecycle/configuration operation, and a matching latest native failed
+turn with retryable classification. Automatic continuations additionally require
+`serverOverloaded`. The adapter accepts native `idle` or terminal `systemError`
+state before admission, starts
+`turn/start` with `input: []`, no user-message receipt, and `turnTrigger` equal to
+`capacity_retry_manual` or `capacity_retry_automatic`. It does not insert or resend
+a user message. The response acknowledges admission; normal `state_update` frames
+report running and completion, and normal cancellation applies. The adapter never
+schedules retries itself. A client may offer capacity retry countdowns of 10, 30,
+120 and 300 seconds across consecutive empty-input failures, then retain manual retry.
 
 `session/cancel` calls `turn/interrupt`; the turn ends with `idle` / `cancelled`.
 Concurrent cancel requests coalesce; native interrupt RPCs coalesce only while in flight within the recovery budget.
@@ -468,10 +490,13 @@ The adapter does not persist a separate branch index.
 | `agent_message`, `agent_thought` | history replay; `agent_message` also reports cancellation recovery and command-save problems requiring user action |
 | `tool_call_update` | see below |
 | `terminal_update`, `terminal_output_chunk` | shell commands; `terminalId` equals the tool call id; data is base64 |
-| `plan_update` | `turn/plan/updated` → `{type: "items", planId: "codex-turn-plan"}`; plan-mode drafts → `{type: "markdown", planId: <item id>}` |
+| `plan_update` | `turn/plan/updated` → `{type: "items", planId: "codex-turn-plan:<turnId>"}`; plan-mode drafts → `{type: "markdown", planId: <item id>}` |
 | `usage_update` | `thread/tokenUsage/updated`: `used` = last turn total tokens, `size` = model context window |
 | `compaction_update` | `compactionId` = Codex `contextCompaction` item id; `in_progress` on item/started, `completed` on item/completed (history snapshots report `completed`). No `compaction_summary_chunk`: Codex exposes no summary text. |
 | `session_info_update` | `title` from Codex thread names, or the first prompt line as a fallback; `_meta.codex.retry` for transient errors Codex is retrying |
+
+Transient `_meta.codex.retry` includes `message`, `turnId` and `codexErrorInfo`;
+the adapter clears it with `retry: null` before reporting the terminal state.
 | `available_commands_update` | built-in slash commands plus `$<skill>` entries |
 | `config_option_update` | after every `session/set_config_option` and `/plan` |
 

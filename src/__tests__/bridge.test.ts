@@ -254,7 +254,7 @@ describe("plans", () => {
     const plans = t.client.updatesOf("plan_update")
     expect(plans[0]?.plan).toEqual({
       type: "items",
-      planId: "codex-turn-plan",
+      planId: `codex-turn-plan:${TURN_ID}`,
       entries: [
         { content: "a", priority: "medium", status: "completed" },
         { content: "b", priority: "medium", status: "in_progress" },

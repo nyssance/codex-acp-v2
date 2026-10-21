@@ -231,6 +231,65 @@ describe.skipIf(!RUN)("live codex", () => {
     fs.rmSync(cwd, { recursive: true, force: true })
   })
 
+  it.each(["manual", "automatic"] as const)(
+    "continues a native capacity failure without duplicating its prompt (%s)",
+    async (trigger) => {
+      let overloaded = true
+      const gateway = await startFakeGateway({
+        token: "capacity-token",
+        reply: "CAPACITY_RECOVERED",
+        overloaded: () => overloaded
+      })
+      let sessionId: string | undefined
+      try {
+        await client.call("providers/set", {
+          providerId: "openai",
+          apiType: "openai",
+          baseUrl: gateway.baseUrl,
+          headers: { authorization: "Bearer capacity-token" },
+          _meta: { alwith: { model: "fake-model", models: [{ id: "fake-model", label: "Fake" }] } }
+        })
+        sessionId = (await client.call("session/new", { cwd, mcpServers: [] })).sessionId
+        const mark = client.mark()
+        await client.call("session/prompt", { sessionId, prompt: [{ type: "text", text: "CAPACITY_PROMPT" }] })
+        expect((await client.idle(sessionId!, TURN_TIMEOUT_MS, mark)).stopReason).toBe("error")
+        const page = await client.call<SessionHistoryResponse>("_codex/session_history", {
+          sessionId,
+          itemsView: "full",
+          sortDirection: "desc",
+          limit: 1
+        })
+        const failed = page.turns[0]!
+        expect(failed.error?.codexErrorInfo).toBe("serverOverloaded")
+        expect(failed.updates.at(-1)).toMatchObject({
+          sessionUpdate: "agent_message",
+          messageId: `codex-error:${failed.turnId}`,
+          _meta: { codex: { error: { category: "overloaded", retryable: true } } }
+        })
+        overloaded = false
+        const retryMark = client.mark()
+        await client.call("_codex/session_retry", { sessionId, turnId: failed.turnId, trigger })
+        expect((await client.idle(sessionId!, TURN_TIMEOUT_MS, retryMark)).stopReason).toBe("end_turn")
+        expect(client.text(retryMark, sessionId!)).toContain("CAPACITY_RECOVERED")
+        expect(client.since(retryMark, sessionId).filter((update) => update.sessionUpdate === "user_message")).toEqual(
+          []
+        )
+        const restored = await client.call<SessionHistoryResponse>("_codex/session_history", {
+          sessionId,
+          itemsView: "full"
+        })
+        expect(restored.turns.filter((entry) => entry.status === "failed")).toHaveLength(1)
+        expect(
+          restored.turns.flatMap((entry) => entry.updates).filter((update) => update.sessionUpdate === "user_message")
+        ).toHaveLength(1)
+      } finally {
+        if (sessionId) await client.call("session/close", { sessionId })
+        await client.call("providers/disable", { providerId: "openai" })
+        await gateway.close()
+      }
+    }
+  )
+
   it("runs a prompt through running, chunks, usage, and idle", async () => {
     const created = await client.call("session/new", { cwd, mcpServers: [] })
     firstSessionId = created.sessionId

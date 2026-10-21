@@ -6,6 +6,7 @@ import { itemSnapshot } from "../bridge/itemSnapshot"
 import { withTurnId } from "../bridge/turnMetadata"
 import { fromUserMessage, promptTitle } from "../codex/sessionConfig"
 import type { CommandReceipt } from "./commandReceipts"
+import { turnErrorUpdate } from "./turnErrors"
 
 /**
  * Renders a loaded Codex thread as the session updates a client would have seen
@@ -45,6 +46,8 @@ export function historyUpdates(
         })
       )
     }
+    if (turn.status === "failed" && turn.error !== null)
+      updates.push(withTurnId(turnErrorUpdate(turn.id, turn.error), turn.id, turn.startedAt))
   }
   return updates
 }
