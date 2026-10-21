@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.7.26 — 2026-10-21
+
+### Added
+
+- `_codex/session_retry` continues the latest retryable failed turn without resending user input, with manual and client-triggered automatic capacity retries.
+
+### Fixed
+
+- Give failed-turn diagnostics stable message IDs across live updates and history, preserve their error details in summaries, and clear transient retry metadata before terminal state updates.
+- Scope item-based plan IDs to their native turn so plans from different turns remain distinct.
+
+### Changed
+
+- Upgrade `@nyssance/ts7-lint` to 0.1.3, expose it as a standalone check, and satisfy the default type-aware rules without inline suppressions.
+
 ## 0.7.25 — 2026-10-20
 
 ### Fixed
