@@ -63,7 +63,9 @@ describe("read-only session history", () => {
         sessionUpdate: "agent_message",
         messageId: "one-answer",
         content: [{ type: "text", text: "answer" }],
-        _meta: { codex: { phase: "final_answer", turnId: "one", turnStartedAt: 100000 } }
+        _meta: {
+          codex: { phase: "final_answer", delivery: null, questions: null, turnId: "one", turnStartedAt: 100000 }
+        }
       })
     ])
     const second = await t.agent.sessionHistory({

@@ -11,7 +11,7 @@ import type {
   TurnError,
   TurnPlanUpdatedNotification
 } from "../app-server/v2"
-import { questionReplyContent } from "../codex/questionReplies"
+import { questionReplyContent, withQuestionReplyParts } from "../codex/questionReplies"
 import { fromUserMessage } from "../codex/sessionConfig"
 import { abortable } from "../util/abort"
 import { logger } from "../util/logger"
@@ -95,25 +95,7 @@ export class EventBridge {
     content = content.flatMap((block) =>
       acp.ContentBlock.isText(block) ? (questionReplyContent(block.text) ?? [block]) : [block]
     )
-    let meta = this.promptMeta.get(messageId)
-    // Clients retain optimistic content on receipt adoption, but merge message metadata.
-    if (
-      content.some(
-        (block) =>
-          acp.ContentBlock.isText(block) &&
-          block._meta?.["codex"] &&
-          typeof block._meta["codex"] === "object" &&
-          "questionReply" in block._meta["codex"]
-      )
-    ) {
-      const parts = content.flatMap((block) => {
-        if (!acp.ContentBlock.isText(block)) return []
-        const reply = (block._meta?.["codex"] as { questionReply?: { question: string; answer: string } } | undefined)
-          ?.questionReply
-        return [reply ? { question: reply.question, text: reply.answer } : { text: block.text }]
-      })
-      meta = { ...meta, codex: { ...(meta?.["codex"] as object), questionReplyParts: parts } }
-    }
+    const meta = withQuestionReplyParts(content, this.promptMeta.get(messageId))
     this.promptMeta.delete(messageId)
     this.insertedMessages.set(messageId, { content, meta })
     const sentAt = promptSentAt(meta)
@@ -632,7 +614,7 @@ export class EventBridge {
         const content = fromUserMessage(item.content)
         if (content.length === 0) return []
         const messageId = item.clientId ?? item.id
-        const meta = this.promptMeta.get(messageId)
+        const meta = withQuestionReplyParts(content, this.promptMeta.get(messageId))
         this.promptMeta.delete(messageId)
         return [{ sessionUpdate: "user_message", messageId, content, ...(meta ? { _meta: meta } : {}) }]
       }

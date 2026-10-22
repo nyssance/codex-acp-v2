@@ -18,13 +18,13 @@ export function itemSnapshot(item: ThreadItem, agents: AgentDirectory, command?:
       return content.length > 0 ? [{ sessionUpdate: "user_message", messageId: item.clientId ?? item.id, content }] : []
     }
     case "agentMessage":
-      return item.text.length > 0
+      return item.text.length > 0 || (item.questions?.length ?? 0) > 0
         ? [
             {
               sessionUpdate: "agent_message",
               messageId: item.id,
               content: [{ type: "text", text: item.text }],
-              ...(item.phase ? { _meta: { codex: { phase: item.phase } } } : {})
+              _meta: { codex: { phase: item.phase, delivery: item.delivery, questions: item.questions } }
             }
           ]
         : []

@@ -804,8 +804,22 @@ text blocks. Each block contains readable `question\nanswer` text and
 this metadata as a single-line question summary above the literal answer. Copy
 and search retain readable text. Native history remains unchanged. Malformed,
 partial, or quoted envelopes remain ordinary text; no entries are silently lost.
+
+Async question messages preserve `_meta.codex.delivery: "async"` and
+`_meta.codex.questions: Array<{title: string, options: string[] | null}>` on live
+`agent_message` updates and history snapshots. These messages do not create an
+elicitation or change the running state. Clients display nonmodal question cards,
+retain the first suggested option without sending it, and always allow free text.
+Answers use `session/prompt` with the reply envelope above and the original session
+ID; an active Codex turn receives them through steering. Each `questionItemId` is
+`JSON.stringify(["request_user_input_async", messageId, questionIndex])`.
+Only explicit submission sends an answer. Historical or ended-turn cards must not
+reopen as pending requests. A completed snapshot carries null values to clear
+previous question metadata when appropriate.
+
 For locally submitted envelopes, message-level `_meta.codex.questionReplyParts`
-also contains ordered `{text, question?}` display parts. Receipt-adopting clients
+also contains ordered `{text, question?, questionItemId?}` display parts, including
+native echoes of answers steered into a running turn. Receipt-adopting clients
 that retain optimistic prompt content use these parts for display and copying;
 this does not alter the original input sent to Codex.
 

@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.7.28 — 2026-10-22
+
+### Added
+
+- Preserve asynchronous question delivery and choices in live messages, replay, and paginated history, including question-only messages, without blocking the running turn.
+
+### Fixed
+
+- Correlate steered answer echoes by their original question IDs and preserve structured reply content in paginated history.
+- Clear stale question metadata when a completed message snapshot carries null values.
+
 ## 0.7.27 — 2026-10-22
 
 ### Fixed

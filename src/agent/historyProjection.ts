@@ -6,6 +6,7 @@ import type { ThreadItem, UserInput } from "../app-server/v2"
 import type { AgentDirectory } from "../bridge/agentDirectory"
 import { itemSnapshot } from "../bridge/itemSnapshot"
 import { withTurnId } from "../bridge/turnMetadata"
+import { questionReplyContent } from "../codex/questionReplies"
 import { fromUserInput, fromUserMessage } from "../codex/sessionConfig"
 import { hydrateUserImages, localImageContent } from "../codex/userImages"
 import { type CommandReceipt, isInternalPlanMessageId } from "./commandReceipts"
@@ -87,7 +88,9 @@ export async function projectHistoryItem(
           content:
             command?.content ??
             (await hydrateUserImages(
-              fromUserMessage(item.content, (input) => [inputBlock(input)]),
+              fromUserMessage(item.content, (input) =>
+                input.type === "text" ? (questionReplyContent(input.text) ?? [inputBlock(input)]) : [inputBlock(input)]
+              ),
               signal
             ))
         }
@@ -99,7 +102,7 @@ export async function projectHistoryItem(
     if (item.type === "reasoning" && item.summary.length && item.content.length)
       omissions.push({ itemId: item.id, field: "content", reason: "summary_selected" })
     if (item.type === "agentMessage") {
-      for (const field of ["memoryCitation", "delivery", "questions"] as const) {
+      for (const field of ["memoryCitation"] as const) {
         if (item[field] !== null) omissions.push({ itemId: item.id, field, reason: "no_acp_representation" })
       }
     }

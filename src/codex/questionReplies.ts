@@ -1,4 +1,23 @@
-import type * as acp from "@agentclientprotocol/sdk/experimental/v2/unstable"
+import * as acp from "@agentclientprotocol/sdk/experimental/v2/unstable"
+
+/** Receipt adoption retains optimistic content; keep structured replies at message level too. */
+export function withQuestionReplyParts(
+  content: acp.ContentBlock[],
+  meta?: Record<string, unknown>
+): Record<string, unknown> | undefined {
+  let found = false
+  const parts = content.flatMap((block) => {
+    if (!acp.ContentBlock.isText(block)) return []
+    const reply = (
+      block._meta?.["codex"] as
+        { questionReply?: { questionItemId: string; question: string; answer: string } } | undefined
+    )?.questionReply
+    if (!reply) return [{ text: block.text }]
+    found = true
+    return [{ questionItemId: reply.questionItemId, question: reply.question, text: reply.answer }]
+  })
+  return found ? { ...meta, codex: { ...(meta?.["codex"] as object), questionReplyParts: parts } } : meta
+}
 
 /** Recognize only complete Desktop reply envelopes; quoted examples and malformed data remain text. */
 export function questionReplyContent(text: string): acp.ContentBlock[] | null {

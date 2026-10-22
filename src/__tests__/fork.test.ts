@@ -212,7 +212,9 @@ describe("chat branches", () => {
       expect.objectContaining({
         sessionId: "thread-fork",
         messageId: "answer",
-        _meta: { codex: { phase: "final_answer", turnId: TURN_ID, historyReplay: true } }
+        _meta: {
+          codex: { phase: "final_answer", delivery: null, questions: null, turnId: TURN_ID, historyReplay: true }
+        }
       })
     ])
     expect(
@@ -283,10 +285,17 @@ describe("chat branches", () => {
       }
     })
     expect(historyUpdates([turn({ items: [item] })], noAgents)[0]?._meta).toEqual({
-      codex: { phase: "final_answer", turnId: TURN_ID, historyReplay: true }
+      codex: { phase: "final_answer", delivery: null, questions: null, turnId: TURN_ID, historyReplay: true }
     })
     expect(historyUpdates([turn({ items: [item], startedAt: 1_790_000_000 })], noAgents)[0]?._meta).toEqual({
-      codex: { phase: "final_answer", turnId: TURN_ID, turnStartedAt: 1_790_000_000_000, historyReplay: true }
+      codex: {
+        phase: "final_answer",
+        delivery: null,
+        questions: null,
+        turnId: TURN_ID,
+        turnStartedAt: 1_790_000_000_000,
+        historyReplay: true
+      }
     })
   })
 })
