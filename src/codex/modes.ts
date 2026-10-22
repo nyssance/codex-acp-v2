@@ -4,7 +4,7 @@ import type { ApprovalsReviewer, AskForApproval, SandboxMode, SandboxPolicy } fr
 
 export const MODE_CONFIG_ID = "mode"
 
-export type AgentModeId = "read-only" | "agent" | "agent-full-access"
+export type AgentModeId = "read-only" | "workspace-write" | "agent" | "agent-full-access"
 
 /** Approval and sandbox preset, exposed to clients as the `mode` config option. */
 export interface AgentMode {
@@ -28,7 +28,16 @@ const workspaceWrite: SandboxPolicy = {
 export const AGENT_MODES: readonly AgentMode[] = [
   {
     id: "read-only",
-    name: "Ask for approval",
+    name: "Read-only",
+    description: "Ask before editing files or accessing the internet",
+    approvalPolicy: "on-request",
+    approvalsReviewer: "user",
+    sandboxPolicy: { type: "readOnly", networkAccess: false },
+    sandboxMode: "read-only"
+  },
+  {
+    id: "workspace-write",
+    name: "Workspace access",
     description: "Always ask to edit external files and use the internet",
     approvalPolicy: "on-request",
     approvalsReviewer: "user",
@@ -55,7 +64,7 @@ export const AGENT_MODES: readonly AgentMode[] = [
   }
 ]
 
-export const DEFAULT_AGENT_MODE: AgentMode = AGENT_MODES[1]!
+export const DEFAULT_AGENT_MODE: AgentMode = AGENT_MODES[2]!
 
 export function findAgentMode(id: string): AgentMode | undefined {
   return AGENT_MODES.find((mode) => mode.id === id)
@@ -63,7 +72,10 @@ export function findAgentMode(id: string): AgentMode | undefined {
 
 export function initialAgentMode(env: NodeJS.ProcessEnv = process.env): AgentMode {
   const requested = env["INITIAL_AGENT_MODE"]
-  return (requested && findAgentMode(requested)) || DEFAULT_AGENT_MODE
+  if (requested === undefined) return DEFAULT_AGENT_MODE
+  const mode = findAgentMode(requested)
+  if (!mode) throw new Error(`Unknown INITIAL_AGENT_MODE "${requested}"`)
+  return mode
 }
 
 export function modeConfigOption(current: AgentMode): acp.SessionConfigOption {

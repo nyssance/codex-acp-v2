@@ -26,7 +26,7 @@ describe("host session options", () => {
   it("passes host instructions and the explicit permission preset to new and resumed threads", async () => {
     const t = createTestAgent()
     await t.initialize()
-    const meta = { codex: { mode: "read-only" } }
+    const meta = { codex: { mode: "workspace-write" } }
     const systemPrompt = {
       mode: "append" as const,
       content: [{ type: "text" as const, text: "Only edit through Board tools." }]

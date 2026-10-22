@@ -94,7 +94,7 @@ adjust defaults.
 | `CODEX_ACP_MODEL_CATALOGS` | Extra Codex model catalog files (`{models: [...]}`, joined with the platform path delimiter) for gateway models. Codex reads model metadata only at app-server start, so these are merged, hidden from the ChatGPT group, into Codex's own catalog there; without them a gateway model runs on fallback metadata and Codex warns on every turn. |
 | `CODEX_CONFIG` | JSON object merged into every thread's Codex config. |
 | `MODEL_PROVIDER` | Codex model provider for new threads. |
-| `INITIAL_AGENT_MODE` | `read-only`, `agent` (default), or `agent-full-access`. |
+| `INITIAL_AGENT_MODE` | `read-only`, `workspace-write`, `agent` (default), or `agent-full-access`. |
 | `CODEX_API_KEY` / `OPENAI_API_KEY` | Key used by the `api-key` auth method. |
 | `NO_BROWSER` | Hide the browser-based `chat-gpt` auth method. |
 | `APP_SERVER_LOGS` | Directory for the adapter log file (wire frames included). |

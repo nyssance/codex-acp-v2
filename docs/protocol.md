@@ -314,7 +314,7 @@ perform the separate reversible `_codex/session_archive` operation.
 
 | `configId` | `category` | Type | Values |
 | --- | --- | --- | --- |
-| `mode` | `mode` | select | `read-only`, `agent`, `agent-full-access` |
+| `mode` | `mode` | select | `read-only`, `workspace-write`, `agent`, `agent-full-access` |
 | `model` | `model` | select | Codex catalog ids (the current id is always listed) |
 | `effort` | `thought_level` | select | efforts supported by the current model; omitted when no levels are declared |
 | `collaboration_mode` | `model_config` | select | `default`, `plan` |
@@ -703,7 +703,7 @@ or replay journal. UI progress uses normal `tool_call_update` frames.
 `session/new`, `session/resume`, and `session/fork` accept
 `_meta.alwith.appendSystemPrompt` (a string) as Codex `developerInstructions`.
 The adapter preserves Codex base instructions; host text is never injected as a user message.
-`_meta.codex.mode` explicitly selects `read-only`, `agent`, or `agent-full-access`
+`_meta.codex.mode` explicitly selects `read-only`, `workspace-write`, `agent`, or `agent-full-access`
 for that session, overriding the process default. Unknown modes are rejected before opening a thread.
 
 Empty-preview fork compatibility: Codex 0.156.1 omits such threads from `thread/list`

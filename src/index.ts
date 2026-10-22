@@ -27,7 +27,7 @@ Environment:
   CODEX_PATH          Codex executable (default: bundled @openai/codex)
   CODEX_CONFIG        JSON object merged into every thread's Codex config
   MODEL_PROVIDER      Codex model provider for new threads
-  INITIAL_AGENT_MODE  read-only | agent | agent-full-access (default: agent)
+  INITIAL_AGENT_MODE  read-only | workspace-write | agent-full-access (default: agent)
   CODEX_API_KEY       API key for the api-key auth method (falls back to OPENAI_API_KEY)
   NO_BROWSER          Hide the browser-based ChatGPT auth method
   APP_SERVER_LOGS     Directory for the adapter log file`)
