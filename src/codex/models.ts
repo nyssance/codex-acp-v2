@@ -10,7 +10,8 @@ export const FAST_MODE_CONFIG_ID = "fast_mode"
 export const COLLABORATION_MODE_CONFIG_ID = "collaboration_mode"
 
 export const DEFAULT_EFFORT = "medium"
-export const FAST_SERVICE_TIER = "fast"
+// Codex names the UI option Fast, but its service-tier identifier is priority.
+export const FAST_SERVICE_TIER = "priority"
 
 /** Model selection for a session: a catalog id plus a reasoning effort. */
 export interface ModelSelection {

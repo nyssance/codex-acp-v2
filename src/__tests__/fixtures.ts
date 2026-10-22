@@ -26,7 +26,7 @@ export function model(overrides: Partial<Model> = {}): Model {
     supportsPersonality: false,
     multiAgentVersion: null,
     additionalSpeedTiers: [],
-    serviceTiers: [{ id: "fast", name: "Fast", description: "1.5x speed" }],
+    serviceTiers: [{ id: "priority", name: "Fast", description: "1.5x speed" }],
     defaultServiceTier: null,
     availableAccessPrograms: null,
     isDefault: true,

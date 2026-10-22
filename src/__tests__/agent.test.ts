@@ -448,7 +448,7 @@ describe("session/prompt", () => {
     await t.agent.setSessionConfigOption({ sessionId: THREAD_ID, configId: "fast_mode", type: "boolean", value: true })
     await t.agent.prompt({ sessionId: THREAD_ID, prompt: [{ type: "text", text: "go" }] })
     await t.settle()
-    expect(t.codex.lastParams<TurnStartParams>("turn/start")).toMatchObject({ summary: "none", serviceTier: "fast" })
+    expect(t.codex.lastParams<TurnStartParams>("turn/start")).toMatchObject({ summary: "none", serviceTier: "priority" })
   })
 })
 
@@ -2401,5 +2401,28 @@ it("validates plugin enablement at the extension boundary", async () => {
   expect(parsePluginSetEnabledParams({ pluginId: "a@market", enabled: false, keyPath: "model" })).toEqual({
     pluginId: "a@market",
     enabled: false
+  })
+})
+
+describe("priority service tier", () => {
+  it("restores fast mode from a resumed priority thread and clears it when disabled", async () => {
+    const t = createTestAgent()
+    t.codex.respond("thread/resume", () => ({ ...threadResponse(), serviceTier: "priority" }))
+    await t.initialize()
+    const response = await t.agent.resumeSession({ sessionId: THREAD_ID, cwd: CWD, replayFrom: null })
+    expect(response.configOptions?.find((option) => option.configId === "fast_mode")).toMatchObject({ currentValue: true })
+    await t.agent.setSessionConfigOption({ sessionId: THREAD_ID, configId: "fast_mode", type: "boolean", value: false })
+    await t.agent.prompt({ sessionId: THREAD_ID, prompt: [{ type: "text", text: "go" }] })
+    await t.settle()
+    expect(t.codex.lastParams<TurnStartParams>("turn/start").serviceTier).toBeNull()
+  })
+
+  it("restores fast mode on a forked priority thread", async () => {
+    const t = createTestAgent()
+    t.codex.respond("thread/fork", () => ({ ...threadResponse({ id: "priority-fork" }), serviceTier: "priority" }))
+    await t.initialize()
+    await t.openSession()
+    const response = await t.agent.forkSession({ sessionId: THREAD_ID, cwd: CWD })
+    expect(response.configOptions?.find((option) => option.configId === "fast_mode")).toMatchObject({ currentValue: true })
   })
 })

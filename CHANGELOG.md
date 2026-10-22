@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.27 — 2026-10-22
+
+### Fixed
+
+- Use the native `priority` service tier for Fast mode capability detection, turn requests, and resumed or forked session state.
+
 ## 0.7.26 — 2026-10-21
 
 ### Added

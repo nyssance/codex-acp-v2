@@ -318,7 +318,7 @@ perform the separate reversible `_codex/session_archive` operation.
 | `model` | `model` | select | Codex catalog ids (the current id is always listed) |
 | `effort` | `thought_level` | select | efforts supported by the current model; omitted when no levels are declared |
 | `collaboration_mode` | `model_config` | select | `default`, `plan` |
-| `fast_mode` | `model_config` | boolean | only when the model offers the `fast` service tier |
+| `fast_mode` | `model_config` | boolean | only when the model offers the `priority` service tier (Fast mode) |
 
 Changing `model` re-validates `effort` and clears `fast_mode` if the new model does
 not support it.
